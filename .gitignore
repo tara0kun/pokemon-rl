@@ -1,0 +1,65 @@
+# Virtual environment (869MB)
+poke-rl/
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Game ROM (copyrighted — NEVER commit)
+*.gba
+*.gb
+*.gbc
+*.nds
+
+# Save states (in-game saves — copyright + user data)
+*.sav
+*.srm
+*.ss*
+saved_states/
+
+# Screenshots (46MB recording history)
+screenshots/
+
+# Training logs (per-run, regenerable)
+training_current.log
+training_*.log
+logs/
+*.log
+
+# Tensorboard
+events.out.tfevents.*
+
+# Backup files
+*.bak
+*.bak_*
+exploration_map.json.bak_*
+wall_hits.json.bak_*
+
+# Secrets (defensive — should never be in repo)
+.env
+.env.local
+*api_key*
+*ANTHROPIC*
+.claude/settings.local.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp / cache
+/tmp/
+*.tmp
+*.cache
+
+# Large model artifacts (optional — keep small representative samples)
+models/*.zip
+!models/README.md
+
+# Canon data binary cache (regenerable from pokeemerald)
+docs/canon_data_*.bin
