@@ -63,3 +63,45 @@ models/*.zip
 
 # Canon data binary cache (regenerable from pokeemerald)
 docs/canon_data_*.bin
+
+# Tile collection data (49,950 PNG tiles — too large for git)
+tile_data/
+
+# wall_hits backups (regenerable)
+wall_hits_backup_*.json
+
+# .spc_history (per-port stuck pos cache, regenerable)
+.spc_history.json
+
+# Claude Code per-project config (settings.local.json + agents.json)
+.claude/
+
+# state load log (historical)
+state_load_log.md
+
+# archive/ (old docs, very large)
+archive/
+
+# Private AI session context (not for public)
+memory/
+
+# Daily dev journal (private)
+daily_progress/
+
+# Runtime save metadata (per-port, regenerable)
+slot4_meta_*.json
+
+# exploration_map backups (regenerable, large)
+exploration_map_backup_*.json
+
+# restart loop script (env-specific)
+restart_loop.sh
+
+# Internal docs (rules/violations/risks — not for portfolio)
+docs/RULE_VIOLATIONS.md
+docs/MONITORING_GUIDE.md
+docs/KNOWN_RISKS.md
+docs/UNRESOLVED_ISSUES.md
+docs/USER_GUIDE.md
+CLAUDE.md
+PROGRESS.md

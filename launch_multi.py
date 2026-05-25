@@ -20,7 +20,10 @@ import os
 import time
 import requests
 
-MGBA_HTTP_EXE = r"C:\Users\tiita\Downloads\mGBA-http-0.8.1-win-x64-self-contained.exe"
+MGBA_HTTP_EXE = os.environ.get(
+    "MGBA_HTTP_EXE",
+    r"C:\path\to\mGBA-http.exe",  # set MGBA_HTTP_EXE env var to override
+)
 
 # (HTTP port, Lua socket port)
 INSTANCES = [

@@ -1,0 +1,19 @@
+# Pokemon Emerald RL Agent - Python dependencies
+# Tested on Python 3.10+ (Windows 11)
+
+# Core RL
+stable-baselines3>=2.0.0
+gymnasium>=0.29.0
+torch>=2.0.0
+numpy>=1.24.0
+
+# HTTP / emulator bridge
+requests>=2.31.0
+
+# Logging / monitoring
+tensorboard>=2.15.0
+
+# Image / tile processing (CNN classifier)
+Pillow>=10.0.0
+
+# Development utilities

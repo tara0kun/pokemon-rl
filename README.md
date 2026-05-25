@@ -1,117 +1,154 @@
 # Pokemon Emerald RL Agent
 
-> Multi-instance reinforcement learning agent that plays Pokemon Emerald autonomously via mGBA emulator. Combines rule-based navigation with RL for battle strategy, parallel training across 3 emulator instances, and canonical map data injection from the pokeemerald decompilation.
+> Pokemon Emerald (GBA) を自動プレイする強化学習エージェント。 3 つの mGBA エミュレータを並列実行し、 ルールベース BFS ナビゲーションと PPO によるバトル学習を組み合わせた hybrid 構成。
 
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-orange.svg)](https://pytorch.org/)
-[![stable-baselines3](https://img.shields.io/badge/stable--baselines3-PPO-green.svg)](https://stable-baselines3.readthedocs.io/)
+[![Gymnasium](https://img.shields.io/badge/gymnasium-custom%20env-green.svg)](https://gymnasium.farama.org/)
+[![stable-baselines3](https://img.shields.io/badge/SB3-PPO-orange.svg)](https://stable-baselines3.readthedocs.io/)
 
-## ハイライト
+---
 
-- **14,000+ lines** の custom Gymnasium 環境 ([`pokemon_env.py`](pokemon_env.py))
-- **3 instances parallel** で mGBA 並列学習 (port 8888/8889/8890)
-- **PPO + ルールベース hybrid** = 安定動作 + 学習発展
-- **Canonical map data injection** ([`tools/canon_map_inject.py`](tools/canon_map_inject.py)): pokeemerald decomp の `map.bin` (16-bit block format) を解析し、 BFS-walkable tile + wall を `exploration_map.json` に事前注入することで探索を大幅短縮
-- **継続的監視 + 自動 patch deploy** workflow ([`tools/monitor.py`](tools/monitor.py))
-- **Badge 1 / Badge 2 取得** 達成 (Brawly Gym 撃破)
+## 何をしているのか
+
+ゲームエミュレータ (mGBA) の RAM を読み書きし、 ボタン入力を送ることで、 Pokemon Emerald を「自分で進める」 エージェントを実装しています。 主に 3 つの問題を扱います:
+
+1. **ナビゲーション**: マップ上で目的地まで歩く (例: ジムへ行く、 ポケモンセンターで回復)
+2. **バトル**: 野生・トレーナー戦で技を選択して勝つ
+3. **長期戦略**: ストーリー進行、 レベリング、 アイテム管理 — どの順で何をやるか
+
+これらを **ルールベース (BFS による経路探索 + finite state machine)** と **強化学習 (PPO によるバトル技選択)** の hybrid で解いています。
+
+## なぜやっているのか / 目指していること
+
+**短期目標**: Pokemon Emerald を「クリア」する自律エージェントを作る。 ストーリー全 8 ジム + 殿堂入りまで。
+
+**中期目標**: ここで培った 5 層分解アーキテクチャ (画面認識 → マップ構築 → 経路探索 → バトル AI → 高レベル判断) を、 **他の Pokemon シリーズ (FRLG / DPPt / HGSS 等) でも転用可能な汎用 RL agent framework** に発展させる。
+
+**学んでいること / 示したいこと**:
+- **大規模 (~14,000 行) Python codebase の継続的設計・refactoring**
+- 強化学習 (Gymnasium custom env, PPO) の実問題への適用
+- エミュレータ・低レイヤー (RAM 読み書き、 socket protocol) との接続
+- **continuous monitoring + iterative debugging** workflow の構築
+- **canonical data** (オープンソースの decompilation) を活用した探索コスト削減
 
 ## アーキテクチャ
 
 ```
-┌──────────────────────────────────────────────────────┐
-│  train.py  (PPO loop, stable-baselines3, 3 env)     │
-│      ↓                                                │
-│  pokemon_env.py  (custom Gymnasium env)              │
-│  - 26-dim observation                                │
-│  - Rule-based + RL hybrid action selection           │
-│  - BFS pathfinding on exploration_map.json           │
-│  - Battle handler (FIGHT/SWITCH/RUN logic)           │
-│  - Heal cycle (PC nav, HP/PP recovery)               │
-│      ↓ HTTP                                          │
-│  mgba-http  (custom socket protocol, |END| terminator)│
-│      ↓                                               │
-│  mGBA × 3 instances                                  │
-└──────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│  train.py  (PPO loop, stable-baselines3, 3 parallel envs)  │
+│      ↓                                                       │
+│  pokemon_env.py  (custom Gymnasium environment, ~14k lines) │
+│  ├─ 26-dim observation space (HP/PP/位置/相手 type 等)       │
+│  ├─ 6 discrete actions (A/B/Up/Down/Left/Right)             │
+│  ├─ Reward shaping (探索/レベリング/バトル勝利)              │
+│  └─ Rule-based action override (BFS path / battle handler)  │
+│      ↓ HTTP                                                  │
+│  mgba-http  (custom socket protocol, <|END|> terminator)    │
+│      ↓                                                       │
+│  mGBA × 3 instances  (ports 8888 / 8889 / 8890)             │
+└─────────────────────────────────────────────────────────────┘
 ```
+
+### 5 層分解 (汎用化を見据えた設計)
+
+| Layer | 役割 | 主要 file |
+|---|---|---|
+| **L1 画面認識** | CNN で tile を分類 (walkable/wall/door) | `tools/tile_classifier.py` |
+| **L2 マップ構築** | 探索済 tile を graph として持つ (`exploration_map.json`) | `pokemon_env.py` (MapGraph) |
+| **L3 経路探索** | BFS で目的地までの最短 path 計算 | `pokemon_env.py` (`bfs_to_position`) |
+| **L4 バトル AI** | PPO で技選択を学習 (別 module で実験) | `battle_ai/train_battle.py` |
+| **L5 高レベル判断** | story 進行 / heal / レベリング切替 | `pokemon_env.py` (rule-based) |
 
 ## 主要 component
 
-| File | 役割 | 行数 |
-|---|---|---|
-| `pokemon_env.py` | Custom Gym env: state/reward/action chain (~14k 行) | 14,000+ |
-| `train.py` | PPO training entry point | ~150 |
-| `tools/monitor.py` | 3-port status checker + cadence violation detector | ~600 |
-| `tools/mapping_audit.py` | exploration_map.json validation vs pokeemerald canon | ~150 |
-| `tools/canon_map_inject.py` | pokeemerald map.bin → exploration_map injection | ~200 |
-| `tools/tile_classifier.py` | CNN-based tile type classifier (walkable/wall/door) | ~400 |
-| `battle_ai/` | Standalone PPO battle agent (separated module) | ~500 |
+| File / Directory | 役割 |
+|---|---|
+| `pokemon_env.py` | Custom Gymnasium env (~14,000 行)。 RAM 読み取り、 action chain、 reward shaping、 全体制御 |
+| `train.py` | PPO 学習 entry point (stable-baselines3) |
+| `tools/monitor.py` | 3-port 状態 monitor (位置/HP/PP/stuck 検出) |
+| `tools/mapping_audit.py` | `exploration_map.json` の整合性チェック (canonical map 寸法 vs 実探索 tile) |
+| `tools/canon_map_inject.py` | pokeemerald decomp の `map.bin` (16-bit block format) を解析し、 探索 graph に passable/wall を事前注入 |
+| `tools/tile_classifier.py` | CNN tile 分類器 (SE block + Focal Loss + Mixup) |
+| `battle_ai/` | バトル専用 PPO agent (env から分離した standalone module) |
+| `exploration_map.json` | 8,200+ tile の探索 graph (実学習で蓄積したデータ) |
 
-## 技術スタック
+## 技術的工夫
 
-- **Python 3.10+** / PyTorch / stable-baselines3 (PPO)
-- **Gymnasium** (custom env, 26-dim obs, 6 discrete actions)
-- **mGBA emulator** + custom HTTP/socket bridge
-- **pokeemerald decompilation** ([pret/pokeemerald](https://github.com/pret/pokeemerald)) で canonical map data 取得
-- **BFS pathfinding** on graph-based exploration map
-- **CNN tile classifier** (Squeeze-Excitation residual blocks, Focal Loss, Mixup)
+### 1. ルールベース + RL hybrid
 
-## 設計上の工夫
-
-### 1. Rule-based + RL hybrid
-完全 RL は探索 cost が高いため、 主要 nav は rule-based BFS、 battle 選択を RL で学習する hybrid 構成。 学習進捗に応じて override 率を段階的削減する設計 (`_ai_original_action`)。
+完全な RL でゼロから学習させると探索コストが膨大なため、 経路探索や heal cycle は決定論的に解き、 学習の余地を「バトル技選択」 「stuck 時の脱出」 に絞っています。 学習の進捗に応じて override 率を段階的に下げる設計 (`_ai_original_action` で AI 提案 action を保持)。
 
 ### 2. Parallel multi-instance training
-3 つの mGBA インスタンスで独立 PPO env を並列実行。 各 port が独自 save state を持ち、 BestSave (Slot 8) で進捗最良 instance を保持。
+
+3 つの mGBA インスタンスで独立した PPO env を並列実行。 各 port が独自の save state を持ち、 monitor.py が定期的に `BestSave (Slot 8)` で最良 instance を保存。 1 instance が stuck しても他で進捗できる冗長性。
 
 ### 3. Canonical data injection
-maze 形式 map (Brawly Gym 等) で random walk が突破不能な場合、 pokeemerald decomp の `map.bin` (1008 bytes = 18×28×2、 bits 10-11 が collision) を解析して passable/wall を事前注入。 Brawly Gym では **coverage 12.1% → 30%** で BFS path 33 to Brawly 計算可能化、 2 日 chronic stuck を突破。
 
-### 4. iterative root-cause debugging
-記録された patch history (v10.9z269b〜z278 等) は、 chronic stuck 問題に対する真因深掘り pattern を示す:
-- nav 上書きの優先順位問題発見
-- wall_hits 累積による偽 wall 化検出
-- battle menu cycle 中の偽 faint emergence
-- PC heal complete 検出条件の段階的緩和
+迷路型マップ (Brawly Gym 等) では random walk による探索が突破不能でした。 解決策として、 **pokeemerald decompilation** ([pret/pokeemerald](https://github.com/pret/pokeemerald)) から `data/layouts/<MapName>/map.bin` を取得し、 16-bit block format (bits 0-9 metatile、 bits 10-11 collision) を解析、 walkable tile + wall を `exploration_map.json` に事前注入します。
 
-各 patch は targeted fix で副作用最小化を意図 (`patch tower prevention` 警戒)。
+```python
+# tools/canon_map_inject.py の中核
+blocks = struct.unpack(f"<{w*h}H", map_bin_data)
+for cy in range(h):
+    for cx in range(w):
+        coll = (blocks[cy*w + cx] >> 10) & 0x3
+        if coll == 0:
+            passable.add((cx, cy))
+```
 
-## 学習過程の証跡
+Brawly Gym で **coverage 12% → 30%** に改善、 BFS path が Brawly NPC まで到達可能になりました。
 
-`daily_progress/YYYY-MM-DD.md` 形式で日次進捗・反省・教訓を記録。 `memory/feedback_*.md` に user feedback と自分の遵守状態を記録。 これらは ML 開発の試行錯誤と継続改善の証跡。
+### 4. Continuous monitoring + iterative deployment
 
-主要 milestone:
-- **2026-04-XX**: Badge 1 取得 (Roxanne)
-- **2026-05-23**: Badge 2 取得 (Brawly) ← canon data injection 後
-- 進行中: Granite Cave → Badge 3 (Wattson)
+開発中は `monitor.py` を 10 分毎に実行して 3 port 全状態をチェック。 problem 検出時にスクリーンショット + ログから root cause を特定し、 `pokemon_env.py` を patch して即時 deploy → 再起動 → 効果検証、 のループを構築しました。
+
+`mapping_audit.py` で `exploration_map.json` の異常値 (canonical 寸法外の garbage tile) を継続的に検出・自動 purge する仕組みもあります。
+
+## 学習スタック
+
+- **言語**: Python 3.10+
+- **ML**: PyTorch / stable-baselines3 (PPO) / Gymnasium
+- **CV**: 自作 CNN (Squeeze-Excitation residual blocks + Focal Loss + Mixup augmentation)
+- **データ**: pokeemerald decompilation (canonical map data, GPL-licensed)
+- **エミュレータ**: mGBA + 自作 socket bridge (lua script + HTTP wrapper)
+
+## 動作要件
+
+- Windows / macOS / Linux (主に Windows 11 で開発)
+- Python 3.10 以上
+- mGBA 0.10+ ×3 instances
+- Pokemon Emerald ROM (各自で正規入手 — **本リポジトリには含まれません**)
+- HTTP bridge (例: [mgba-http](https://github.com/nikouu/mGBA-http))
 
 ## セットアップ
 
 ```bash
-# 1. ROM 配置 (各自で用意 — repo には含まない)
-# 例: Pokemon Emerald.gba を mGBA で開く
+# 1. clone
+git clone https://github.com/tara0kun/pokemon-rl.git
+cd pokemon-rl
 
-# 2. mGBA × 3 起動 (ports 8888/8889/8890)
-
-# 3. venv 作成
+# 2. venv + 依存 install
 python -m venv poke-rl
-poke-rl/Scripts/activate  # Windows
+poke-rl/Scripts/activate   # Windows (Linux/Mac: source poke-rl/bin/activate)
 pip install -r requirements.txt
 
+# 3. mGBA × 3 を起動し、 各々で Pokemon Emerald ROM を開く + lua socket script load
+#    (詳細は mgba_scripts/ 配下の lua file を参照)
+
 # 4. 学習開始
-PYTHONUNBUFFERED=1 python -u train.py > training_current.log 2>&1 &
+PYTHONUNBUFFERED=1 python -u train.py > training.log 2>&1 &
 
-# 5. 監視
-poke-rl/Scripts/python.exe tools/monitor.py
+# 5. 状態 monitor
+python tools/monitor.py
 ```
-
-詳細手順は [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md)、 動作要件は [`CLAUDE.md`](CLAUDE.md)。
-
-## 注意
-
-- **ROM file は含まれません** (著作権)。 各自で正規入手要。
-- 開発は Windows 11 + Python 3.10 で実施。 mGBA 0.10+ 推奨。
-- `exploration_map.json` は本リポジトリでの学習 8000+ tiles のデータ。 ゼロから始める場合は空 dict で初期化可能。
 
 ## ライセンス
 
-MIT (詳細 LICENSE)
+MIT License (詳細は [LICENSE](LICENSE))
+
+本リポジトリのコードのみが対象。 Pokemon Emerald ROM および任天堂・Game Freak の知的財産権は本リポジトリと一切関係ありません。
+
+## Author
+
+[@tara0kun](https://github.com/tara0kun) — IPUT Tokyo
