@@ -11641,15 +11641,11 @@ class PokemonEmeraldEnv(gym.Env):
                         _e_t2_pre = self._read8(self.ADDR_BATTLE_MON_BASE + self.BATTLE_MON_SIZE + self.BMON_OFF_TYPES + 1)
                         _is_dark = ((_e_t1_pre or 0) == 17 or (_e_t2_pre or 0) == 17)
                         _r116_proactive = _is_dark
-                    # 2026-05-25 v10.9z282: Brawly Gym (3,3) で proactive switch (badges<2)
-                    # 旧: lead Lv41 弱体で battle 開始時に死亡 → BattleSwitch 50% trigger 後 swap も遅い
-                    # 新: (3,3) gym 内 + badges<2 + bcc>=2 で即 swap (Blaziken slot5 で開戦)
+                    # 2026-05-25 v10.9z282/286: Brawly Gym proactive switch
+                    # 2026-05-25 v10.9z287: REVERT - swap_trainee で Blaziken slot 0 配置後は
+                    # proactive switch がジグザグマ等弱体に逆 swap して battle 崩壊
+                    # → 完全 disable、 BattleSwitch (50% HP) のみで自然制御
                     _brawly_proactive = False
-                    if (self._cached_map_group == 3
-                            and self._cached_map_num == 3
-                            and self._cached_badges < 2
-                            and _bcc >= 2):
-                        _brawly_proactive = True
                     _switch_bcc_ok = (_bcc >= 10 and _bcc % 5 == 0) or _r116_proactive or _brawly_proactive
                     if (self._battle_switch_target == -1
                             and self._battle_switch_cooldown <= 0
@@ -21374,7 +21370,14 @@ class PokemonEmeraldEnv(gym.Env):
             _et_trig_mode = "faint_emerg" if _et_faint_emerg else ("heal_stuck" if _et_heal_stuck else "normal")
             print(f"  [Escape-Trig] spc={self._same_pos_count} faint={_et_faint} "
                   f"mode={_et_trig_mode} walk={_et_walk} port={self._port}")
-        if _et_battle_ok and self._eu_walk_remaining > 0:
+        # 2026-05-25 v10.9z285: Stuck-Escape skip at Brawly Gym (3,3)+(11,11)+badges<2
+        # 旧: Stuck-Escape random direction が v10.9z284b Up/A force を上書き → battle 発火せず
+        # 新: (3,3)+(11,11)+badges<2 で Stuck-Escape 完全 skip、 v10.9z284b に委譲
+        _skip_escape_brawly = (self._cached_map_group == 3
+                               and self._cached_map_num == 3
+                               and self.prev_x == 11 and self.prev_y == 11
+                               and self._cached_badges < 2)
+        if _et_battle_ok and self._eu_walk_remaining > 0 and not _skip_escape_brawly:
             import random as _et_rnd
             _et_r = _et_rnd.random()
             # v261ex v2 + v261ey + v261ez: per-map bias + unbiased fallback
