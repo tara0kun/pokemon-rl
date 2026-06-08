@@ -85,8 +85,8 @@ archive/
 # Private AI session context (not for public)
 memory/
 
-# Daily dev journal (private)
-daily_progress/
+# Daily dev journal (private) — legacy only; generic_agent's is tracked
+legacy/daily_progress/
 
 # Runtime save metadata (per-port, regenerable)
 slot4_meta_*.json
