@@ -28,6 +28,7 @@ from .io import EmulatorError, MGBAClient
 
 LOCAL_RECOVERY_STREAK = 3
 API_RESCUE_STREAK = 8
+DIALOG_LOOP_LIMIT = 15  # consecutive dialog_continue without pos change
 
 
 @dataclass
@@ -54,6 +55,7 @@ class AutoLoopState:
     same_map_streak: int = 0
     last_pos: tuple[int, int] | None = None
     last_action: str = ""
+    consecutive_dialog: int = 0
     recovery: local_brain.LocalRecovery = field(
         default_factory=local_brain.LocalRecovery
     )
@@ -113,8 +115,6 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                 state.same_hash_streak += 1
             else:
                 state.same_hash_streak = 0
-                state.in_recovery = False
-                state.recovery.reset()
             state.last_frame_hash = fhash
 
             if state.last_map_key == map_key and gs.saveblock1_valid:
@@ -141,10 +141,25 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                 pos_now is not None and state.last_pos is not None
                 and pos_now != state.last_pos
             )
+            if pos_changed:
+                state.consecutive_dialog = 0
+                state.in_recovery = False
+                state.recovery.reset()
+
+            if decision is None and state.in_recovery:
+                if state.recovery.exhausted():
+                    state.in_recovery = False
+                    state.consecutive_dialog = 0
+                    state.recovery.reset()
+                else:
+                    decision = state.recovery.next()
+                    decision_source = f"dialog-loop→{decision.source}"
+                    state.costs.recovery_steps += 1
 
             if (
                 decision is None
                 and state.same_hash_streak < LOCAL_RECOVERY_STREAK
+                and state.consecutive_dialog < DIALOG_LOOP_LIMIT
             ):
                 rule = local_brain.default_rule_for_state(
                     state.same_map_streak,
@@ -156,6 +171,19 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                     decision = rule
                     decision_source = rule.source
                     state.costs.rule_hits += 1
+                    if "dialog_continue" in rule.source and not pos_changed:
+                        state.consecutive_dialog += 1
+                    else:
+                        state.consecutive_dialog = 0
+
+            if (
+                decision is None
+                and state.consecutive_dialog >= DIALOG_LOOP_LIMIT
+            ):
+                state.in_recovery = True
+                decision = state.recovery.next()
+                decision_source = f"dialog-loop→{decision.source}"
+                state.costs.recovery_steps += 1
 
             if (
                 decision is None

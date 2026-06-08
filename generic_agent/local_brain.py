@@ -116,14 +116,25 @@ class FrameCache:
 
 
 class LocalRecovery:
-    """Deterministic recovery routine when screen is frozen.
+    """Deterministic recovery when screen is frozen.
 
-    State machine:
-      step 0..2: press B (close potential menu / cancel dialog)
-      step 3:    press A (advance dialog)
-      step 4..7: random direction from [Up, Down, Left, Right]
-      step 8+:   give up → caller should escalate to Brain
+    Designed for the common Pokemon stuck modes:
+      a) dialogue cycle from an NPC that keeps re-engaging
+      b) bumping a wall
+      c) menu accidentally opened
+
+    State machine (length 12, then exhausted):
+      step 0..3:   press A (mash through any open dialog/menu) — frames 6
+      step 4..6:   press B (defensively dismiss any leftover menu)
+      step 7..8:   press Down twice (try to walk south away from NPC)
+      step 9..11:  random non-Up direction
+                   (avoids re-triggering north-facing NPCs)
+
+    After step 11 the caller should reset() (consecutive_dialog=0)
+    and try again from cache/rules.
     """
+
+    LENGTH = 12
 
     def __init__(self, seed: int | None = None) -> None:
         self._rng = random.Random(seed)
@@ -133,17 +144,19 @@ class LocalRecovery:
         self._step = 0
 
     def exhausted(self) -> bool:
-        return self._step >= 8
+        return self._step >= self.LENGTH
 
     def next(self) -> LocalDecision:
         s = self._step
         self._step += 1
-        if s <= 2:
-            return LocalDecision("B", 10, source=f"recovery.B[{s}]")
-        if s == 3:
-            return LocalDecision("A", 10, source="recovery.A")
-        d = self._rng.choice(["Up", "Down", "Left", "Right"])
-        return LocalDecision(d, 15, source=f"recovery.rand[{s}]")
+        if s <= 3:
+            return LocalDecision("A", 6, source=f"recovery.A[{s}]")
+        if s <= 6:
+            return LocalDecision("B", 8, source=f"recovery.B[{s}]")
+        if s <= 8:
+            return LocalDecision("Down", 15, source=f"recovery.Down[{s}]")
+        d = self._rng.choice(["Down", "Left", "Right"])
+        return LocalDecision(d, 15, source=f"recovery.rand[{s}]={d}")
 
 
 def default_rule_for_state(
