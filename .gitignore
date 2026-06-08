@@ -103,5 +103,20 @@ docs/MONITORING_GUIDE.md
 docs/KNOWN_RISKS.md
 docs/UNRESOLVED_ISSUES.md
 docs/USER_GUIDE.md
-CLAUDE.md
 PROGRESS.md
+
+# Legacy project — moved 2026-06-08, retained for reference
+# (commented out; user wants to track legacy for portfolio history)
+# legacy/
+
+# Anthropic CLI (downloaded binary, regenerable)
+ant/
+
+# generic_agent runtime artifacts
+generic_agent/logs/
+generic_agent/memory/notes.jsonl
+generic_agent/memory/run_log.jsonl
+generic_agent/memory/frame_cache.json
+generic_agent/__pycache__/
+generic_agent/rom/*.gba
+generic_agent/rom/*.sav
