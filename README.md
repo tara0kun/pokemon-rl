@@ -84,13 +84,21 @@ Pokemon Emerald (GBA) を AI に「画面を見ながら」 プレイさせた�
 │     │                                                     │
 │     ├─── D. Brain LLM "navigate" (Opus 4.8)               │
 │     │      JPG-encoded image (max edge 480, q70)          │
-│     │      + state summary + STUCK warnings               │
+│     │      + state summary + STUCK / STALLED warnings     │
 │     │      + last 8 action history                        │
+│     │      + tile_map summary (tiles seen, blocked_here,  │
+│     │        unexplored_nearby frontier)                  │
 │     │      → JSON {button, reason}                        │
 │     │      result is cached for future hits               │
 │     │                                                     │
 │     └─── E. Brain LLM "rescue" (Opus 4.8)                 │
 │            fires when same screen 8+ turns                │
+│                                                           │
+│   side-channel:                                           │
+│     • TileMap.record_visit / record_attempt every turn    │
+│     • map_stuck_flush every 800 turns on same map         │
+│     • stalled detector (<=3 unique tiles in 100 turns)    │
+│       → force LocalRecovery, $0 deterministic exploration │
 │                                                           │
 │   4. send button to mGBA                                  │
 │   5. log to memory/run_log.jsonl                          │
@@ -102,8 +110,9 @@ Pokemon Emerald (GBA) を AI に「画面を見ながら」 プレイさせた�
 | ファイル | 責務 |
 |---------|------|
 | `auto_loop.py` | メインループ、 budget / state 管理 |
-| `local_brain.py` | FrameCache、 LocalRecovery state machine、 rule 判定 |
-| `rescue_brain.py` | Anthropic API 呼出し、 Opus 4.8 + JSON strict output、 navigate / rescue prompt |
+| `local_brain.py` | FrameCache、 LocalRecovery state machine、 rule 判定、 map-stuck flush |
+| `tile_map.py` | 永続 tile-level collision map (`(map_id, x, y) → {visits, tried, blocked}`)。 frontier 計算 + Brain summary 生成 |
+| `rescue_brain.py` | Anthropic API 呼出し、 Opus 4.8 + JSON strict output、 navigate / rescue prompt、 tile_map summary 注入 |
 | `preprocess.py` | JPG 変換、 frame_hash、 frames_differ |
 | `state.py` | SaveBlock1 pointer 経由で map / pos を RAM read |
 | `io.py` | mGBA socket protocol (`<\|END\|>` terminator) |

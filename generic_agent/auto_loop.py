@@ -22,7 +22,14 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import config, local_brain, memory, preprocess, state as state_mod
+from . import (
+    config,
+    local_brain,
+    memory,
+    preprocess,
+    state as state_mod,
+    tile_map as tile_map_mod,
+)
 from .io import EmulatorError, MGBAClient
 
 
@@ -94,6 +101,7 @@ def run(max_turns: int, budget_usd: float | None) -> int:
         return 1
 
     cache = local_brain.FrameCache()
+    tile_map = tile_map_mod.TileMap()
     state = AutoLoopState()
     use_rescue = True
     try:
@@ -166,6 +174,21 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                 )
                 if len(state.pos_window) > 100:
                     state.pos_window.pop(0)
+                tile_map.record_visit(
+                    gs.map_group, gs.map_num, pos_now[0], pos_now[1]
+                )
+                if (
+                    state.last_pos is not None
+                    and state.last_action in tile_map_mod.DIRECTIONS
+                ):
+                    tile_map.record_attempt(
+                        gs.map_group,
+                        gs.map_num,
+                        state.last_pos[0],
+                        state.last_pos[1],
+                        state.last_action,
+                        moved=(pos_now != state.last_pos),
+                    )
             stalled = (
                 len(state.pos_window) >= 100
                 and len(set(state.pos_window)) <= 3
@@ -297,6 +320,14 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                         f"Loop detected — pick a NEW direction you "
                         f"have NOT tried recently."
                     )
+                if pos_now is not None:
+                    tm_summary = tile_map.summary_for(
+                        gs.map_group,
+                        gs.map_num,
+                        pos_now[0],
+                        pos_now[1],
+                    )
+                    state_summary_full += f" | tile_map: {tm_summary}"
                 try:
                     if kind == "rescue":
                         rb_dec = _rb.call_rescue(
@@ -397,11 +428,13 @@ def run(max_turns: int, budget_usd: float | None) -> int:
 
             if state.turn % 50 == 0:
                 cache.save()
+                tile_map.save()
 
     except KeyboardInterrupt:
         print("\n[stop] keyboard interrupt")
 
     cache.save()
+    tile_map.save()
     c = state.costs
     n = max(1, state.turn)
     print(
