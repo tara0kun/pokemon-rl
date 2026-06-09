@@ -214,7 +214,11 @@ def run(max_turns: int, budget_usd: float | None) -> int:
             bfs_dir: str | None = None
             if force_recovery and pos_now is not None:
                 bfs_dir = tile_map.bfs_frontier_direction(
-                    gs.map_group, gs.map_num, pos_now[0], pos_now[1]
+                    gs.map_group,
+                    gs.map_num,
+                    pos_now[0],
+                    pos_now[1],
+                    prefer="farthest",
                 )
                 if bfs_dir is not None:
                     decision = local_brain.LocalDecision(

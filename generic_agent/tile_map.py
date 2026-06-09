@@ -176,15 +176,20 @@ class TileMap:
         map_num: int,
         cur_x: int,
         cur_y: int,
+        prefer: str = "farthest",
     ) -> str | None:
-        """BFS through visited tiles to the nearest unvisited frontier.
+        """BFS to a chosen unvisited frontier; return first-step direction.
 
-        Returns the first-step direction (Up/Down/Left/Right) toward that
-        frontier, or None if no reachable frontier exists in the current
-        map's visited subgraph.
+        prefer="nearest"   → stop at first frontier reached (cycle 3 behavior).
+        prefer="farthest"  → enumerate all reachable frontiers, return the
+                             first-step direction toward the one with the
+                             largest Manhattan distance from start. Biases
+                             exploration toward the edge of known territory,
+                             which on Pokemon routes correlates with map
+                             borders and grass tiles.
 
-        Walks only along edges NOT in blocked[]. Frontier = neighbor that
-        has no record or visits==0.
+        Walks only along edges NOT in blocked[]. Frontier = neighbor with
+        no record or visits==0.
         """
         mk = self._map_key(map_group, map_num)
         tiles = self._store.get(mk, {})
@@ -201,6 +206,19 @@ class TileMap:
         }
         queue: list[tuple[int, int]] = [start]
 
+        def first_step_toward(node: tuple[int, int]) -> str | None:
+            back = node
+            while True:
+                link = parent.get(back)
+                if link is None:
+                    return None
+                p_pos, p_dir = link
+                if p_pos == start:
+                    return p_dir
+                back = p_pos
+
+        frontiers: list[tuple[tuple[int, int], int]] = []
+
         while queue:
             cur = queue.pop(0)
             cx, cy = cur
@@ -216,18 +234,26 @@ class TileMap:
                     continue
                 parent[n_pos] = (cur, d)
                 n_rec = tiles.get(self._tile_key(*n_pos))
-                if n_rec is None or n_rec.visits == 0:
-                    if cur == start:
-                        return d
-                    back = cur
-                    while True:
-                        link = parent.get(back)
-                        if link is None:
+                is_frontier = n_rec is None or n_rec.visits == 0
+                if is_frontier:
+                    if prefer == "nearest":
+                        if cur == start:
                             return d
-                        p_pos, p_dir = link
-                        if p_pos == start:
-                            return p_dir
-                        back = p_pos
-                queue.append(n_pos)
+                        step = first_step_toward(cur)
+                        return step or d
+                    dist = abs(n_pos[0] - cur_x) + abs(n_pos[1] - cur_y)
+                    frontiers.append((n_pos, dist))
+                else:
+                    queue.append(n_pos)
 
-        return None
+        if not frontiers:
+            return None
+
+        best_node, _ = max(frontiers, key=lambda fd: fd[1])
+        parent_link = parent.get(best_node)
+        if parent_link is None:
+            return None
+        parent_pos, parent_dir = parent_link
+        if parent_pos == start:
+            return parent_dir
+        return first_step_toward(parent_pos)
