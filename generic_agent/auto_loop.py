@@ -28,6 +28,7 @@ from .io import EmulatorError, MGBAClient
 
 LOCAL_RECOVERY_STREAK = 3
 API_RESCUE_STREAK = 8
+DIALOG_LOOP_LIMIT = 15  # consecutive dialog_continue without pos change
 
 
 @dataclass
@@ -54,6 +55,9 @@ class AutoLoopState:
     same_map_streak: int = 0
     last_pos: tuple[int, int] | None = None
     last_action: str = ""
+    consecutive_dialog: int = 0
+    useless_cache_streak: int = 0
+    same_pos_streak: int = 0
     recovery: local_brain.LocalRecovery = field(
         default_factory=local_brain.LocalRecovery
     )
@@ -113,8 +117,6 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                 state.same_hash_streak += 1
             else:
                 state.same_hash_streak = 0
-                state.in_recovery = False
-                state.recovery.reset()
             state.last_frame_hash = fhash
 
             if state.last_map_key == map_key and gs.saveblock1_valid:
@@ -126,8 +128,35 @@ def run(max_turns: int, budget_usd: float | None) -> int:
             decision: local_brain.LocalDecision | None = None
             decision_source = ""
 
+            pos_now = (gs.x, gs.y) if gs.saveblock1_valid else None
+            pos_changed = (
+                pos_now is not None and state.last_pos is not None
+                and pos_now != state.last_pos
+            )
+            if pos_changed:
+                state.consecutive_dialog = 0
+                state.in_recovery = False
+                state.recovery.reset()
+                state.same_pos_streak = 0
+            elif pos_now is not None:
+                state.same_pos_streak += 1
+
             cached = cache.lookup(fhash, gs.map_group, gs.map_num)
-            if cached and not state.in_recovery:
+            useless_now = (
+                cached is not None
+                and not pos_changed
+                and state.last_action == cached.button
+            )
+            if useless_now:
+                state.useless_cache_streak += 1
+            else:
+                state.useless_cache_streak = 0
+
+            if (
+                cached
+                and not state.in_recovery
+                and state.useless_cache_streak < 5
+            ):
                 decision = local_brain.LocalDecision(
                     button=cached.button,
                     frames=cached.frames,
@@ -135,16 +164,30 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                 )
                 state.costs.cache_hits += 1
                 decision_source = decision.source
+            elif (
+                cached
+                and state.useless_cache_streak >= 5
+            ):
+                cache.forget(fhash, gs.map_group, gs.map_num)
+                state.useless_cache_streak = 0
+                state.consecutive_dialog = max(
+                    state.consecutive_dialog, DIALOG_LOOP_LIMIT
+                )
 
-            pos_now = (gs.x, gs.y) if gs.saveblock1_valid else None
-            pos_changed = (
-                pos_now is not None and state.last_pos is not None
-                and pos_now != state.last_pos
-            )
+            if decision is None and state.in_recovery:
+                if state.recovery.exhausted():
+                    state.in_recovery = False
+                    state.consecutive_dialog = 0
+                    state.recovery.reset()
+                else:
+                    decision = state.recovery.next()
+                    decision_source = f"dialog-loop→{decision.source}"
+                    state.costs.recovery_steps += 1
 
             if (
                 decision is None
                 and state.same_hash_streak < LOCAL_RECOVERY_STREAK
+                and state.consecutive_dialog < DIALOG_LOOP_LIMIT
             ):
                 rule = local_brain.default_rule_for_state(
                     state.same_map_streak,
@@ -156,6 +199,19 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                     decision = rule
                     decision_source = rule.source
                     state.costs.rule_hits += 1
+                    if "dialog_continue" in rule.source and not pos_changed:
+                        state.consecutive_dialog += 1
+                    else:
+                        state.consecutive_dialog = 0
+
+            if (
+                decision is None
+                and state.consecutive_dialog >= DIALOG_LOOP_LIMIT
+            ):
+                state.in_recovery = True
+                decision = state.recovery.next()
+                decision_source = f"dialog-loop→{decision.source}"
+                state.costs.recovery_steps += 1
 
             if (
                 decision is None
@@ -173,18 +229,32 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                 if budget_usd and state.costs.total_usd >= budget_usd:
                     return None
                 from . import rescue_brain as _rb
+                state_summary_full = gs.short()
+                if state.same_pos_streak >= 5:
+                    state_summary_full += (
+                        f" | STUCK: same pos for "
+                        f"{state.same_pos_streak} turns "
+                        f"(last action '{state.last_action}' did "
+                        f"NOT move you — that direction is BLOCKED, "
+                        f"try a different one)"
+                    )
+                if state.same_map_streak >= 30:
+                    state_summary_full += (
+                        f" | same map for {state.same_map_streak} turns"
+                    )
                 try:
                     if kind == "rescue":
                         rb_dec = _rb.call_rescue(
                             screenshot_png=shot,
-                            state_summary=gs.short(),
+                            state_summary=state_summary_full,
                             same_map_streak=state.same_map_streak,
                         )
                         state.costs.rescue_calls += 1
                     else:
                         rb_dec = _rb.call_navigate(
                             screenshot_png=shot,
-                            state_summary=gs.short(),
+                            state_summary=state_summary_full,
+                            last_actions=state.history[-8:],
                         )
                         state.costs.navigate_calls += 1
                 except Exception as exc:

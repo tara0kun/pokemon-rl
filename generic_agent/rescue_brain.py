@@ -26,7 +26,8 @@ VALID_BUTTONS = {
     "Up", "Down", "Left", "Right", "L", "R",
 }
 
-MODEL_RESCUE = "claude-haiku-4-5"
+MODEL_RESCUE = "claude-opus-4-8"
+MODEL_HAIKU = "claude-haiku-4-5"
 MAX_OUTPUT_TOKENS = 120
 
 SYSTEM_PROMPT_RESCUE = (
@@ -39,13 +40,34 @@ SYSTEM_PROMPT_RESCUE = (
 )
 
 SYSTEM_PROMPT_NAVIGATE = (
-    "You drive an automated Pokemon Emerald agent. Pick the next "
-    "single button press based on the screenshot. "
-    'Reply ONLY with JSON: {"button": "<A|B|Start|Select|Up|Down|Left|Right>", '
-    '"reason": "<<= 12 words>"}. '
-    "Priorities: advance dialogue with A; for navigation in towns/routes "
-    "head north to leave; in battle attack with A; in menus use B to "
-    "back out unless you need it. No prose."
+    "You pick ONE button press for a Pokemon Emerald agent. "
+    'Reply ONLY: {"button": "<A|B|Up|Down|Left|Right|Start|Select>", '
+    '"reason": "<<= 12 words>"}\n'
+    "GAME GEOGRAPHY (Pokemon Emerald):\n"
+    "- Littleroot Town (Mishiro): starting town. Player house is "
+    "  upper-left, Brendan/May house upper-right, Birch's Lab south-"
+    "  center. Route 101 EXIT is at the NORTH of the town.\n"
+    "- Route 101 connects Littleroot (south) to Oldale (north).\n"
+    "- Goal sequence: 1) Wake at home 2) Mom dialog 3) Visit Birch's "
+    "  Lab (assistant says Birch is on Route 101) 4) Try to leave "
+    "  via NORTH exit 5) Birch chased by Poochyena cutscene 6) Pick "
+    "  starter from his bag 7) Battle Poochyena 8) Birch leads back "
+    "  to Lab 9) Receive starter + Pokedex 10) Head NORTH through "
+    "  Route 101, 102 to Petalburg, then north to Rustboro Gym.\n"
+    "MECHANICS:\n"
+    "- Building EXITS: south doors (green rectangle near doormat). "
+    "  Walk Down to reach.\n"
+    "- Town EXITS: walk to the appropriate edge (e.g. NORTH to leave "
+    "  Littleroot for Route 101).\n"
+    "- Press A to talk to an NPC one tile in front of you.\n"
+    "- Dialog auto-advances with A; never press direction during "
+    "  dialog or it will be eaten.\n"
+    "- In battle: Fight = A. Cursor on attack = A. Run from wild = "
+    "  Down then Right then A.\n"
+    "- If you bump a wall, switch direction; do NOT repeat the same "
+    "  failed move.\n"
+    "- Watch the 'Recent actions' list — if you have pressed the same "
+    "  direction many times with no map change, try perpendicular."
 )
 
 SYSTEM_PROMPT = SYSTEM_PROMPT_RESCUE  # backward compat
@@ -64,10 +86,10 @@ class RescueDecision:
 
     def cost_usd(self) -> float:
         return (
-            self.input_tokens * 1.0 / 1_000_000
-            + self.output_tokens * 5.0 / 1_000_000
-            + self.cache_read_tokens * 0.1 / 1_000_000
-            + self.cache_creation_tokens * 1.25 / 1_000_000
+            self.input_tokens * 5.0 / 1_000_000
+            + self.output_tokens * 25.0 / 1_000_000
+            + self.cache_read_tokens * 0.5 / 1_000_000
+            + self.cache_creation_tokens * 6.25 / 1_000_000
         )
 
 
@@ -146,8 +168,16 @@ def _call_haiku(
 def call_navigate(
     screenshot_png: Path,
     state_summary: str = "",
+    last_actions: list[str] | None = None,
 ) -> RescueDecision:
-    user_text = f"State: {state_summary or '(none)'}\nPick the next button."
+    parts = [f"State: {state_summary or '(none)'}"]
+    if last_actions:
+        parts.append(
+            "Recent actions (oldest→newest): "
+            + ",".join(last_actions[-8:])
+        )
+    parts.append("Pick the next button.")
+    user_text = "\n".join(parts)
     response, image_bytes, fhash = _call_haiku(
         screenshot_png, SYSTEM_PROMPT_NAVIGATE, user_text
     )
