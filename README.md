@@ -69,6 +69,7 @@ Pokemon Emerald (GBA) を AI に「画面を見ながら」 プレイさせた�
 │  per turn:                                                │
 │   1. take screenshot, hash it (64x64 MD5)                 │
 │   2. read SaveBlock1 → map_group, map_num, x, y           │
+│      + probe gBattleTypeFlags → in_battle, battle_flags   │
 │   3. layered decision (first match wins):                 │
 │                                                           │
 │     ┌─── A. FrameCache hit  →  cached button ($0)         │
@@ -100,6 +101,8 @@ Pokemon Emerald (GBA) を AI に「画面を見ながら」 プレイさせた�
 │     • stalled detector (<=3 unique tiles in 100 turns)    │
 │       → 1st: TileMap.bfs_frontier_direction (free, exact) │
 │       → 2nd: force LocalRecovery, $0 deterministic walk   │
+│     • battle short-circuit: in_battle → press A ($0)      │
+│       (battle UI ignored by tile_map / BFS planner)       │
 │                                                           │
 │   4. send button to mGBA                                  │
 │   5. log to memory/run_log.jsonl                          │
@@ -115,7 +118,7 @@ Pokemon Emerald (GBA) を AI に「画面を見ながら」 プレイさせた�
 | `tile_map.py` | 永続 tile-level collision map (`(map_id, x, y) → {visits, tried, blocked}`)。 frontier 計算 + Brain summary 生成 + BFS frontier finder (deterministic 未探索方向) |
 | `rescue_brain.py` | Anthropic API 呼出し、 Opus 4.8 + JSON strict output、 navigate / rescue prompt、 tile_map summary 注入 |
 | `preprocess.py` | JPG 変換、 frame_hash、 frames_differ |
-| `state.py` | SaveBlock1 pointer 経由で map / pos を RAM read |
+| `state.py` | SaveBlock1 pointer 経由で map / pos を RAM read + battle 検出 (gBattleTypeFlags 候補アドレス probing) |
 | `io.py` | mGBA socket protocol (`<\|END\|>` terminator) |
 | `memory.py` | notes.jsonl + run_log.jsonl 永続化 |
 | `manual.py` | デバッグ用手動 1-shot 操作 (ボタン送信 + state snapshot) |

@@ -209,6 +209,7 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                 stalled
                 and state.same_map_streak >= 50
                 and not state.in_recovery
+                and not gs.in_battle
             )
             bfs_dir: str | None = None
             if force_recovery and pos_now is not None:
@@ -226,6 +227,13 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                     force_recovery = False
             if force_recovery:
                 state.consecutive_dialog = DIALOG_LOOP_LIMIT
+
+            if gs.in_battle and decision is None:
+                decision = local_brain.LocalDecision(
+                    button="A", frames=8, source="battle.A"
+                )
+                decision_source = decision.source
+                state.costs.rule_hits += 1
 
             if (
                 cached
