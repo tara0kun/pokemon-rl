@@ -29,6 +29,7 @@ from .io import EmulatorError, MGBAClient
 LOCAL_RECOVERY_STREAK = 3
 API_RESCUE_STREAK = 8
 DIALOG_LOOP_LIMIT = 15  # consecutive dialog_continue without pos change
+MAP_STUCK_FLUSH_TURNS = 800  # flush this map's cache after N turns stuck on it
 
 
 @dataclass
@@ -58,6 +59,9 @@ class AutoLoopState:
     consecutive_dialog: int = 0
     useless_cache_streak: int = 0
     same_pos_streak: int = 0
+    pos_window: list[tuple[int, int, int, int]] = field(
+        default_factory=list
+    )
     recovery: local_brain.LocalRecovery = field(
         default_factory=local_brain.LocalRecovery
     )
@@ -119,11 +123,26 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                 state.same_hash_streak = 0
             state.last_frame_hash = fhash
 
-            if state.last_map_key == map_key and gs.saveblock1_valid:
-                state.same_map_streak += 1
-            else:
-                state.same_map_streak = 0
-            state.last_map_key = map_key
+            if gs.saveblock1_valid:
+                if state.last_map_key == map_key:
+                    state.same_map_streak += 1
+                else:
+                    state.same_map_streak = 0
+                state.last_map_key = map_key
+            # else: transition / pre-save — keep state unchanged
+
+            if (
+                state.same_map_streak > 0
+                and state.same_map_streak % MAP_STUCK_FLUSH_TURNS == 0
+                and gs.saveblock1_valid
+            ):
+                removed = cache.flush_map(gs.map_group, gs.map_num)
+                if removed > 0:
+                    print(
+                        f"  [flush] map {map_key} stuck "
+                        f"{state.same_map_streak} turns "
+                        f"→ purged {removed} cache entries"
+                    )
 
             decision: local_brain.LocalDecision | None = None
             decision_source = ""
@@ -141,6 +160,17 @@ def run(max_turns: int, budget_usd: float | None) -> int:
             elif pos_now is not None:
                 state.same_pos_streak += 1
 
+            if pos_now is not None:
+                state.pos_window.append(
+                    (gs.map_group, gs.map_num, pos_now[0], pos_now[1])
+                )
+                if len(state.pos_window) > 100:
+                    state.pos_window.pop(0)
+            stalled = (
+                len(state.pos_window) >= 100
+                and len(set(state.pos_window)) <= 3
+            )
+
             cached = cache.lookup(fhash, gs.map_group, gs.map_num)
             useless_now = (
                 cached is not None
@@ -152,10 +182,19 @@ def run(max_turns: int, budget_usd: float | None) -> int:
             else:
                 state.useless_cache_streak = 0
 
+            force_recovery = (
+                stalled
+                and state.same_map_streak >= 50
+                and not state.in_recovery
+            )
+            if force_recovery:
+                state.consecutive_dialog = DIALOG_LOOP_LIMIT
+
             if (
                 cached
                 and not state.in_recovery
                 and state.useless_cache_streak < 5
+                and not force_recovery
             ):
                 decision = local_brain.LocalDecision(
                     button=cached.button,
@@ -241,6 +280,22 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                 if state.same_map_streak >= 30:
                     state_summary_full += (
                         f" | same map for {state.same_map_streak} turns"
+                    )
+                if state.same_map_streak >= 200:
+                    state_summary_full += (
+                        f" — you have been ONLY on map {map_key} "
+                        f"for the last {state.same_map_streak} turns. "
+                        f"You MUST find a way to enter a different map "
+                        f"(town border, building door, or stair)."
+                    )
+                if stalled:
+                    uniq = sorted(set(state.pos_window))
+                    state_summary_full += (
+                        f" | STALLED: in the last "
+                        f"{len(state.pos_window)} turns you visited "
+                        f"only {len(uniq)} tile(s): {uniq[:5]}. "
+                        f"Loop detected — pick a NEW direction you "
+                        f"have NOT tried recently."
                     )
                 try:
                     if kind == "rescue":

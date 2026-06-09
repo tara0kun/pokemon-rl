@@ -93,6 +93,19 @@ class FrameCache:
             entry.last_used_at = time.time()
         return entry
 
+    def flush_map(self, map_group: int, map_num: int) -> int:
+        """Drop every entry whose key matches the given map.
+
+        Returns the number of entries removed. Used when an agent is
+        stuck on one map for so long that the cache is reinforcing
+        wrong moves — clearing forces fresh Brain calls.
+        """
+        prefix = f"{map_group}-{map_num}-"
+        keys = [k for k in self._store if k.startswith(prefix)]
+        for k in keys:
+            self._store.pop(k, None)
+        return len(keys)
+
     def remember(
         self,
         fhash: str,
