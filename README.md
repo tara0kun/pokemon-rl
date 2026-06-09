@@ -115,7 +115,7 @@ Pokemon Emerald (GBA) を AI に「画面を見ながら」 プレイさせた�
 |---------|------|
 | `auto_loop.py` | メインループ、 budget / state 管理 |
 | `local_brain.py` | FrameCache、 LocalRecovery state machine、 rule 判定、 map-stuck flush |
-| `tile_map.py` | 永続 tile-level collision map (`(map_id, x, y) → {visits, tried, blocked}`)。 frontier 計算 + Brain summary 生成 + BFS frontier finder (deterministic 未探索方向) |
+| `tile_map.py` | 永続 tile-level collision map (`(map_id, x, y) → {visits, tried, blocked}`)。 frontier 計算 + Brain summary 生成 + BFS frontier finder (`prefer='nearest'` / `'farthest'`、 default farthest で既知エリアの edge を狙う) |
 | `rescue_brain.py` | Anthropic API 呼出し、 Opus 4.8 + JSON strict output、 navigate / rescue prompt、 tile_map summary 注入 |
 | `preprocess.py` | JPG 変換、 frame_hash、 frames_differ |
 | `state.py` | SaveBlock1 pointer 経由で map / pos を RAM read + battle 検出 (gBattleTypeFlags 候補アドレス probing) |
