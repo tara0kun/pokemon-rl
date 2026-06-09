@@ -210,6 +210,20 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                 and state.same_map_streak >= 50
                 and not state.in_recovery
             )
+            bfs_dir: str | None = None
+            if force_recovery and pos_now is not None:
+                bfs_dir = tile_map.bfs_frontier_direction(
+                    gs.map_group, gs.map_num, pos_now[0], pos_now[1]
+                )
+                if bfs_dir is not None:
+                    decision = local_brain.LocalDecision(
+                        button=bfs_dir,
+                        frames=15,
+                        source=f"bfs_frontier({bfs_dir})",
+                    )
+                    decision_source = decision.source
+                    state.costs.rule_hits += 1
+                    force_recovery = False
             if force_recovery:
                 state.consecutive_dialog = DIALOG_LOOP_LIMIT
 

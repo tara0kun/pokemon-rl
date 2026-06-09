@@ -169,3 +169,65 @@ class TileMap:
         else:
             parts.append("no_nearby_unexplored")
         return " ".join(parts)
+
+    def bfs_frontier_direction(
+        self,
+        map_group: int,
+        map_num: int,
+        cur_x: int,
+        cur_y: int,
+    ) -> str | None:
+        """BFS through visited tiles to the nearest unvisited frontier.
+
+        Returns the first-step direction (Up/Down/Left/Right) toward that
+        frontier, or None if no reachable frontier exists in the current
+        map's visited subgraph.
+
+        Walks only along edges NOT in blocked[]. Frontier = neighbor that
+        has no record or visits==0.
+        """
+        mk = self._map_key(map_group, map_num)
+        tiles = self._store.get(mk, {})
+        if not tiles:
+            return None
+
+        start = (cur_x, cur_y)
+        start_rec = tiles.get(self._tile_key(cur_x, cur_y))
+        if start_rec is None:
+            return None
+
+        parent: dict[tuple[int, int], tuple[tuple[int, int], str] | None] = {
+            start: None,
+        }
+        queue: list[tuple[int, int]] = [start]
+
+        while queue:
+            cur = queue.pop(0)
+            cx, cy = cur
+            rec = tiles.get(self._tile_key(cx, cy))
+            if rec is None:
+                continue
+
+            for d, (dx, dy) in DELTA.items():
+                if d in rec.blocked:
+                    continue
+                n_pos = (cx + dx, cy + dy)
+                if n_pos in parent:
+                    continue
+                parent[n_pos] = (cur, d)
+                n_rec = tiles.get(self._tile_key(*n_pos))
+                if n_rec is None or n_rec.visits == 0:
+                    if cur == start:
+                        return d
+                    back = cur
+                    while True:
+                        link = parent.get(back)
+                        if link is None:
+                            return d
+                        p_pos, p_dir = link
+                        if p_pos == start:
+                            return p_dir
+                        back = p_pos
+                queue.append(n_pos)
+
+        return None
