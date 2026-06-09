@@ -116,6 +116,7 @@ Pokemon Emerald (GBA) を AI に「画面を見ながら」 プレイさせた�
 | `auto_loop.py` | メインループ、 budget / state 管理 |
 | `local_brain.py` | FrameCache、 LocalRecovery state machine、 rule 判定、 map-stuck flush |
 | `tile_map.py` | 永続 tile-level collision map (`(map_id, x, y) → {visits, tried, blocked}`)。 frontier 計算 + Brain summary 生成 + BFS frontier finder (`prefer='nearest'` / `'farthest'`、 default farthest で既知エリアの edge を狙う) |
+| `story_state.py` | map 訪問履歴から story flags (mom_done, lab_visited, starter_received, oldale_reached 等) を推定。 `hint_for()` が Brain navigate prompt 先頭に「[GOAL] ...」 を 1 行で注入 |
 | `rescue_brain.py` | Anthropic API 呼出し、 Opus 4.8 + JSON strict output、 navigate / rescue prompt、 tile_map summary 注入 |
 | `preprocess.py` | JPG 変換、 frame_hash、 frames_differ |
 | `state.py` | SaveBlock1 pointer 経由で map / pos を RAM read + battle 検出 (gBattleTypeFlags 候補アドレス probing) |
@@ -156,7 +157,8 @@ Pokemon Emerald (GBA) を AI に「画面を見ながら」 プレイさせた�
 - ✅ Birch + Poochyena 救援 cutscene 完走
 - ✅ Starter 選択 + Poochyena 戦闘勝利
 - ✅ Birch Lab で正式に starter + ポケモン図鑑 受領
-- ✅ 11 unique map 訪問 (Littleroot / Birch Lab / Player house 1F / Route 101 / 短時間 (3,0) (6,0) (0,4))
+- ✅ **Oldale Town (map 3,0) 到達** (cycle 6 で story hint 注入後)
+- ✅ 11+ unique map 訪問
 
 ---
 

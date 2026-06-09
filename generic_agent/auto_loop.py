@@ -28,6 +28,7 @@ from . import (
     memory,
     preprocess,
     state as state_mod,
+    story_state,
     tile_map as tile_map_mod,
 )
 from .io import EmulatorError, MGBAClient
@@ -74,6 +75,9 @@ class AutoLoopState:
     )
     in_recovery: bool = False
     costs: AutoCosts = field(default_factory=AutoCosts)
+    map_visit_counts: dict[tuple[int, int], int] = field(
+        default_factory=dict
+    )
 
 
 def take_screenshot(client: MGBAClient, turn: int) -> Path:
@@ -137,6 +141,9 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                 else:
                     state.same_map_streak = 0
                 state.last_map_key = map_key
+                state.map_visit_counts[map_key] = (
+                    state.map_visit_counts.get(map_key, 0) + 1
+                )
             # else: transition / pre-save — keep state unchanged
 
             if (
@@ -318,6 +325,11 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                     return None
                 from . import rescue_brain as _rb
                 state_summary_full = gs.short()
+                story_flags = story_state.infer_flags(state.map_visit_counts)
+                story_hint = story_state.hint_for(story_flags)
+                state_summary_full = (
+                    f"[GOAL] {story_hint} | " + state_summary_full
+                )
                 if state.same_pos_streak >= 5:
                     state_summary_full += (
                         f" | STUCK: same pos for "
