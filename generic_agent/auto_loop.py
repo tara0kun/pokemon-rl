@@ -115,6 +115,10 @@ def run(max_turns: int, budget_usd: float | None) -> int:
 
     cache = local_brain.FrameCache()
     tile_map = tile_map_mod.TileMap()
+    cleaned = tile_map.cleanup_phantom_walls()
+    if cleaned:
+        print(f"[start] cleared {cleaned} phantom 4-way-blocked tiles")
+        tile_map.save()
     path_memory = path_memory_mod.TransitionMemory()
     surveyor = explorer_mod.MapSurveyor(tile_map)
     state = AutoLoopState()
@@ -255,6 +259,12 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                     state.last_pos is not None
                     and state.last_action in tile_map_mod.DIRECTIONS
                 ):
+                    overworld_clean = (
+                        not gs.in_battle
+                        and state.consecutive_dialog == 0
+                        and not state.in_recovery
+                        and state.same_hash_streak < LOCAL_RECOVERY_STREAK
+                    )
                     tile_map.record_attempt(
                         gs.map_group,
                         gs.map_num,
@@ -262,6 +272,7 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                         state.last_pos[1],
                         state.last_action,
                         moved=(pos_now != state.last_pos),
+                        overworld=overworld_clean,
                     )
             stalled = (
                 len(state.pos_window) >= 100
@@ -592,9 +603,15 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                     parts.append(
                         f"under-explored: {low_visit_maps[:3]}"
                     )
+                avoid_set = (
+                    {state.suppress_dir}
+                    if state.suppress_dir is not None
+                    else None
+                )
                 path_line = path_memory.summary_for(
                     gs.map_group, gs.map_num,
                     blocked_first_step=cur_blocked,
+                    avoid_first=avoid_set,
                 )
                 if not path_line.startswith("no known"):
                     parts.append(path_line)
@@ -708,6 +725,12 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                 )
 
             if state.turn % 50 == 0:
+                decayed = tile_map.decay(gs.map_group, gs.map_num)
+                if decayed > 0:
+                    print(
+                        f"  [decay] map={map_key} "
+                        f"relaxed {decayed} over-blocked tiles"
+                    )
                 cache.save()
                 tile_map.save()
                 path_memory.save()

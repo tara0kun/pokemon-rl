@@ -101,18 +101,28 @@ class TransitionMemory:
         cur_g: int,
         cur_n: int,
         blocked_first_step: list[str] | None = None,
+        avoid_first: set[str] | None = None,
     ) -> str:
-        """One-line prompt fragment of known exits. Paths whose first step is
-        currently blocked at this tile are filtered out — Brain must not be
-        told to press a button known to fail."""
+        """One-line prompt fragment of known exits.
+
+        `blocked_first_step` removes paths whose first step is wall-blocked
+        at the current tile. `avoid_first` removes paths whose first step
+        would re-cross a border we JUST crossed (caller passes the current
+        suppress_dir). Both prevent the Brain from being told to press a
+        button that is known to fail or known to reverse progress.
+        """
         blocked = set(blocked_first_step or [])
+        avoid = set(avoid_first or [])
         fk = self._key(cur_g, cur_n)
         inner = self._store.get(fk, {})
         if not inner:
             return "no known transitions out of this map yet"
         pieces = []
         for tk, paths in inner.items():
-            usable = [p for p in paths if p and p[0] not in blocked]
+            usable = [
+                p for p in paths
+                if p and p[0] not in blocked and p[0] not in avoid
+            ]
             if not usable:
                 continue
             best = min(usable, key=len)
