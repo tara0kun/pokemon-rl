@@ -39,7 +39,7 @@ SYSTEM_PROMPT_RESCUE = (
     "button that is most likely to make progress."
 )
 
-SYSTEM_PROMPT_NAVIGATE = (
+SYSTEM_PROMPT_NAVIGATE_LONG = (
     "You pick ONE button press for a Pokemon Emerald agent. "
     'Reply ONLY: {"button": "<A|B|Up|Down|Left|Right|Start|Select>", '
     '"reason": "<<= 12 words>"}\n'
@@ -54,6 +54,15 @@ SYSTEM_PROMPT_NAVIGATE = (
     "  starter from his bag 7) Battle Poochyena 8) Birch leads back "
     "  to Lab 9) Receive starter + Pokedex 10) Head NORTH through "
     "  Route 101, 102 to Petalburg, then north to Rustboro Gym.\n"
+    "PATH MEMORY — read this if present:\n"
+    "- A 'path_memory: known exits' fragment lists button sequences "
+    "  that PREVIOUSLY led from this map to another map. Tokens are "
+    "  compact: U=Up, D=Down, L=Left, R=Right, a=A, b=B.\n"
+    "- Example: 'to 3-0 via UUUa' means Up, Up, Up, A took you to "
+    "  map (3, 0). If the GOAL hint says you want a map listed here, "
+    "  play the first character of that sequence as your action.\n"
+    "- If the same map appears as 'no known transitions', you have "
+    "  not yet found an exit and must explore.\n"
     "BATTLE MODE: if the State line ends with [in_battle], you are "
     "  in a Pokemon battle. Ignore the tile_map / unexplored_nearby — "
     "  those refer to the overworld. In battle: A confirms the current "
@@ -85,6 +94,19 @@ SYSTEM_PROMPT_NAVIGATE = (
     "  failed move.\n"
     "- Watch the 'Recent actions' list — if you have pressed the same "
     "  direction many times with no map change, try perpendicular."
+)
+
+SYSTEM_PROMPT_NAVIGATE = (
+    "Pick ONE button for a Pokemon Emerald agent. Reply ONLY JSON: "
+    '{"button":"<A|B|Up|Down|Left|Right|Start|Select>",'
+    '"reason":"<short>"}.\n'
+    "Hard rules (follow even if other hints conflict):\n"
+    "1. blocked_here directions — NEVER pick them, they will not move.\n"
+    "2. unexplored_nearby tiles — prefer moving toward them.\n"
+    "3. In dialog (text box visible) — press A, never a direction.\n"
+    "4. [in_battle] — press A.\n"
+    "Goal: leave the current map by reaching an edge that has not "
+    "been confirmed blocked. Do not stand still."
 )
 
 SYSTEM_PROMPT = SYSTEM_PROMPT_RESCUE  # backward compat
@@ -154,14 +176,18 @@ def _call_haiku(
     screenshot_png: Path,
     system_prompt: str,
     user_text: str,
+    use_thinking: bool = False,
 ) -> tuple[Any, int, str]:
     client = _get_client()
     image_block, image_bytes, fhash = preprocess.png_path_to_jpeg_block(
         screenshot_png
     )
+    extra: dict[str, Any] = {}
+    if use_thinking and MODEL_RESCUE.startswith("claude-opus"):
+        extra["thinking"] = {"type": "adaptive"}
     response = client.messages.create(
         model=MODEL_RESCUE,
-        max_tokens=MAX_OUTPUT_TOKENS,
+        max_tokens=MAX_OUTPUT_TOKENS + (512 if use_thinking else 0),
         system=[
             {
                 "type": "text",
@@ -178,6 +204,7 @@ def _call_haiku(
                 ],
             }
         ],
+        **extra,
     )
     return response, image_bytes, fhash
 
@@ -186,17 +213,20 @@ def call_navigate(
     screenshot_png: Path,
     state_summary: str = "",
     last_actions: list[str] | None = None,
+    use_thinking: bool = False,
 ) -> RescueDecision:
     parts = [f"State: {state_summary or '(none)'}"]
     if last_actions:
         parts.append(
-            "Recent actions (oldest→newest): "
-            + ",".join(last_actions[-8:])
+            "Recent: " + ",".join(last_actions[-6:])
         )
-    parts.append("Pick the next button.")
+    parts.append("Button?")
     user_text = "\n".join(parts)
     response, image_bytes, fhash = _call_haiku(
-        screenshot_png, SYSTEM_PROMPT_NAVIGATE, user_text
+        screenshot_png,
+        SYSTEM_PROMPT_NAVIGATE_LONG,
+        user_text,
+        use_thinking=use_thinking,
     )
     return _decision_from_response(response, image_bytes, fhash)
 

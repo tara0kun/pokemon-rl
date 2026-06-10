@@ -170,6 +170,70 @@ class TileMap:
             parts.append("no_nearby_unexplored")
         return " ".join(parts)
 
+    def ascii_grid(
+        self,
+        map_group: int,
+        map_num: int,
+        cur_x: int | None = None,
+        cur_y: int | None = None,
+    ) -> str:
+        """Compact map dump for debugging / progress visualization.
+
+        Symbols:
+          @ current position    . visited tile (no all-direction info)
+          # all 4 dirs blocked  v Up blocked   ^ Down blocked
+          > Left blocked        < Right blocked
+          ? recorded but unvisited (visits==0)
+          space  no record yet
+        """
+        mk = self._map_key(map_group, map_num)
+        tiles = self._store.get(mk, {})
+        if not tiles:
+            return f"[map {mk}] no tiles known"
+
+        coords: list[tuple[int, int]] = []
+        for tk in tiles:
+            try:
+                x, y = (int(v) for v in tk.split(","))
+            except ValueError:
+                continue
+            coords.append((x, y))
+        if not coords:
+            return f"[map {mk}] no tile coords"
+        min_x = min(x for x, _ in coords)
+        max_x = max(x for x, _ in coords)
+        min_y = min(y for _, y in coords)
+        max_y = max(y for _, y in coords)
+
+        lines = [f"[map {mk}] {len(tiles)} tiles, x={min_x}-{max_x} y={min_y}-{max_y}"]
+        for y in range(min_y, max_y + 1):
+            row_chars: list[str] = []
+            for x in range(min_x, max_x + 1):
+                if cur_x is not None and (x, y) == (cur_x, cur_y):
+                    row_chars.append("@")
+                    continue
+                rec = tiles.get(self._tile_key(x, y))
+                if rec is None:
+                    row_chars.append(" ")
+                elif rec.visits == 0:
+                    row_chars.append("?")
+                else:
+                    blocked = set(rec.blocked)
+                    if {"Up", "Down", "Left", "Right"} <= blocked:
+                        row_chars.append("#")
+                    elif "Up" in blocked:
+                        row_chars.append("v")
+                    elif "Down" in blocked:
+                        row_chars.append("^")
+                    elif "Left" in blocked:
+                        row_chars.append(">")
+                    elif "Right" in blocked:
+                        row_chars.append("<")
+                    else:
+                        row_chars.append(".")
+            lines.append(f"  y={y:3d}: {''.join(row_chars)}")
+        return "\n".join(lines)
+
     def bfs_frontier_direction(
         self,
         map_group: int,

@@ -24,8 +24,10 @@ from pathlib import Path
 
 from . import (
     config,
+    explorer as explorer_mod,
     local_brain,
     memory,
+    path_memory as path_memory_mod,
     preprocess,
     state as state_mod,
     story_state,
@@ -107,6 +109,8 @@ def run(max_turns: int, budget_usd: float | None) -> int:
 
     cache = local_brain.FrameCache()
     tile_map = tile_map_mod.TileMap()
+    path_memory = path_memory_mod.TransitionMemory()
+    surveyor = explorer_mod.MapSurveyor(tile_map)
     state = AutoLoopState()
     use_rescue = True
     try:
@@ -144,6 +148,17 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                     prior_count = state.map_visit_counts.get(map_key, 0)
                     if prior_count == 0:
                         state.new_map_grace = 20
+                    if state.last_map_key is not None:
+                        recent_buttons = [
+                            h.split("(")[0] for h in state.history[-12:]
+                        ]
+                        path_memory.record_transition(
+                            state.last_map_key[0],
+                            state.last_map_key[1],
+                            map_key[0],
+                            map_key[1],
+                            recent_buttons,
+                        )
                 state.last_map_key = map_key
                 state.map_visit_counts[map_key] = (
                     state.map_visit_counts.get(map_key, 0) + 1
@@ -253,11 +268,47 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                 state.costs.rule_hits += 1
 
             if (
-                cached
+                decision is None
+                and pos_now is not None
+                and not gs.in_battle
+                and not state.in_recovery
+            ):
+                survey_dir = surveyor.maybe_step(
+                    gs.map_group, gs.map_num,
+                    pos_now[0], pos_now[1],
+                    state.map_visit_counts.get(map_key, 0),
+                    state.same_map_streak,
+                )
+                if survey_dir is not None:
+                    decision = local_brain.LocalDecision(
+                        button=survey_dir,
+                        frames=15,
+                        source=f"survey({survey_dir})",
+                    )
+                    decision_source = decision.source
+                    state.costs.rule_hits += 1
+
+            cache_blocked_here = False
+            if cached and pos_now is not None:
+                mk_cur = tile_map._map_key(gs.map_group, gs.map_num)
+                tiles_cur = tile_map._store.get(mk_cur, {})
+                rec_cur = tiles_cur.get(
+                    tile_map._tile_key(pos_now[0], pos_now[1])
+                )
+                if rec_cur is not None and cached.button in rec_cur.blocked:
+                    cache_blocked_here = True
+                    cache.forget(fhash, gs.map_group, gs.map_num)
+                    state.useless_cache_streak = 0
+
+            if (
+                decision is None
+                and cached
+                and not cache_blocked_here
                 and not state.in_recovery
                 and state.useless_cache_streak < 5
                 and not force_recovery
                 and state.new_map_grace == 0
+                and not surveyor.in_survey()
             ):
                 decision = local_brain.LocalDecision(
                     button=cached.button,
@@ -331,73 +382,46 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                 if budget_usd and state.costs.total_usd >= budget_usd:
                     return None
                 from . import rescue_brain as _rb
-                state_summary_full = gs.short()
+                parts = [gs.short()]
+                if pos_now is not None:
+                    parts.append(
+                        tile_map.summary_for(
+                            gs.map_group, gs.map_num,
+                            pos_now[0], pos_now[1]
+                        )
+                    )
+                if state.same_pos_streak >= 5:
+                    parts.append(
+                        f"STUCK '{state.last_action}' didn't move "
+                        f"({state.same_pos_streak}t)"
+                    )
+                if stalled:
+                    uniq = sorted(set(state.pos_window))
+                    parts.append(
+                        f"STALLED only {len(uniq)} tiles in 100t"
+                    )
                 story_flags = story_state.infer_flags(state.map_visit_counts)
                 story_hint = story_state.hint_for(
                     story_flags,
                     current_map=map_key,
                     visits_this_map=state.map_visit_counts.get(map_key, 0),
                 )
-                top_maps = sorted(
-                    state.map_visit_counts.items(),
-                    key=lambda kv: -kv[1],
-                )[:6]
-                history_str = ",".join(
-                    f"{m[0]}-{m[1]}:{c}" for m, c in top_maps
-                )
                 low_visit_maps = [
                     m for m, c in state.map_visit_counts.items()
                     if c <= 5 and m != (0, 0) and m != (0, 255)
                 ]
-                history_line = f"map_history={history_str}"
                 if low_visit_maps:
-                    history_line += (
-                        f" | UNDER-EXPLORED maps you have touched "
-                        f"but barely visited: {low_visit_maps[:4]} — "
-                        f"GO BACK to one of these instead of looping "
-                        f"in your current map."
+                    parts.append(
+                        f"under-explored: {low_visit_maps[:3]}"
                     )
-                state_summary_full = (
-                    f"[GOAL] {story_hint} | "
-                    + state_summary_full
-                    + " | " + history_line
+                path_line = path_memory.summary_for(
+                    gs.map_group, gs.map_num
                 )
-                if state.same_pos_streak >= 5:
-                    state_summary_full += (
-                        f" | STUCK: same pos for "
-                        f"{state.same_pos_streak} turns "
-                        f"(last action '{state.last_action}' did "
-                        f"NOT move you — that direction is BLOCKED, "
-                        f"try a different one)"
-                    )
-                if state.same_map_streak >= 30:
-                    state_summary_full += (
-                        f" | same map for {state.same_map_streak} turns"
-                    )
-                if state.same_map_streak >= 200:
-                    state_summary_full += (
-                        f" — you have been ONLY on map {map_key} "
-                        f"for the last {state.same_map_streak} turns. "
-                        f"You MUST find a way to enter a different map "
-                        f"(town border, building door, or stair)."
-                    )
-                if stalled:
-                    uniq = sorted(set(state.pos_window))
-                    state_summary_full += (
-                        f" | STALLED: in the last "
-                        f"{len(state.pos_window)} turns you visited "
-                        f"only {len(uniq)} tile(s): {uniq[:5]}. "
-                        f"Loop detected — pick a NEW direction you "
-                        f"have NOT tried recently."
-                    )
-                if pos_now is not None:
-                    tm_summary = tile_map.summary_for(
-                        gs.map_group,
-                        gs.map_num,
-                        pos_now[0],
-                        pos_now[1],
-                    )
-                    state_summary_full += f" | tile_map: {tm_summary}"
+                if not path_line.startswith("no known"):
+                    parts.append(path_line)
+                state_summary_full = (
+                    f"GOAL: {story_hint} | " + " | ".join(parts)
+                )
                 try:
                     if kind == "rescue":
                         rb_dec = _rb.call_rescue(
@@ -499,12 +523,21 @@ def run(max_turns: int, budget_usd: float | None) -> int:
             if state.turn % 50 == 0:
                 cache.save()
                 tile_map.save()
+                path_memory.save()
+                if gs.saveblock1_valid and pos_now is not None:
+                    print(
+                        tile_map.ascii_grid(
+                            gs.map_group, gs.map_num,
+                            pos_now[0], pos_now[1],
+                        )
+                    )
 
     except KeyboardInterrupt:
         print("\n[stop] keyboard interrupt")
 
     cache.save()
     tile_map.save()
+    path_memory.save()
     c = state.costs
     n = max(1, state.turn)
     print(
