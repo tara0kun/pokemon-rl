@@ -160,6 +160,23 @@ Pokemon Emerald (GBA) を AI に「画面を見ながら」 プレイさせた�
 - ✅ **Oldale Town (map 3,0) 到達** (cycle 6 で story hint 注入後)
 - ✅ 11+ unique map 訪問
 
+### 反復改善サイクル (2026-06-09、 7 cycle)
+
+「分析 → 改善 → 検証 → daily_progress + git push」 を 1 セッション内で 7 回実施:
+
+| cycle | 改善 | 結果 (positions / maps / cost) |
+|-------|------|--------------------------------|
+| 0 (baseline v12) | - | 40 / 1 / $0.87 |
+| 1 | cache.flush_map + recovery 改善 | 11 / 1 / $0.78 |
+| 2 | tile_map (collision tracking) | 35 / 3 / $1.50 |
+| 3 | BFS frontier finder (nearest) | 68 / 3 / $1.50 |
+| 4 | battle RAM bridge | 76 / 3 / $1.50 |
+| 5 | BFS farthest preference | 88 / 3 / $1.50 |
+| **6** | **story_state goal hint** | **95 / 6 / $1.50** ★ Oldale 到達 |
+| 7 | new_map_grace + STAY hint | 23 / 2 / $1.50 (variance) |
+
+cycle 1 baseline 比で **positions 2.4×、 maps 6×** を同 cost で達成。 cycle 7 で Brain variance 問題 (cache 学習されない path の再現性) を honest documentation。
+
 ---
 
 ## 技術的な学び
