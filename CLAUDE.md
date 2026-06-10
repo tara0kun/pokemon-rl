@@ -94,10 +94,41 @@ poke-rl/Scripts/python.exe -m generic_agent.auto_loop --turns 500 --budget 0.5
 
 ---
 
-## git 運用
-- `main`: 安定 (deploy 可能状態)
-- `dev`: 開発中の作業
-- feature branch: `feat/<name>` から dev に PR
+## git 運用 (2026-06-10 改訂)
+
+### branch 戦略
+- **`main` = milestone リリース専用**
+  - 通常の cycle 作業では触らない
+  - 更新タイミング: session 終了時 / major milestone 達成時 (新マップクラスター、 Gym バッジ、 architecture 大変更 等)
+  - 更新時は **必ず tag を切る** (`vX.Y-<short-name>`)
+- **`dev` = active development**
+  - 各 cycle はここで commit + push
+  - WIP・実験・bug fix も全て dev
+  - 日々の作業はこのブランチのみで完結
+- **`feat/<name>` (任意)**
+  - 大規模 feature を独立に進める時のみ、 dev から分岐
+  - 完成したら dev に merge
+
+### 各 cycle のワークフロー
+```
+1. dev で実装 + 検証
+2. dev で commit + push
+3. daily_progress 更新
+4. (main には触らない)
+```
+
+### main 更新のワークフロー (milestone 時のみ)
+```
+1. git checkout main
+2. git merge dev --no-ff -m "merge dev: <milestone description>"
+3. git push origin main
+4. git tag -a vX.Y-<short-name> -m "<milestone summary>"
+5. git push origin vX.Y-<short-name>
+6. git checkout dev に戻る
+```
+
+### 既存 tag
+- `v0.1-portfolio-7cycles` (2026-06-10): 初回 portfolio milestone。 7 cycle architecture + Oldale Town reached + daily_progress 完備
 
 ---
 
