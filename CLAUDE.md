@@ -1,6 +1,6 @@
 # Pokemon RL → VLM Agent プロジェクト (rule = 唯一のルール定義)
 
-**2026-06-08 大転換**: 旧 rule-based RL agent (`legacy/`) は凍結。 現プロジェクトは
+**2026-06-08 大転換**: 旧 rule-based RL agent (現在 `old` branch) は凍結。 現プロジェクトは
 **Claude Vision (VLM) Agent** (`generic_agent/`) に pivot。
 
 詳細は [generic_agent/daily_progress/2026-06-08.md](generic_agent/daily_progress/2026-06-08.md) 参照。
@@ -12,9 +12,10 @@
 | path | 用途 |
 |------|------|
 | `generic_agent/` | **現プロジェクト**。 VLM agent (Claude Opus/Haiku + screenshot + RAM bridge) |
-| `legacy/` | 旧プロジェクト (rule-based RL、 23,000 行 `pokemon_env.py` 等)。 凍結、 参照のみ |
 | `ant/` | Anthropic CLI (OAuth 認証用) |
-| `poke-rl/` | Python virtualenv (両プロジェクト共有) |
+| `poke-rl/` | Python virtualenv |
+
+旧 rule-based project (23,000 行 `pokemon_env.py` 等) は `old` branch に保存 (GitHub `origin/old`)。 `git fetch origin && git checkout old` で参照可能。
 
 ---
 
@@ -25,7 +26,7 @@
 - **RAM 直接書込 禁止**: 人間がプレイ可能な範囲のみ
 - **saveStateLoad 禁止**: ストーリー進行をリセットして突破しない
 - **ハードコード禁止**: 座標 / map_id 等の game-specific 数値を コードに埋め込まない (prompt は OK)
-- **既存 legacy/ コードは import 禁止**: 完全独立を維持
+- **旧 rule-based コード (old branch) は import 禁止**: 完全独立を維持
 - **コスト最優先**: API call は cache + rules で 90% 削減目標
 
 ### 起動 (user 手動 1 回 / セッション)
@@ -85,12 +86,12 @@ poke-rl/Scripts/python.exe -m generic_agent.auto_loop --turns 500 --budget 0.5
 
 ---
 
-## 旧プロジェクト (legacy/) 取扱い
-- **読み取り専用 reference として残す**
+## 旧プロジェクト (`old` branch) 取扱い
+- **GitHub `origin/old` branch に snapshot 保存** (`git checkout old` で参照)
 - generic_agent 側から import / require しない
-- 古い lesson は `legacy/docs/`、 `legacy/memory/` 参照
-- 旧 mGBA instance (port 8888/8889/8890) は基本起動しない (旧 lua は `legacy/mgba_scripts/`)
-- `legacy/exploration_map.json` 等は信用度低 = 参考程度
+- 古い lesson は `old` branch の `docs/`、 `memory/` 参照
+- 旧 mGBA instance (port 8888/8889/8890) は基本起動しない (旧 lua は `old` branch の `mgba_scripts/`)
+- 旧 `exploration_map.json` 等は信用度低 = 参考程度
 
 ---
 
@@ -134,4 +135,4 @@ poke-rl/Scripts/python.exe -m generic_agent.auto_loop --turns 500 --budget 0.5
 
 ## 日次進捗
 新 daily progress: `generic_agent/daily_progress/YYYY-MM-DD.md`
-旧 daily progress: `legacy/daily_progress/`
+旧 daily progress: `old` branch の `daily_progress/`

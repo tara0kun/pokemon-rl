@@ -19,7 +19,7 @@ Pokemon Emerald (GBA) を AI に「画面を見ながら」 プレイさせた�
 
 ## プロジェクトの 2 つの フェーズ
 
-### Phase 1 (〜2026-06-07): rule-based RL agent — **凍結** ([legacy/](legacy/))
+### Phase 1 (〜2026-06-07): rule-based RL agent — **凍結** (GitHub [`old` branch](https://github.com/tara0kun/pokemon-rl/tree/old))
 - `pokemon_env.py` 約 23,000 行のカスタム Gymnasium 環境
 - BFS pathfinding + Stable-Baselines3 PPO で戦闘
 - mGBA × 3 並列インスタンス、 自前 lua + Python socket bridge
@@ -279,17 +279,18 @@ c:/pokemon-rl/
 │   ├── logs/               # screenshots, run logs (gitignore)
 │   ├── daily_progress/     # 日次の進捗 + 学び
 │   └── STARTUP.md          # user 向け起動手順
-├── legacy/                 # Phase 1 の rule-based RL (凍結)
-│   ├── pokemon_env.py      # 23,000 行
-│   ├── train.py            # SB3 PPO 訓練
-│   ├── docs/               # 過去 docs
-│   ├── memory/             # 過去 memory
-│   ├── daily_progress/     # 過去 5/29 までの日次
-│   └── README_legacy.md    # 旧 README
 ├── ant/                    # Anthropic CLI
 ├── poke-rl/                # Python venv (gitignore)
 ├── CLAUDE.md               # 全体 rule
 └── README.md               # 本ファイル
+```
+
+### Phase 1 (rule-based RL) を見る
+旧 `pokemon_env.py` (23,000 行)、 `train.py` (SB3 PPO)、 過去 docs / memory / daily_progress 等は GitHub の `old` branch に snapshot 保存。
+
+```bash
+git fetch origin
+git checkout old
 ```
 
 ---

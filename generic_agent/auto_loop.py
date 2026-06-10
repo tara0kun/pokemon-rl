@@ -338,8 +338,29 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                     current_map=map_key,
                     visits_this_map=state.map_visit_counts.get(map_key, 0),
                 )
+                top_maps = sorted(
+                    state.map_visit_counts.items(),
+                    key=lambda kv: -kv[1],
+                )[:6]
+                history_str = ",".join(
+                    f"{m[0]}-{m[1]}:{c}" for m, c in top_maps
+                )
+                low_visit_maps = [
+                    m for m, c in state.map_visit_counts.items()
+                    if c <= 5 and m != (0, 0) and m != (0, 255)
+                ]
+                history_line = f"map_history={history_str}"
+                if low_visit_maps:
+                    history_line += (
+                        f" | UNDER-EXPLORED maps you have touched "
+                        f"but barely visited: {low_visit_maps[:4]} — "
+                        f"GO BACK to one of these instead of looping "
+                        f"in your current map."
+                    )
                 state_summary_full = (
-                    f"[GOAL] {story_hint} | " + state_summary_full
+                    f"[GOAL] {story_hint} | "
+                    + state_summary_full
+                    + " | " + history_line
                 )
                 if state.same_pos_streak >= 5:
                     state_summary_full += (

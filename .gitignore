@@ -85,8 +85,9 @@ archive/
 # Private AI session context (not for public)
 memory/
 
-# Daily dev journal (private) — legacy only; generic_agent's is tracked
-legacy/daily_progress/
+# Daily dev journal (private) — generic_agent's is tracked
+# (no legacy/ on dev/main; old project lives on the `old` branch)
+legacy/
 
 # Runtime save metadata (per-port, regenerable)
 slot4_meta_*.json
@@ -104,10 +105,6 @@ docs/KNOWN_RISKS.md
 docs/UNRESOLVED_ISSUES.md
 docs/USER_GUIDE.md
 PROGRESS.md
-
-# Legacy project — moved 2026-06-08, retained for reference
-# (commented out; user wants to track legacy for portfolio history)
-# legacy/
 
 # Anthropic CLI (downloaded binary, regenerable)
 ant/
