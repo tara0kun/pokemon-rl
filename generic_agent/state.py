@@ -29,6 +29,9 @@ BATTLE_FLAGS_CANDIDATES = [
 ]
 
 
+BATTLE_TYPE_TRAINER = 0x0008
+
+
 @dataclass
 class GameState:
     map_group: int
@@ -39,6 +42,14 @@ class GameState:
     in_battle: bool = False
     battle_flags: int = 0
 
+    @property
+    def is_trainer_battle(self) -> bool:
+        return self.in_battle and bool(self.battle_flags & BATTLE_TYPE_TRAINER)
+
+    @property
+    def is_wild_battle(self) -> bool:
+        return self.in_battle and not self.is_trainer_battle
+
     def short(self) -> str:
         if not self.saveblock1_valid:
             base = "map=(?,?) pos=(?,?) [pre-save]"
@@ -48,7 +59,12 @@ class GameState:
                 f"pos=({self.x},{self.y})"
             )
         if self.in_battle:
-            return base + " [in_battle]"
+            suffix = " [in_battle]"
+            if self.is_trainer_battle:
+                suffix += "[trainer]"
+            else:
+                suffix += "[wild]"
+            return base + suffix
         return base
 
 

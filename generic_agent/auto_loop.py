@@ -81,6 +81,12 @@ class AutoLoopState:
         default_factory=dict
     )
     new_map_grace: int = 0  # cache-bypass countdown after map transition
+    battle_turn: int = 0  # counter inside an active battle (reset on exit)
+    recent_maps: list[tuple[int, int]] = field(default_factory=list)
+    suppress_dir: str | None = None
+    suppress_until_turn: int = 0
+    sign_tiles: dict[tuple[int, int, int, int], int] = field(default_factory=dict)
+    health_buffer: list[tuple[int, int, int, int]] = field(default_factory=list)
 
 
 def take_screenshot(client: MGBAClient, turn: int) -> Path:
@@ -159,10 +165,33 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                             map_key[1],
                             recent_buttons,
                         )
+                        opposite = {
+                            "Up": "Down", "Down": "Up",
+                            "Left": "Right", "Right": "Left",
+                        }
+                        if state.last_action in opposite:
+                            state.suppress_dir = opposite[state.last_action]
+                            state.suppress_until_turn = state.turn + 12
+                    state.recent_maps.append(map_key)
+                    if len(state.recent_maps) > 10:
+                        state.recent_maps.pop(0)
                 state.last_map_key = map_key
                 state.map_visit_counts[map_key] = (
                     state.map_visit_counts.get(map_key, 0) + 1
                 )
+
+            oscillating = False
+            if len(state.recent_maps) >= 6:
+                last6 = state.recent_maps[-6:]
+                uniq6 = set(last6)
+                if len(uniq6) == 2 and last6[0] != last6[1]:
+                    if all(
+                        last6[i] != last6[i + 1] for i in range(5)
+                    ):
+                        oscillating = True
+
+            if state.turn > state.suppress_until_turn:
+                state.suppress_dir = None
             # else: transition / pre-save — keep state unchanged
             if state.new_map_grace > 0:
                 state.new_map_grace -= 1
@@ -202,6 +231,23 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                 )
                 if len(state.pos_window) > 100:
                     state.pos_window.pop(0)
+                state.health_buffer.append(
+                    (gs.map_group, gs.map_num, pos_now[0], pos_now[1])
+                )
+                if len(state.health_buffer) > 200:
+                    state.health_buffer.pop(0)
+                if state.consecutive_dialog >= 8 and gs.saveblock1_valid:
+                    sign_key = (
+                        gs.map_group, gs.map_num,
+                        pos_now[0], pos_now[1],
+                    )
+                    if sign_key not in state.sign_tiles:
+                        state.sign_tiles[sign_key] = state.turn
+                        print(
+                            f"  [sign-trap] marked "
+                            f"map={(gs.map_group, gs.map_num)} "
+                            f"pos={pos_now} as dialog trap"
+                        )
                 tile_map.record_visit(
                     gs.map_group, gs.map_num, pos_now[0], pos_now[1]
                 )
@@ -220,6 +266,29 @@ def run(max_turns: int, budget_usd: float | None) -> int:
             stalled = (
                 len(state.pos_window) >= 100
                 and len(set(state.pos_window)) <= 3
+            )
+            cycling = False
+            if len(state.pos_window) >= 20:
+                last20 = state.pos_window[-20:]
+                if len(set(last20)) <= 8:
+                    cycling = True
+
+            if cycling and gs.saveblock1_valid:
+                removed = cache.flush_map(gs.map_group, gs.map_num)
+                if removed > 0:
+                    print(
+                        f"  [cycle-break] map={map_key} "
+                        f"{len(set(state.pos_window[-20:]))} uniq in 20t "
+                        f"→ purged {removed} cache entries"
+                    )
+                state.pos_window.clear()
+                state.suppress_dir = None
+                state.suppress_until_turn = 0
+
+            escape_mode = (
+                pos_now is not None
+                and state.same_pos_streak >= 25
+                and not gs.in_battle
             )
 
             cached = cache.lookup(fhash, gs.map_group, gs.map_num)
@@ -260,9 +329,25 @@ def run(max_turns: int, budget_usd: float | None) -> int:
             if force_recovery:
                 state.consecutive_dialog = DIALOG_LOOP_LIMIT
 
+            if gs.in_battle:
+                state.battle_turn += 1
+            else:
+                state.battle_turn = 0
+
             if gs.in_battle and decision is None:
+                if gs.is_trainer_battle or state.battle_turn <= 2:
+                    battle_btn = "A"
+                    battle_src = (
+                        "battle.trainer.A"
+                        if gs.is_trainer_battle
+                        else "battle.intro.A"
+                    )
+                else:
+                    offset = (state.battle_turn - 3) % 5
+                    battle_btn = ["Down", "Right", "A", "A", "A"][offset]
+                    battle_src = f"battle.wild_run[{offset}]"
                 decision = local_brain.LocalDecision(
-                    button="A", frames=8, source="battle.A"
+                    button=battle_btn, frames=8, source=battle_src,
                 )
                 decision_source = decision.source
                 state.costs.rule_hits += 1
@@ -272,6 +357,7 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                 and pos_now is not None
                 and not gs.in_battle
                 and not state.in_recovery
+                and not oscillating
             ):
                 survey_dir = surveyor.maybe_step(
                     gs.map_group, gs.map_num,
@@ -279,7 +365,10 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                     state.map_visit_counts.get(map_key, 0),
                     state.same_map_streak,
                 )
-                if survey_dir is not None:
+                if (
+                    survey_dir is not None
+                    and survey_dir != state.suppress_dir
+                ):
                     decision = local_brain.LocalDecision(
                         button=survey_dir,
                         frames=15,
@@ -299,6 +388,15 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                 cached = None
                 state.useless_cache_streak = 0
 
+            if (
+                cached is not None
+                and state.suppress_dir is not None
+                and cached.button == state.suppress_dir
+            ):
+                cache.forget(fhash, gs.map_group, gs.map_num)
+                cached = None
+                state.useless_cache_streak = 0
+
             cache_blocked_here = False
             if cached and pos_now is not None:
                 mk_cur = tile_map._map_key(gs.map_group, gs.map_num)
@@ -311,10 +409,16 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                     cache.forget(fhash, gs.map_group, gs.map_num)
                     state.useless_cache_streak = 0
 
+            if escape_mode and gs.saveblock1_valid:
+                cache.forget(fhash, gs.map_group, gs.map_num)
+                cached = None
+                state.useless_cache_streak = 0
+
             if (
                 decision is None
                 and cached
                 and not cache_blocked_here
+                and not escape_mode
                 and not state.in_recovery
                 and state.useless_cache_streak < 5
                 and not force_recovery
@@ -338,7 +442,7 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                     state.consecutive_dialog, DIALOG_LOOP_LIMIT
                 )
 
-            if decision is None and state.in_recovery:
+            if decision is None and state.in_recovery and not escape_mode:
                 if state.recovery.exhausted():
                     state.in_recovery = False
                     state.consecutive_dialog = 0
@@ -350,6 +454,7 @@ def run(max_turns: int, budget_usd: float | None) -> int:
 
             if (
                 decision is None
+                and not escape_mode
                 and state.same_hash_streak < LOCAL_RECOVERY_STREAK
                 and state.consecutive_dialog < DIALOG_LOOP_LIMIT
             ):
@@ -370,6 +475,7 @@ def run(max_turns: int, budget_usd: float | None) -> int:
 
             if (
                 decision is None
+                and not escape_mode
                 and state.consecutive_dialog >= DIALOG_LOOP_LIMIT
             ):
                 state.in_recovery = True
@@ -379,6 +485,7 @@ def run(max_turns: int, budget_usd: float | None) -> int:
 
             if (
                 decision is None
+                and not escape_mode
                 and state.same_hash_streak >= LOCAL_RECOVERY_STREAK
                 and state.same_hash_streak < API_RESCUE_STREAK
             ):
@@ -414,8 +521,53 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                         pos_now[0], pos_now[1],
                         prefer="nearest",
                     )
-                    if bfs_first is not None and bfs_first not in cur_blocked:
+                    if bfs_first == state.suppress_dir or oscillating:
+                        alt = tile_map.bfs_frontier_direction(
+                            gs.map_group, gs.map_num,
+                            pos_now[0], pos_now[1],
+                            prefer="farthest",
+                        )
+                        if alt is not None and alt != state.suppress_dir:
+                            bfs_first = alt
+                        else:
+                            bfs_first = None
+                    if (
+                        bfs_first is not None
+                        and bfs_first not in cur_blocked
+                    ):
                         parts.append(f"bfs_to_frontier={bfs_first}")
+                if oscillating:
+                    osc_maps = sorted({m for m in state.recent_maps[-6:]})
+                    parts.append(
+                        f"OSCILLATING between maps {osc_maps} - "
+                        f"explore CURRENT map interior, not borders"
+                    )
+                if state.suppress_dir is not None:
+                    parts.append(
+                        f"AVOID '{state.suppress_dir}' "
+                        f"(would re-cross border just came from)"
+                    )
+                if pos_now is not None and state.sign_tiles:
+                    nearby_traps = [
+                        (mx, my)
+                        for (g, n, mx, my), t in state.sign_tiles.items()
+                        if (g, n) == (gs.map_group, gs.map_num)
+                        and state.turn - t < 500
+                        and abs(mx - pos_now[0]) + abs(my - pos_now[1]) <= 3
+                    ]
+                    if nearby_traps:
+                        parts.append(
+                            f"AVOID stepping onto sign tiles "
+                            f"{nearby_traps[:4]} (dialog trap)"
+                        )
+                if escape_mode:
+                    parts.append(
+                        f"ESCAPE MODE: same pos for "
+                        f"{state.same_pos_streak} turns. "
+                        f"Pipeline overridden. Press B to close any "
+                        f"menu/dialog/sign. If overworld and free, pick "
+                        f"a movement direction that is NOT in blocked_here."
+                    )
                 if state.same_pos_streak >= 5:
                     parts.append(
                         f"STUCK '{state.last_action}' didn't move "
@@ -504,6 +656,14 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                 if decision is not None:
                     decision_source = decision.source
 
+            if decision is None and escape_mode:
+                escape_seq = ["B", "Down", "B", "Right", "B", "Up", "B", "Left"]
+                btn = escape_seq[state.same_pos_streak % len(escape_seq)]
+                decision = local_brain.LocalDecision(
+                    btn, 10, source=f"escape-fallback({btn})"
+                )
+                decision_source = decision.source
+
             if decision is None:
                 decision = local_brain.LocalDecision(
                     "A", 8, source="fallback"
@@ -558,6 +718,27 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                             pos_now[0], pos_now[1],
                         )
                     )
+
+            if state.turn % 100 == 0 and len(state.health_buffer) >= 20:
+                last100 = state.health_buffer[-100:]
+                uniq_pos = len(set(last100))
+                map_seq = [(g, n) for g, n, _, _ in last100]
+                switches = sum(
+                    1 for i in range(1, len(map_seq))
+                    if map_seq[i] != map_seq[i - 1]
+                )
+                signs = len([
+                    1 for (g, n, _, _) in state.sign_tiles
+                    if (g, n) == (gs.map_group, gs.map_num)
+                ])
+                print(
+                    f"  [health] last 100t: "
+                    f"uniq_pos={uniq_pos} "
+                    f"map_switches={switches} "
+                    f"({switches / max(1, len(last100)):.2f}/turn) "
+                    f"signs_this_map={signs} "
+                    f"oscillating={'YES' if switches > 30 else 'no'}"
+                )
 
     except KeyboardInterrupt:
         print("\n[stop] keyboard interrupt")
