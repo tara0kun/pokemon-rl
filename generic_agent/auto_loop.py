@@ -78,6 +78,7 @@ class AutoLoopState:
     map_visit_counts: dict[tuple[int, int], int] = field(
         default_factory=dict
     )
+    new_map_grace: int = 0  # cache-bypass countdown after map transition
 
 
 def take_screenshot(client: MGBAClient, turn: int) -> Path:
@@ -140,11 +141,16 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                     state.same_map_streak += 1
                 else:
                     state.same_map_streak = 0
+                    prior_count = state.map_visit_counts.get(map_key, 0)
+                    if prior_count == 0:
+                        state.new_map_grace = 20
                 state.last_map_key = map_key
                 state.map_visit_counts[map_key] = (
                     state.map_visit_counts.get(map_key, 0) + 1
                 )
             # else: transition / pre-save — keep state unchanged
+            if state.new_map_grace > 0:
+                state.new_map_grace -= 1
 
             if (
                 state.same_map_streak > 0
@@ -251,6 +257,7 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                 and not state.in_recovery
                 and state.useless_cache_streak < 5
                 and not force_recovery
+                and state.new_map_grace == 0
             ):
                 decision = local_brain.LocalDecision(
                     button=cached.button,
@@ -326,7 +333,11 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                 from . import rescue_brain as _rb
                 state_summary_full = gs.short()
                 story_flags = story_state.infer_flags(state.map_visit_counts)
-                story_hint = story_state.hint_for(story_flags)
+                story_hint = story_state.hint_for(
+                    story_flags,
+                    current_map=map_key,
+                    visits_this_map=state.map_visit_counts.get(map_key, 0),
+                )
                 state_summary_full = (
                     f"[GOAL] {story_hint} | " + state_summary_full
                 )

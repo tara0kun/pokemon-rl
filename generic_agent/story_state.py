@@ -41,12 +41,21 @@ _KEY_MAPS = {
     "oldale_reached":      [(3, 0)],
 }
 
+# threshold (visit count) per flag — lower = easier to flip True.
+_FLAG_THRESHOLDS = {
+    "mom_dialog_done":     5,
+    "birch_lab_visited":   5,
+    "rival_house_visited": 5,
+    "route101_explored":   5,
+    "oldale_reached":      1,   # one transition is enough to count
+}
+
 
 def infer_flags(map_visit_counts: dict[tuple[int, int], int]) -> StoryFlags:
     flags = StoryFlags()
     for attr, keys in _KEY_MAPS.items():
         total = sum(map_visit_counts.get(k, 0) for k in keys)
-        if total >= 5:
+        if total >= _FLAG_THRESHOLDS[attr]:
             setattr(flags, attr, True)
     flags.starter_received = (
         flags.birch_lab_visited and flags.route101_explored
@@ -54,7 +63,17 @@ def infer_flags(map_visit_counts: dict[tuple[int, int], int]) -> StoryFlags:
     return flags
 
 
-def hint_for(flags: StoryFlags) -> str:
+def hint_for(
+    flags: StoryFlags,
+    current_map: tuple[int, int] | None = None,
+    visits_this_map: int = 0,
+) -> str:
+    if flags.oldale_reached and current_map == (3, 0) and visits_this_map < 50:
+        return (
+            "Goal: STAY in Oldale Town and explore. Walk around inside the "
+            "town first (Pokemon Center, Pokemon Mart, NPCs) before you "
+            "leave. Do NOT walk back south to Route 101."
+        )
     if flags.oldale_reached:
         return (
             "Goal: continue NORTH from Oldale Town toward Route 102, "
