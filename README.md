@@ -19,21 +19,77 @@ Pokemon Emerald (GBA) を AI に「画面を見ながら」 プレイさせた�
 
 ## プロジェクトの 2 つの フェーズ
 
-### Phase 1 (〜2026-06-07): rule-based RL agent — **凍結** (GitHub [`old` branch](https://github.com/tara0kun/pokemon-rl/tree/old))
+このリポジトリは **2 つの異なるアプローチ** を持っており、 git branch で分離管理しています。
+
+| branch | 内容 | 状態 |
+|--------|------|------|
+| `main` / `dev` | Phase 2: VLM agent | **active** |
+| **`old`** | **Phase 1: rule-based RL agent** | **凍結 (snapshot 保存)** |
+
+### Phase 1 (2026-02〜06-07): rule-based RL agent — **凍結**
+
+GitHub の [`old` branch](https://github.com/tara0kun/pokemon-rl/tree/old) に snapshot 保存。 ローカルで参照する場合:
+
+```bash
+git fetch origin
+git checkout old
+# ここで pokemon_env.py、 train.py 等 23,000 行の RL コードが root に展開される
+```
+
+**規模と技術**:
 - `pokemon_env.py` 約 23,000 行のカスタム Gymnasium 環境
-- BFS pathfinding + Stable-Baselines3 PPO で戦闘
+- BFS pathfinding + Stable-Baselines3 PPO で戦闘 (`battle_ai/`)
 - mGBA × 3 並列インスタンス、 自前 lua + Python socket bridge
 - pokeemerald decomp を直接 parse して canonical map data を BFS graph に注入
-- **問題**: patches #1〜#28 で patch-tower 化、 場当たり修正の連鎖、 ROM 切替不可
-- **教訓**: 「ハードコードした攻略 script」 は AI ではない、 汎用性ゼロ
 
-### Phase 2 (2026-06-08〜): VLM agent — **本プロジェクト** ([generic_agent/](generic_agent/))
+**達成度**: バッジ 2 取得、 Brawly Gym coverage 30%。 ただし以下の構造的問題で頭打ち。
+
+### Phase 2 (2026-06-08〜): VLM agent — **現プロジェクト** ([generic_agent/](generic_agent/))
 - Claude Opus 4.8 / Haiku 4.5 が screenshot を見て次の 1 ボタンを decide
 - ROM 知識 はゼロ (system prompt の Pokemon 一般知識のみ)
 - 3-layer Brain で 90%+ 無料判定 + Brain は新画面のみ
 - frame_hash + map_id の永続 cache でセッション跨ぎの reuse
 
-なぜ pivot したか の全容: [generic_agent/daily_progress/2026-06-08.md](generic_agent/daily_progress/2026-06-08.md)
+---
+
+## なぜ Phase 1 → Phase 2 に pivot したか
+
+旧 rule-based RL は技術的には精緻 (23,000 行 + decomp parser + PPO) だったが、 4 つの構造的問題で **将来性なし** と判断:
+
+### 問題 1: patch-tower 連鎖崩壊
+新エリア攻略のたびに `pokemon_env.py` にハードコード patch (#1〜#28、 2 週間で 28 patch) を追加。 1 patch が別の場所で副作用 → さらに patch → 連鎖。 **2 週間で 1 patch が「動く」 → 翌週には別の何かが壊れる** の繰り返し。 部分修正ではもう収束しない状態に。
+
+### 問題 2: 「汎用 AI」 と謳いつつ Emerald 専用 bot
+「他 Pokemon 作品にも転用可能」 と当初の portfolio で書いたが、 実態は:
+- 座標 `(11, 10)` のように ROM 固有の数値が散在
+- map_id `(24, 7)` 等の Emerald 固有テーブルを前提
+- pokeemerald decomp のメモリアドレス (0x02022FEC 等) を直書き
+→ FireRed や Crystal で 1 行も動かない。 **「汎用」 を名乗れない実態**。
+
+### 問題 3: AI と呼べない
+- LLM や ML model は補助的 (タイル分類 CNN が val_acc 35.7% で停滞中)
+- 実際の意思決定は **23,000 行の if-else が全部やっている**
+- 「これは AI ではなく人間が書いた攻略 script」 が面接でバレるリスク
+
+### 問題 4: コスト効率の概念がない
+- 並列 3 instance + tensorboard + RL training で電気代が嵩むだけ
+- 「1 turn いくら」 という cost monitoring 不在
+- portfolio として「効率的なシステム設計」 を語れない
+
+---
+
+### なぜ VLM agent (Phase 2) は解決するか
+
+| 旧 Phase 1 の問題 | Phase 2 の解決策 |
+|-----------------|------------------|
+| patch-tower 連鎖崩壊 | ハードコード一切なし。 prompt + cache + RAM bridge で完結 |
+| Emerald 専用 | ROM 切替で他作品も動作 (将来 FireRed / Crystal で検証予定) |
+| AI と呼べない | Claude Opus 4.8 が screenshot を見て decide = 本物の VLM agent |
+| コスト不明 | 1 turn $0.0004 平均、 cache hit 89% でほぼ無料、 budget cap で hard limit |
+
+**Anthropic 公式の Claude Plays Pokemon (Red を 2025 年にクリア) と同等 architecture を、 cost-optimized で再現** という portfolio narrative が成立。
+
+完全な pivot 経緯と意思決定の詳細: [generic_agent/daily_progress/2026-06-08.md](generic_agent/daily_progress/2026-06-08.md)
 
 ---
 
