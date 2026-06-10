@@ -96,21 +96,31 @@ class TransitionMemory:
             return None
         return min(paths, key=len)
 
-    def summary_for(self, cur_g: int, cur_n: int) -> str:
-        """Return a one-line prompt fragment listing known exits from this map."""
+    def summary_for(
+        self,
+        cur_g: int,
+        cur_n: int,
+        blocked_first_step: list[str] | None = None,
+    ) -> str:
+        """One-line prompt fragment of known exits. Paths whose first step is
+        currently blocked at this tile are filtered out — Brain must not be
+        told to press a button known to fail."""
+        blocked = set(blocked_first_step or [])
         fk = self._key(cur_g, cur_n)
         inner = self._store.get(fk, {})
         if not inner:
             return "no known transitions out of this map yet"
         pieces = []
         for tk, paths in inner.items():
-            if not paths:
+            usable = [p for p in paths if p and p[0] not in blocked]
+            if not usable:
                 continue
-            best = min(paths, key=len)
+            best = min(usable, key=len)
             seq = "".join(_compact_token(t) for t in best)
-            pieces.append(f"to {tk} via '{seq}'")
+            first_full = best[0]
+            pieces.append(f"to {tk} via '{seq}' first={first_full}")
         if not pieces:
-            return "no known transitions out of this map yet"
+            return "no known transitions (all first-steps blocked here)"
         return "known exits: " + "; ".join(pieces[:4])
 
 

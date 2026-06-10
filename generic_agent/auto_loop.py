@@ -288,6 +288,17 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                     decision_source = decision.source
                     state.costs.rule_hits += 1
 
+            if (
+                cached is not None
+                and pos_now is not None
+                and state.last_action == cached.button
+                and state.same_pos_streak >= 3
+                and cached.button in {"Up", "Down", "Left", "Right"}
+            ):
+                cache.forget(fhash, gs.map_group, gs.map_num)
+                cached = None
+                state.useless_cache_streak = 0
+
             cache_blocked_here = False
             if cached and pos_now is not None:
                 mk_cur = tile_map._map_key(gs.map_group, gs.map_num)
@@ -383,6 +394,7 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                     return None
                 from . import rescue_brain as _rb
                 parts = [gs.short()]
+                cur_blocked: list[str] = []
                 if pos_now is not None:
                     parts.append(
                         tile_map.summary_for(
@@ -390,6 +402,20 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                             pos_now[0], pos_now[1]
                         )
                     )
+                    mk_brain = tile_map._map_key(gs.map_group, gs.map_num)
+                    rec_brain = tile_map._store.get(mk_brain, {}).get(
+                        tile_map._tile_key(pos_now[0], pos_now[1])
+                    )
+                    if rec_brain is not None:
+                        cur_blocked = list(rec_brain.blocked)
+                if pos_now is not None and not gs.in_battle:
+                    bfs_first = tile_map.bfs_frontier_direction(
+                        gs.map_group, gs.map_num,
+                        pos_now[0], pos_now[1],
+                        prefer="nearest",
+                    )
+                    if bfs_first is not None and bfs_first not in cur_blocked:
+                        parts.append(f"bfs_to_frontier={bfs_first}")
                 if state.same_pos_streak >= 5:
                     parts.append(
                         f"STUCK '{state.last_action}' didn't move "
@@ -415,7 +441,8 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                         f"under-explored: {low_visit_maps[:3]}"
                     )
                 path_line = path_memory.summary_for(
-                    gs.map_group, gs.map_num
+                    gs.map_group, gs.map_num,
+                    blocked_first_step=cur_blocked,
                 )
                 if not path_line.startswith("no known"):
                     parts.append(path_line)
