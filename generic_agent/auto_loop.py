@@ -682,9 +682,20 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                 decision_source = decision.source
 
             if decision is None:
-                decision = local_brain.LocalDecision(
-                    "A", 8, source="fallback"
-                )
+                if (
+                    not gs.in_battle
+                    and state.consecutive_dialog == 0
+                    and state.same_pos_streak >= 1
+                ):
+                    cycle = ["B", "Down", "B", "Right", "B", "Up", "B", "Left"]
+                    btn = cycle[state.turn % len(cycle)]
+                    decision = local_brain.LocalDecision(
+                        btn, 10, source=f"fallback({btn})"
+                    )
+                else:
+                    decision = local_brain.LocalDecision(
+                        "A", 8, source="fallback"
+                    )
                 decision_source = decision.source
 
             execute_button(client, decision.button, decision.frames)
