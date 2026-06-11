@@ -1,42 +1,90 @@
-"""Persistent transition memory: (map_from, map_to) → button sequences.
+"""Position-aware persistent transition memory.
 
-Each time the agent's map_id actually changes from A to B, we save the
-last N actions taken on A. Next time the agent is on A and the Brain
-is choosing what to do, the prompt can include "known way to reach B
-from this map: Up, Up, Up, A" so the same path can be replayed instead
-of rediscovered from scratch.
+Each entry records the EXACT tiles where a map transition happened:
+- from_pos = the tile the agent was standing on while still on the OLD
+  map when the transitioning button was pressed
+- to_pos   = the tile the agent appeared on when the NEW map loaded
+- seq      = the last N directional buttons leading up to the transition
 
-This is the cycle-9 mechanism that directly attacks the "no successful
-path lives in the cache" failure mode logged in daily_progress §17.
+This lets the prompt only surface paths whose `from_pos` is within
+Manhattan distance D of the agent's current position. The same map
+can have several Up-triggered exits (north town border vs. May's house
+door vs. Brendan's house door) and they no longer collapse onto the
+same "first=Up" hint — the agent is only shown the recipe matching its
+actual tile.
 
 Schema (JSON file at memory/path_memory.json):
 {
   "<g_from>-<n_from>": {
     "<g_to>-<n_to>": [
-      ["Up","Up","A"],           # success path 1 (oldest)
-      ["Right","Up","Up","Up","A"]  # success path 2
+      {"from_pos": [x,y], "to_pos": [x,y], "seq": ["Up","Up","Up"]},
+      ...
     ]
   }
 }
+
+Backward compatibility: an older entry shape (a list of strings) is
+loaded as `{from_pos: None, to_pos: None, seq: list}` so the file is
+still readable across the schema bump. Records with from_pos=None will
+not appear in summary_for output (their Manhattan distance is treated
+as infinite).
 """
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from . import config
 
 
-SEQUENCE_LEN = 8   # how many recent actions to remember per transition
-MAX_PATHS_PER_PAIR = 5  # cap entries per (from, to) pair
+SEQUENCE_LEN = 8
+MAX_PATHS_PER_PAIR = 8
+DEFAULT_MAX_DISTANCE = 5
 DIRECTIONS = {"Up", "Down", "Left", "Right", "A", "B"}
+
+
+def _coerce_pos(v: Any) -> tuple[int, int] | None:
+    if v is None:
+        return None
+    try:
+        x, y = v
+        return (int(x), int(y))
+    except (ValueError, TypeError):
+        return None
+
+
+@dataclass
+class TransitionRecord:
+    from_pos: tuple[int, int] | None
+    to_pos: tuple[int, int] | None
+    seq: list[str]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "from_pos": list(self.from_pos) if self.from_pos else None,
+            "to_pos": list(self.to_pos) if self.to_pos else None,
+            "seq": list(self.seq),
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> "TransitionRecord":
+        return cls(
+            from_pos=_coerce_pos(d.get("from_pos")),
+            to_pos=_coerce_pos(d.get("to_pos")),
+            seq=[str(s) for s in d.get("seq", [])],
+        )
+
+    @classmethod
+    def from_legacy(cls, seq: list[str]) -> "TransitionRecord":
+        return cls(from_pos=None, to_pos=None, seq=[str(s) for s in seq])
 
 
 @dataclass
 class TransitionMemory:
     path: Path = field(default_factory=lambda: config.MEMORY_DIR / "path_memory.json")
-    _store: dict[str, dict[str, list[list[str]]]] = field(default_factory=dict)
+    _store: dict[str, dict[str, list[TransitionRecord]]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self._load()
@@ -52,16 +100,21 @@ class TransitionMemory:
         except (json.JSONDecodeError, OSError):
             return
         for fk, inner in raw.items():
-            self._store[fk] = {
-                tk: [list(seq) for seq in seqs] for tk, seqs in inner.items()
-            }
+            self._store[fk] = {}
+            for tk, entries in inner.items():
+                records: list[TransitionRecord] = []
+                for entry in entries:
+                    if isinstance(entry, dict):
+                        records.append(TransitionRecord.from_dict(entry))
+                    elif isinstance(entry, list):
+                        records.append(TransitionRecord.from_legacy(entry))
+                self._store[fk][tk] = records
 
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        out = {
-            fk: {tk: [list(s) for s in seqs] for tk, seqs in inner.items()}
-            for fk, inner in self._store.items()
-        }
+        out: dict[str, dict[str, list[dict[str, Any]]]] = {}
+        for fk, inner in self._store.items():
+            out[fk] = {tk: [r.to_dict() for r in recs] for tk, recs in inner.items()}
         self.path.write_text(
             json.dumps(out, ensure_ascii=False), encoding="utf-8"
         )
@@ -70,46 +123,86 @@ class TransitionMemory:
         self,
         from_g: int,
         from_n: int,
+        from_x: int | None,
+        from_y: int | None,
         to_g: int,
         to_n: int,
+        to_x: int | None,
+        to_y: int | None,
         recent_actions: list[str],
     ) -> None:
         seq = [a for a in recent_actions[-SEQUENCE_LEN:] if a in DIRECTIONS]
         if not seq:
             return
+        from_pos = (
+            (int(from_x), int(from_y))
+            if from_x is not None and from_y is not None
+            else None
+        )
+        to_pos = (
+            (int(to_x), int(to_y))
+            if to_x is not None and to_y is not None
+            else None
+        )
         fk = self._key(from_g, from_n)
         tk = self._key(to_g, to_n)
         inner = self._store.setdefault(fk, {})
-        paths = inner.setdefault(tk, [])
-        if seq in paths:
-            return
-        paths.append(seq)
-        if len(paths) > MAX_PATHS_PER_PAIR:
-            paths[:] = paths[-MAX_PATHS_PER_PAIR:]
+        records = inner.setdefault(tk, [])
+        for existing in records:
+            if (
+                existing.seq == seq
+                and existing.from_pos == from_pos
+                and existing.to_pos == to_pos
+            ):
+                return
+        records.append(TransitionRecord(from_pos, to_pos, seq))
+        if len(records) > MAX_PATHS_PER_PAIR:
+            records[:] = records[-MAX_PATHS_PER_PAIR:]
 
-    def shortest_path_to(
-        self, from_g: int, from_n: int, to_g: int, to_n: int
-    ) -> list[str] | None:
-        fk, tk = self._key(from_g, from_n), self._key(to_g, to_n)
-        paths = self._store.get(fk, {}).get(tk, [])
-        if not paths:
-            return None
-        return min(paths, key=len)
+    def nearby_records(
+        self,
+        cur_g: int,
+        cur_n: int,
+        cur_x: int,
+        cur_y: int,
+        max_distance: int = DEFAULT_MAX_DISTANCE,
+    ) -> list[tuple[str, TransitionRecord, int]]:
+        """Return [(target_key, record, distance)] sorted by distance asc.
+
+        Only records with a known from_pos within Manhattan distance
+        `max_distance` of (cur_x, cur_y) are returned. Records with
+        from_pos=None are skipped entirely.
+        """
+        fk = self._key(cur_g, cur_n)
+        inner = self._store.get(fk, {})
+        candidates: list[tuple[str, TransitionRecord, int]] = []
+        for tk, records in inner.items():
+            for rec in records:
+                if rec.from_pos is None:
+                    continue
+                fx, fy = rec.from_pos
+                d = abs(fx - cur_x) + abs(fy - cur_y)
+                if d > max_distance:
+                    continue
+                candidates.append((tk, rec, d))
+        candidates.sort(key=lambda t: (t[2], len(t[1].seq)))
+        return candidates
 
     def summary_for(
         self,
         cur_g: int,
         cur_n: int,
+        cur_x: int | None = None,
+        cur_y: int | None = None,
         blocked_first_step: list[str] | None = None,
         avoid_first: set[str] | None = None,
+        max_distance: int = DEFAULT_MAX_DISTANCE,
     ) -> str:
-        """One-line prompt fragment of known exits.
+        """Position-aware exit summary.
 
-        `blocked_first_step` removes paths whose first step is wall-blocked
-        at the current tile. `avoid_first` removes paths whose first step
-        would re-cross a border we JUST crossed (caller passes the current
-        suppress_dir). Both prevent the Brain from being told to press a
-        button that is known to fail or known to reverse progress.
+        With cur_x/cur_y supplied, only records whose `from_pos` is within
+        `max_distance` (Manhattan) are shown. Each target map appears at
+        most once, using the closest matching record.
         """
         blocked = set(blocked_first_step or [])
         avoid = set(avoid_first or [])
@@ -117,18 +210,43 @@ class TransitionMemory:
         inner = self._store.get(fk, {})
         if not inner:
             return "no known transitions out of this map yet"
+
+        position_aware = cur_x is not None and cur_y is not None
+        if position_aware:
+            usable_per_target: dict[str, TransitionRecord] = {}
+            for tk, rec, _d in self.nearby_records(
+                cur_g, cur_n, cur_x, cur_y, max_distance
+            ):
+                if tk in usable_per_target:
+                    continue
+                if not rec.seq:
+                    continue
+                if rec.seq[0] in blocked or rec.seq[0] in avoid:
+                    continue
+                usable_per_target[tk] = rec
+            if not usable_per_target:
+                return "no known transitions near this tile"
+            pieces = []
+            for tk, rec in usable_per_target.items():
+                seq_compact = "".join(_compact_token(t) for t in rec.seq)
+                fx, fy = rec.from_pos
+                pieces.append(
+                    f"to {tk} via '{seq_compact}' first={rec.seq[0]} "
+                    f"from({fx},{fy})"
+                )
+            return "known exits near you: " + "; ".join(pieces[:4])
+
         pieces = []
-        for tk, paths in inner.items():
+        for tk, records in inner.items():
             usable = [
-                p for p in paths
-                if p and p[0] not in blocked and p[0] not in avoid
+                r for r in records
+                if r.seq and r.seq[0] not in blocked and r.seq[0] not in avoid
             ]
             if not usable:
                 continue
-            best = min(usable, key=len)
-            seq = "".join(_compact_token(t) for t in best)
-            first_full = best[0]
-            pieces.append(f"to {tk} via '{seq}' first={first_full}")
+            best = min(usable, key=lambda r: len(r.seq))
+            seq_compact = "".join(_compact_token(t) for t in best.seq)
+            pieces.append(f"to {tk} via '{seq_compact}' first={best.seq[0]}")
         if not pieces:
             return "no known transitions (all first-steps blocked here)"
         return "known exits: " + "; ".join(pieces[:4])

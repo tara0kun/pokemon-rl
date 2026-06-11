@@ -162,11 +162,23 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                         recent_buttons = [
                             h.split("(")[0] for h in state.history[-12:]
                         ]
+                        from_x = (
+                            state.last_pos[0]
+                            if state.last_pos is not None else None
+                        )
+                        from_y = (
+                            state.last_pos[1]
+                            if state.last_pos is not None else None
+                        )
                         path_memory.record_transition(
                             state.last_map_key[0],
                             state.last_map_key[1],
+                            from_x,
+                            from_y,
                             map_key[0],
                             map_key[1],
+                            gs.x if gs.saveblock1_valid else None,
+                            gs.y if gs.saveblock1_valid else None,
                             recent_buttons,
                         )
                         opposite = {
@@ -608,8 +620,11 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                     if state.suppress_dir is not None
                     else None
                 )
+                pm_cur_x = pos_now[0] if pos_now is not None else None
+                pm_cur_y = pos_now[1] if pos_now is not None else None
                 path_line = path_memory.summary_for(
                     gs.map_group, gs.map_num,
+                    cur_x=pm_cur_x, cur_y=pm_cur_y,
                     blocked_first_step=cur_blocked,
                     avoid_first=avoid_set,
                 )
@@ -617,38 +632,53 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                     parts.append(path_line)
 
                 if state.same_map_streak >= 100 and pos_now is not None:
-                    from_map_key = f"{gs.map_group}-{gs.map_num}"
-                    from_paths = path_memory._store.get(from_map_key, {})
-                    if from_paths:
-                        cur_visits = state.map_visit_counts.get(map_key, 0)
-                        candidates: list[tuple[int, tuple[int, int], str]] = []
-                        for tk, paths in from_paths.items():
-                            try:
-                                tg, tn = (int(v) for v in tk.split("-"))
-                            except ValueError:
+                    cur_visits = state.map_visit_counts.get(map_key, 0)
+                    cur_map_str = f"{gs.map_group}-{gs.map_num}"
+
+                    def _onward_score(target_str: str) -> int:
+                        inner = path_memory._store.get(target_str, {})
+                        score = 0
+                        for next_tk in inner:
+                            if next_tk == cur_map_str:
                                 continue
-                            target = (tg, tn)
-                            t_visits = state.map_visit_counts.get(target, 0)
-                            if t_visits >= cur_visits or not paths:
-                                continue
-                            first_step = paths[0][0]
-                            if first_step not in tile_map_mod.DIRECTIONS:
-                                continue
-                            if first_step in cur_blocked:
-                                continue
-                            if first_step == state.suppress_dir:
-                                continue
-                            candidates.append((t_visits, target, first_step))
-                        if candidates:
-                            candidates.sort()
-                            _, tgt, gdir = candidates[0]
-                            parts.append(
-                                f"GOAL_DIRECTION={gdir} (reach "
-                                f"under-explored map {tgt}, "
-                                f"visits={candidates[0][0]} "
-                                f"vs current {cur_visits}, "
-                                f"on this map {state.same_map_streak} turns)"
-                            )
+                            score += 1
+                        return score
+
+                    candidates: list[
+                        tuple[int, int, int, tuple[int, int], str]
+                    ] = []
+                    for tk, rec, dist in path_memory.nearby_records(
+                        gs.map_group, gs.map_num,
+                        pos_now[0], pos_now[1],
+                    ):
+                        try:
+                            tg, tn = (int(v) for v in tk.split("-"))
+                        except ValueError:
+                            continue
+                        target = (tg, tn)
+                        t_visits = state.map_visit_counts.get(target, 0)
+                        if t_visits >= cur_visits or not rec.seq:
+                            continue
+                        first_step = rec.seq[0]
+                        if first_step not in tile_map_mod.DIRECTIONS:
+                            continue
+                        if first_step in cur_blocked:
+                            continue
+                        if first_step == state.suppress_dir:
+                            continue
+                        onward = _onward_score(tk)
+                        candidates.append(
+                            (-onward, t_visits, dist, target, first_step)
+                        )
+                    if candidates:
+                        candidates.sort()
+                        neg_on, v_visits, v_dist, tgt, gdir = candidates[0]
+                        parts.append(
+                            f"GOAL_DIRECTION={gdir} (reach "
+                            f"map {tgt}: onward_paths={-neg_on}, "
+                            f"visits={v_visits} vs current {cur_visits}, "
+                            f"from-tile dist={v_dist})"
+                        )
                 state_summary_full = (
                     f"GOAL: {story_hint} | " + " | ".join(parts)
                 )
