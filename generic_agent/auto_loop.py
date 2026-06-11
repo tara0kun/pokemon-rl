@@ -539,16 +539,27 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                     if rec_brain is not None:
                         cur_blocked = list(rec_brain.blocked)
                 if pos_now is not None and not gs.in_battle:
+                    mk_for_bfs = tile_map._map_key(
+                        gs.map_group, gs.map_num
+                    )
+                    tiles_on_map = tile_map._store.get(mk_for_bfs, {})
+                    is_fresh_map = len(tiles_on_map) < 30
+                    bfs_prefer = (
+                        "farthest" if is_fresh_map else "nearest"
+                    )
                     bfs_first = tile_map.bfs_frontier_direction(
                         gs.map_group, gs.map_num,
                         pos_now[0], pos_now[1],
-                        prefer="nearest",
+                        prefer=bfs_prefer,
                     )
                     if bfs_first == state.suppress_dir or oscillating:
+                        alt_prefer = (
+                            "nearest" if is_fresh_map else "farthest"
+                        )
                         alt = tile_map.bfs_frontier_direction(
                             gs.map_group, gs.map_num,
                             pos_now[0], pos_now[1],
-                            prefer="farthest",
+                            prefer=alt_prefer,
                         )
                         if alt is not None and alt != state.suppress_dir:
                             bfs_first = alt

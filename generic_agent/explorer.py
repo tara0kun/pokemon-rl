@@ -76,16 +76,20 @@ class MapSurveyor:
         map_visits: int,
         same_map_streak: int,
     ) -> bool:
-        # One-shot per session: already surveyed → defer to Brain forever
-        if (map_group, map_num) in self.surveyed_this_session:
+        mk = self.tile_map._map_key(map_group, map_num)
+        tiles = self.tile_map._store.get(mk, {})
+        target = self._target_coverage(map_group)
+        already_surveyed = (map_group, map_num) in self.surveyed_this_session
+        if already_surveyed:
+            # Re-fire if coverage is severely sparse AND agent is stuck
+            if same_map_streak >= 50 and len(tiles) < target // 3:
+                self.surveyed_this_session.discard((map_group, map_num))
+                return True
             return False
         # Brand-new or barely-visited map → always survey first
         if map_visits <= 5:
             return True
         # Stalling early on a sparsely-mapped map → survey
-        mk = self.tile_map._map_key(map_group, map_num)
-        tiles = self.tile_map._store.get(mk, {})
-        target = self._target_coverage(map_group)
         if same_map_streak >= 30 and len(tiles) < target // 2:
             return True
         return False
