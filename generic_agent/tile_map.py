@@ -109,13 +109,66 @@ class TileMap:
         y: int,
         direction: str,
         moved: bool,
+        overworld: bool = True,
     ) -> None:
+        """Increment direction-try counter and mark blocked after 3 fails.
+
+        `overworld=False` short-circuits — direction presses during
+        dialogs, battles, recovery or paused-screen states don't move the
+        sprite and silently poison the tile's blocked list. Skip them.
+        """
         if direction not in DIRECTIONS:
+            return
+        if not overworld:
             return
         rec = self._get_record(map_group, map_num, x, y)
         rec.tried[direction] = rec.tried.get(direction, 0) + 1
         if not moved and rec.tried[direction] >= 3 and direction not in rec.blocked:
+            if len(rec.blocked) >= 3:
+                print(
+                    f"  [tile-map] refused 4-way seal at ({x},{y}) "
+                    f"on map {map_group}-{map_num}, reset tried/blocked"
+                )
+                rec.tried = {}
+                rec.blocked = []
+                return
             rec.blocked.append(direction)
+
+    def decay(
+        self,
+        map_group: int,
+        map_num: int,
+        max_remove_per_tile: int = 1,
+    ) -> int:
+        """Periodically relax over-blocked tiles so the agent re-probes.
+
+        For each tile on the map with >=3 blocked directions, remove the
+        last entry and zero its tried count, allowing the agent to retry.
+        """
+        mk = self._map_key(map_group, map_num)
+        tiles = self._store.get(mk, {})
+        touched = 0
+        for rec in tiles.values():
+            if len(rec.blocked) >= 3:
+                for _ in range(min(max_remove_per_tile, len(rec.blocked))):
+                    d = rec.blocked.pop()
+                    rec.tried[d] = 0
+                touched += 1
+        return touched
+
+    def cleanup_phantom_walls(self) -> int:
+        """One-shot: any tile with all 4 directions blocked is by
+        construction a recording bug (the agent had to stand on it to
+        record it, so at least one direction must be reachable). Clear
+        them so the next BFS sees real connectivity again."""
+        total = 0
+        for mk, tiles in self._store.items():
+            for rec in tiles.values():
+                if {"Up", "Down", "Left", "Right"} <= set(rec.blocked):
+                    rec.blocked = []
+                    rec.tried = {}
+                    total += 1
+        return total
 
     def summary_for(
         self,
@@ -169,6 +222,70 @@ class TileMap:
         else:
             parts.append("no_nearby_unexplored")
         return " ".join(parts)
+
+    def ascii_grid(
+        self,
+        map_group: int,
+        map_num: int,
+        cur_x: int | None = None,
+        cur_y: int | None = None,
+    ) -> str:
+        """Compact map dump for debugging / progress visualization.
+
+        Symbols:
+          @ current position    . visited tile (no all-direction info)
+          # all 4 dirs blocked  v Up blocked   ^ Down blocked
+          > Left blocked        < Right blocked
+          ? recorded but unvisited (visits==0)
+          space  no record yet
+        """
+        mk = self._map_key(map_group, map_num)
+        tiles = self._store.get(mk, {})
+        if not tiles:
+            return f"[map {mk}] no tiles known"
+
+        coords: list[tuple[int, int]] = []
+        for tk in tiles:
+            try:
+                x, y = (int(v) for v in tk.split(","))
+            except ValueError:
+                continue
+            coords.append((x, y))
+        if not coords:
+            return f"[map {mk}] no tile coords"
+        min_x = min(x for x, _ in coords)
+        max_x = max(x for x, _ in coords)
+        min_y = min(y for _, y in coords)
+        max_y = max(y for _, y in coords)
+
+        lines = [f"[map {mk}] {len(tiles)} tiles, x={min_x}-{max_x} y={min_y}-{max_y}"]
+        for y in range(min_y, max_y + 1):
+            row_chars: list[str] = []
+            for x in range(min_x, max_x + 1):
+                if cur_x is not None and (x, y) == (cur_x, cur_y):
+                    row_chars.append("@")
+                    continue
+                rec = tiles.get(self._tile_key(x, y))
+                if rec is None:
+                    row_chars.append(" ")
+                elif rec.visits == 0:
+                    row_chars.append("?")
+                else:
+                    blocked = set(rec.blocked)
+                    if {"Up", "Down", "Left", "Right"} <= blocked:
+                        row_chars.append("#")
+                    elif "Up" in blocked:
+                        row_chars.append("v")
+                    elif "Down" in blocked:
+                        row_chars.append("^")
+                    elif "Left" in blocked:
+                        row_chars.append(">")
+                    elif "Right" in blocked:
+                        row_chars.append("<")
+                    else:
+                        row_chars.append(".")
+            lines.append(f"  y={y:3d}: {''.join(row_chars)}")
+        return "\n".join(lines)
 
     def bfs_frontier_direction(
         self,
