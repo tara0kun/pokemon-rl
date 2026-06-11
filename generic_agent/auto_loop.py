@@ -615,6 +615,40 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                 )
                 if not path_line.startswith("no known"):
                     parts.append(path_line)
+
+                if state.same_map_streak >= 100 and pos_now is not None:
+                    from_map_key = f"{gs.map_group}-{gs.map_num}"
+                    from_paths = path_memory._store.get(from_map_key, {})
+                    if from_paths:
+                        cur_visits = state.map_visit_counts.get(map_key, 0)
+                        candidates: list[tuple[int, tuple[int, int], str]] = []
+                        for tk, paths in from_paths.items():
+                            try:
+                                tg, tn = (int(v) for v in tk.split("-"))
+                            except ValueError:
+                                continue
+                            target = (tg, tn)
+                            t_visits = state.map_visit_counts.get(target, 0)
+                            if t_visits >= cur_visits or not paths:
+                                continue
+                            first_step = paths[0][0]
+                            if first_step not in tile_map_mod.DIRECTIONS:
+                                continue
+                            if first_step in cur_blocked:
+                                continue
+                            if first_step == state.suppress_dir:
+                                continue
+                            candidates.append((t_visits, target, first_step))
+                        if candidates:
+                            candidates.sort()
+                            _, tgt, gdir = candidates[0]
+                            parts.append(
+                                f"GOAL_DIRECTION={gdir} (reach "
+                                f"under-explored map {tgt}, "
+                                f"visits={candidates[0][0]} "
+                                f"vs current {cur_visits}, "
+                                f"on this map {state.same_map_streak} turns)"
+                            )
                 state_summary_full = (
                     f"GOAL: {story_hint} | " + " | ".join(parts)
                 )
