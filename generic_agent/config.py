@@ -24,6 +24,9 @@ SOCKET_PORT = 8895
 SCREENSHOT_DIR = ROOT / "logs" / "screens"
 MEMORY_DIR = ROOT / "memory"
 LOG_DIR = ROOT / "logs"
+DATASET_DIR = ROOT / "dataset"
+DATASET_INDEX = DATASET_DIR / "demonstrations.jsonl"
+MODEL_DIR = ROOT / "models"
 
 SOCKET_TERMINATOR = "<|END|>"
 SOCKET_SUCCESS = "<|SUCCESS|>"
@@ -38,7 +41,7 @@ MAX_OUTPUT_TOKENS = 512
 
 
 def ensure_runtime_dirs() -> None:
-    for d in (SCREENSHOT_DIR, MEMORY_DIR, LOG_DIR):
+    for d in (SCREENSHOT_DIR, MEMORY_DIR, LOG_DIR, DATASET_DIR, MODEL_DIR):
         d.mkdir(parents=True, exist_ok=True)
 
 

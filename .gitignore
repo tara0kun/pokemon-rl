@@ -117,3 +117,9 @@ generic_agent/memory/frame_cache.json
 generic_agent/__pycache__/
 generic_agent/rom/*.gba
 generic_agent/rom/*.sav
+
+# Phase 3 imitation learning artifacts (large/regenerable)
+generic_agent/models/*.pt
+generic_agent/dataset/screens/
+generic_agent/dataset/demonstrations.jsonl
+generic_agent/tools/__pycache__/
