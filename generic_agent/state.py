@@ -22,6 +22,11 @@ from dataclasses import dataclass
 from .io import EmulatorError, MGBAClient
 
 SAVEBLOCK1_PTR_ADDR = 0x03005D8C
+PLAYER_PARTY_ADDR = 0x020244EC  # gPlayerParty[0] in Emerald (USA)
+POKEMON_STRUCT_SIZE = 100
+POKEMON_LEVEL_OFFSET = 0x54
+POKEMON_HP_OFFSET = 0x56
+POKEMON_MAX_HP_OFFSET = 0x58
 
 BATTLE_FLAGS_CANDIDATES = [
     0x020243CC,
@@ -41,6 +46,9 @@ class GameState:
     saveblock1_valid: bool
     in_battle: bool = False
     battle_flags: int = 0
+    party0_level: int = 0
+    party0_hp: int = 0
+    party0_max_hp: int = 0
 
     @property
     def is_trainer_battle(self) -> bool:
@@ -49,6 +57,12 @@ class GameState:
     @property
     def is_wild_battle(self) -> bool:
         return self.in_battle and not self.is_trainer_battle
+
+    @property
+    def party0_hp_frac(self) -> float:
+        if self.party0_max_hp <= 0:
+            return 1.0
+        return max(0.0, min(1.0, self.party0_hp / self.party0_max_hp))
 
     def short(self) -> str:
         if not self.saveblock1_valid:
@@ -130,6 +144,15 @@ def read_state(client: MGBAClient) -> GameState:
             battle_flags=flags,
         )
 
+    try:
+        lv = client.read8(PLAYER_PARTY_ADDR + POKEMON_LEVEL_OFFSET)
+        hp = client.read16(PLAYER_PARTY_ADDR + POKEMON_HP_OFFSET)
+        max_hp = client.read16(PLAYER_PARTY_ADDR + POKEMON_MAX_HP_OFFSET)
+        if lv > 100 or max_hp > 1000:
+            lv = hp = max_hp = 0
+    except EmulatorError:
+        lv = hp = max_hp = 0
+
     return GameState(
         map_group=mg,
         map_num=mn,
@@ -138,4 +161,7 @@ def read_state(client: MGBAClient) -> GameState:
         saveblock1_valid=True,
         in_battle=in_battle,
         battle_flags=flags,
+        party0_level=lv,
+        party0_hp=hp,
+        party0_max_hp=max_hp,
     )

@@ -199,6 +199,13 @@ def main() -> int:
         "--max-samples", type=int, default=0,
         help="cap dataset size (0 = all)",
     )
+    parser.add_argument(
+        "--exclude-sources",
+        nargs="+",
+        default=[],
+        help="substrings of `source` to exclude (e.g. 'dialog_continue' "
+             "to drop the A-heavy heuristic rows that bias the model).",
+    )
     args = parser.parse_args()
 
     index = config.DATASET_INDEX
@@ -211,6 +218,18 @@ def main() -> int:
 
     print(f"[dataset] loading index {index}")
     rows = load_dataset_index(index)
+    if args.exclude_sources:
+        before = len(rows)
+        rows = [
+            r for r in rows
+            if not any(
+                s in r.get("source", "") for s in args.exclude_sources
+            )
+        ]
+        print(
+            f"[dataset] excluded {before - len(rows)} rows whose "
+            f"source contains any of {args.exclude_sources}"
+        )
     if args.max_samples > 0:
         rows = rows[: args.max_samples]
     print(f"[dataset] {len(rows)} raw rows")
