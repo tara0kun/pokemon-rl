@@ -235,6 +235,37 @@ cycle 1 baseline 比で **positions 2.4×、 maps 6×** を同 cost で達成。
 
 ---
 
+## 2026-06-15 更新: Hybrid LLM-in-loop + 真の自律 self-check
+
+詳細は [generic_agent/daily_progress/2026-06-15.md](generic_agent/daily_progress/2026-06-15.md) 参照。
+
+### 主な前進
+- **starter Pokemon 取得を完全自律で達成** (5 時間 manual + Opus 試行で失敗 → hybrid アーキテクチャ実装 1.5 時間で達成)
+- party_count: 0 → **1 (Lv5)**
+- event flags: 180 → **193**
+- curriculum milestones: 4 → **8** (Route 101, May 家, lab 内部 等含む)
+- demos: 115K → **179K**
+- BC val best_score: 72 → **225**
+
+### アーキテクチャの主な変更
+| component | 内容 |
+|-----------|------|
+| `reward_state.py` | PWhiddy v2 port (event×4、 heal×10、 badge×10、 stuck escalation) + dense intermediate signals |
+| `brain_cnn.py` | STATE_DIM 28 → 2,464 (全 2,400 event bit + HP/lvl/badges/recent_actions/opp_lvl) |
+| `state.py` | gObjectEvents 読込 (16 NPC sprites)、 wall vs NPC blocker 区別 |
+| `llm_advisor.py` + `pokemon_emerald_knowledge.py` | Haiku 4.5 を dialog/menu/stuck で sparse 召喚、 3,687 chars の Emerald 知識 prompt |
+| `path_memory.py` | `find_path_to_map` (multi-hop BFS)、 `find_nearest_unexplored_map` (novelty drive) |
+| `goals.py` | 6 段階階層 goal、 `get_starter` の target_map バグ修正 ((1,0) → (1,4) Birch's lab) |
+| `tools/autonomous_monitor.py` | 60 秒毎 tick + 30 分毎 `self_check_analyze` (8 iter scores + milestones 分析) |
+| `tools/train_imitation.py` + `train_ppo.py` | CPU → **RTX 5060 cu128 GPU** (epoch 13× 高速化)、 SB3 PPO env (30K timesteps 検証完了) |
+
+### 設計の honest 限界
+- PPO 30K は学習指標は positive (explained_variance 0.11) だが story trigger 学習には数百万 steps 必要 (PWhiddy 並み)
+- Champion クリアは現スタックでは届かない見込み (PWhiddy v2 も 3 badge で頭打ち)
+- BC val score の variance は大 (max_button_frac=1.0 残存)
+
+---
+
 ## 技術的な学び
 
 ### 主要 bug & fix
