@@ -119,6 +119,104 @@ class TransitionMemory:
             json.dumps(out, ensure_ascii=False), encoding="utf-8"
         )
 
+    def neighbors(self, map_g: int, map_n: int) -> list[tuple[int, int]]:
+        """All maps directly reachable from (map_g, map_n) via recorded
+        transitions. Returns list of (g, n) tuples (dedup'd)."""
+        out: set[tuple[int, int]] = set()
+        inner = self._store.get(self._key(map_g, map_n), {})
+        for tk in inner:
+            try:
+                g, n = (int(v) for v in tk.split("-"))
+                out.add((g, n))
+            except ValueError:
+                continue
+        return list(out)
+
+    def find_path_to_map(
+        self,
+        start_g: int, start_n: int,
+        target_g: int, target_n: int,
+        max_hops: int = 8,
+    ) -> list[tuple[int, int]] | None:
+        """BFS shortest sequence of map transitions from start to target.
+
+        Returns the sequence as [(g1, n1), (g2, n2), ...] STARTING from
+        the first hop AFTER `start`, ending at `target`. Returns None
+        if no path exists in path_memory within max_hops.
+        """
+        if (start_g, start_n) == (target_g, target_n):
+            return []
+        visited: set[tuple[int, int]] = {(start_g, start_n)}
+        queue: list[tuple[tuple[int, int], list[tuple[int, int]]]] = [
+            ((start_g, start_n), [])
+        ]
+        while queue:
+            (cur_g, cur_n), path = queue.pop(0)
+            if len(path) >= max_hops:
+                continue
+            for nbr in self.neighbors(cur_g, cur_n):
+                if nbr in visited:
+                    continue
+                new_path = path + [nbr]
+                if nbr == (target_g, target_n):
+                    return new_path
+                visited.add(nbr)
+                queue.append((nbr, new_path))
+        return None
+
+    def find_nearest_unexplored_map(
+        self,
+        start_g: int, start_n: int,
+        recent_visited: list[tuple[int, int]],
+        max_hops: int = 8,
+    ) -> tuple[tuple[int, int], list[tuple[int, int]]] | None:
+        """BFS from start through known transitions, return the first
+        reachable map that is NOT in `recent_visited`.
+
+        Returns ((target_g, target_n), [(g1,n1), ..., (target_g, target_n)])
+        or None if everything reachable is "too familiar".
+        """
+        recent_set = set(recent_visited)
+        if (start_g, start_n) not in recent_set:
+            recent_set.add((start_g, start_n))
+        visited: set[tuple[int, int]] = {(start_g, start_n)}
+        queue: list[tuple[tuple[int, int], list[tuple[int, int]]]] = [
+            ((start_g, start_n), [])
+        ]
+        while queue:
+            (cur_g, cur_n), path = queue.pop(0)
+            if len(path) >= max_hops:
+                continue
+            for nbr in self.neighbors(cur_g, cur_n):
+                if nbr in visited:
+                    continue
+                new_path = path + [nbr]
+                if nbr not in recent_set:
+                    return nbr, new_path
+                visited.add(nbr)
+                queue.append((nbr, new_path))
+        return None
+
+    def first_transition_record(
+        self,
+        from_g: int, from_n: int,
+        to_g: int, to_n: int,
+        prefer_pos: tuple[int, int] | None = None,
+    ) -> "TransitionRecord | None":
+        """Return the best recorded transition record from (from_g,from_n)
+        to (to_g,to_n) — closest from_pos to `prefer_pos` if given."""
+        inner = self._store.get(self._key(from_g, from_n), {})
+        records = inner.get(self._key(to_g, to_n), [])
+        if not records:
+            return None
+        if prefer_pos is None:
+            return records[0]
+        def _dist(r):
+            if r.from_pos is None:
+                return float("inf")
+            return abs(r.from_pos[0] - prefer_pos[0]) + abs(r.from_pos[1] - prefer_pos[1])
+        return min(records, key=_dist)
+
     def record_transition(
         self,
         from_g: int,
