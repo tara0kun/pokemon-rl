@@ -37,6 +37,33 @@ POKEMON EMERALD EARLY GAME REFERENCE (use ONLY when uncertain about story progre
 13. After win, follow Birch back to lab
 14. Get to keep your starter Pokemon → party_count becomes 1
 
+# POST-STARTER walkthrough (party_count >= 1)
+ABSOLUTELY CRITICAL: After getting starter, the agent must learn battle survival and healing:
+
+15. WALK NORTH through Route 101 (map 0,16) to reach OLDALE TOWN (map 0,17)
+16. In Oldale Town, ENTER the POKEMON CENTER (red roof building):
+    - Walk to its door (south entrance), press UP to enter
+    - Inside, walk UP to NURSE JOY at counter, press A
+    - She fully HEALS your Pokemon (HP back to max). REPEAT WHENEVER HP < 50%.
+17. Continue WEST from Oldale through ROUTE 102 (map 0,18) - more wild grass
+18. Reach PETALBURG CITY (map 0,11) - where Dad (Norman) has his gym
+19. Petalburg: dad won't fight you yet; he says train more, fights only after 4 badges
+20. Go NORTH through ROUTE 104 then ROUTE 116 to reach RUSTBORO CITY (map 0,12)
+21. Rustboro Gym (Rock-type, Roxanne) - first badge target. Train Pokemon to Lv 10-12 before challenging.
+
+# Battle survival rules (when in_battle=True)
+- If your HP > 70% and opponent is wild: press A to use first move (FIGHT)
+- If your HP < 30%: use RUN — press DOWN, RIGHT, A in sequence (run/escape from wild battle)
+- If your HP < 50% AFTER battle: HEAD TO POKEMON CENTER (Oldale's, north of Route 101)
+- Trainer battles cannot be run from — fight to the end
+
+# Wild Pokemon Center heal sequence (Oldale)
+- In Oldale Town (0,17), Pokemon Center is the LEFT building with red roof
+- From any position in Oldale, walk west then north to find its door
+- Inside: walk UP to nurse at counter, press A several times to heal
+- The dialog says "We hope to see you again!"
+- After heal, party HP is full — exit and continue west/north
+
 # Tips
 - Always advance dialog with A (rarely B for skip)
 - If dialog says "Yes/No?" use D-pad to highlight YES, then A

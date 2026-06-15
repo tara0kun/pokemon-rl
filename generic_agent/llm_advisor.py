@@ -195,6 +195,7 @@ def should_consult(
     cur_turn: int,
     in_battle: bool,
     same_map_streak: int = 0,
+    hp_frac: float = 1.0,
     min_interval: int = 4,
 ) -> bool:
     """Trigger LLM only on situations the heuristic can't reason about."""
@@ -212,7 +213,12 @@ def should_consult(
         return True
     if same_pos_streak >= 8:
         return True
-    # NEW: same map for too long — LLM should suggest "leave this map" hints
     if same_map_streak >= 200 and (cur_turn - last_consult_turn >= 50):
+        return True
+    # NEW: low HP -> LLM should suggest fleeing battle / heading to Pokemon Center
+    if (
+        hp_frac < 0.4
+        and (cur_turn - last_consult_turn >= 30)
+    ):
         return True
     return False

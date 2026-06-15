@@ -579,10 +579,15 @@ def run(
                 prev_map_for_consult is not None
                 and cur_map_tuple != prev_map_for_consult
             )
+            hp_frac_now = (
+                gs.party0_hp_frac
+                if gs.party0_max_hp > 0 else 1.0
+            )
             if llm_mod.should_consult(
                 screen_signals, same_pos_streak, map_changed,
                 last_consult_turn, turn, gs.in_battle,
                 same_map_streak=same_map_streak,
+                hp_frac=hp_frac_now,
             ):
                 advice = advisor.consult(
                     shot, gs, screen_signals,
