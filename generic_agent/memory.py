@@ -44,3 +44,15 @@ def append_run_log(entry: dict[str, Any]) -> None:
     entry = {"ts": time.time(), **entry}
     with RUN_LOG_FILE.open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def append_to_path(path, entry: dict[str, Any]) -> None:
+    """Append a JSON record to an arbitrary JSONL file.
+
+    Used by claude_heuristic / claude_play to write demonstrations.
+    """
+    from pathlib import Path
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
