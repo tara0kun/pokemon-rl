@@ -140,3 +140,19 @@ class MGBAClient:
         p = Path(path).resolve()
         p.parent.mkdir(parents=True, exist_ok=True)
         self._send(f"core.screenshot,{p.as_posix()}")
+
+    def save_state_file(self, path: Path | str, flags: int = 1) -> bool:
+        """Write a savestate to disk via mGBA's core:saveStateFile.
+
+        Rule check: only save is exposed here; load is intentionally NOT
+        wrapped — project rule forbids saveStateLoad mid-run. Use this to
+        snapshot progress periodically so a crash doesn't lose work.
+        """
+        p = Path(path).resolve()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        r = self._send(f"core.saveStateFile,{p.as_posix()},{int(flags)}")
+        return not r.is_error
+
+    def save_state_slot(self, slot: int, flags: int = 1) -> bool:
+        r = self._send(f"core.saveStateSlot,{int(slot)},{int(flags)}")
+        return not r.is_error

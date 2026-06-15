@@ -21,6 +21,40 @@ import numpy as np
 MAX_LONG_EDGE = 480
 JPEG_QUALITY = 70
 
+# PWhiddy v2 frame stack count
+FRAME_STACK_SIZE = 4
+
+
+def stack_screens(paths: list[Path], img_size: int = 80) -> np.ndarray:
+    """Load up to FRAME_STACK_SIZE screenshots and return a (4, H, W, 3) array.
+
+    Older frames are padded with the most recent frame if fewer than 4
+    paths supplied (so the model still sees a consistent 4-stack input
+    early in an episode).
+    """
+    if not paths:
+        return np.zeros(
+            (FRAME_STACK_SIZE, img_size, img_size, 3), dtype=np.uint8,
+        )
+    frames: list[np.ndarray] = []
+    for p in paths[-FRAME_STACK_SIZE:]:
+        try:
+            img = cv2.imread(str(p), cv2.IMREAD_COLOR)
+            if img is None:
+                continue
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            img = cv2.resize(img, (img_size, img_size), interpolation=cv2.INTER_AREA)
+            frames.append(img)
+        except (cv2.error, OSError):
+            continue
+    if not frames:
+        return np.zeros(
+            (FRAME_STACK_SIZE, img_size, img_size, 3), dtype=np.uint8,
+        )
+    while len(frames) < FRAME_STACK_SIZE:
+        frames.insert(0, frames[0])
+    return np.stack(frames, axis=0)
+
 
 def load_png_as_array(path: Path) -> np.ndarray:
     arr = cv2.imread(str(path), cv2.IMREAD_COLOR)
@@ -33,6 +67,18 @@ def frame_hash(arr: np.ndarray) -> str:
     """64x64 downsampled MD5 — robust to tiny pixel noise."""
     small = cv2.resize(arr, (64, 64), interpolation=cv2.INTER_AREA)
     return hashlib.md5(small.tobytes()).hexdigest()
+
+
+def frame_embedding(arr: np.ndarray, dim: int = 64) -> np.ndarray:
+    """PWhiddy v1 KNN exploration embedding.
+
+    8x8 downsampled grayscale = 64-d uint8 vec. Coarse enough that
+    near-duplicate frames cluster but novel scenes are far apart in L2.
+    """
+    gray = cv2.cvtColor(arr, cv2.COLOR_BGR2GRAY)
+    side = int(np.sqrt(dim))
+    small = cv2.resize(gray, (side, side), interpolation=cv2.INTER_AREA)
+    return small.flatten().astype(np.float32)
 
 
 def frames_differ(
