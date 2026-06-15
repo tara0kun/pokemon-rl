@@ -87,6 +87,8 @@ class AutoLoopState:
     suppress_until_turn: int = 0
     sign_tiles: dict[tuple[int, int, int, int], int] = field(default_factory=dict)
     health_buffer: list[tuple[int, int, int, int]] = field(default_factory=list)
+    entry_dir: str | None = None
+    force_explore_until_turn: int = 0
 
 
 def take_screenshot(client: MGBAClient, turn: int) -> Path:
@@ -188,6 +190,8 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                         if state.last_action in opposite:
                             state.suppress_dir = opposite[state.last_action]
                             state.suppress_until_turn = state.turn + 12
+                            state.entry_dir = state.last_action
+                            state.force_explore_until_turn = state.turn + 30
                     state.recent_maps.append(map_key)
                     if len(state.recent_maps) > 10:
                         state.recent_maps.pop(0)
@@ -772,6 +776,136 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                         "A", 8, source="fallback"
                     )
                 decision_source = decision.source
+
+            anomaly_kind: str | None = None
+            if state.same_pos_streak >= 8 and not gs.in_battle:
+                anomaly_kind = "pos_stuck"
+            elif (
+                len(state.recent_maps) >= 6
+                and len(set(state.recent_maps[-6:])) == 2
+                and not gs.in_battle
+            ):
+                anomaly_kind = "door_ping"
+            elif (
+                len(state.pos_window) >= 15
+                and len(set(state.pos_window[-15:])) <= 6
+                and not gs.in_battle
+            ):
+                anomaly_kind = "small_circle"
+            elif (
+                len(state.pos_window) >= 40
+                and len(set(state.pos_window[-40:])) <= 12
+                and not gs.in_battle
+            ):
+                anomaly_kind = "med_circle"
+            elif (
+                state.same_map_streak >= 200
+                and gs.saveblock1_valid
+                and pos_now is not None
+            ):
+                mk_anom = tile_map._map_key(gs.map_group, gs.map_num)
+                tiles_now = tile_map._store.get(mk_anom, {})
+                visited_count = sum(
+                    1 for r in tiles_now.values() if r.visits > 0
+                )
+                if visited_count < 30:
+                    anomaly_kind = "map_lockin"
+            if anomaly_kind is not None and pos_now is not None:
+                escape_pool = [
+                    "B", "Up", "Right", "Down", "Left",
+                    "B", "Down", "Left", "Up", "Right",
+                    "A", "B", "Start", "B",
+                ]
+                step_idx = (state.same_pos_streak * 3 + state.turn) % len(escape_pool)
+                anomaly_btn = escape_pool[step_idx]
+                decision = local_brain.LocalDecision(
+                    button=anomaly_btn, frames=15,
+                    source=f"anomaly_escape({anomaly_kind}:{anomaly_btn})",
+                )
+                decision_source = decision.source
+
+            door_pingpong = (
+                len(state.recent_maps) >= 4
+                and state.recent_maps[-1] != state.recent_maps[-2]
+                and state.recent_maps[-3] != state.recent_maps[-2]
+                and state.recent_maps[-1] == state.recent_maps[-3]
+                and state.last_action == decision.button
+                and decision.button in {"Up", "Down", "Left", "Right"}
+                and not gs.in_battle
+            )
+            if door_pingpong and pos_now is not None:
+                perp_pool = {
+                    "Up": ["Right", "Down", "Left"],
+                    "Down": ["Left", "Up", "Right"],
+                    "Left": ["Down", "Right", "Up"],
+                    "Right": ["Up", "Left", "Down"],
+                }[decision.button]
+                mk_pp = tile_map._map_key(gs.map_group, gs.map_num)
+                rec_pp = tile_map._store.get(mk_pp, {}).get(
+                    tile_map._tile_key(pos_now[0], pos_now[1])
+                )
+                cur_blocked_pp = (
+                    set(rec_pp.blocked) if rec_pp is not None else set()
+                )
+                alternatives = [
+                    d for d in perp_pool if d not in cur_blocked_pp
+                ]
+                if alternatives:
+                    chosen = alternatives[state.turn % len(alternatives)]
+                    decision = local_brain.LocalDecision(
+                        button=chosen, frames=15,
+                        source=f"door_pingpong_break({chosen})",
+                    )
+                    decision_source = decision.source
+
+            if (
+                state.entry_dir is not None
+                and state.turn < state.force_explore_until_turn
+                and decision.button in {"Up", "Down", "Left", "Right"}
+                and not gs.in_battle
+                and pos_now is not None
+                and not door_pingpong
+            ):
+                opp = {
+                    "Up": "Down", "Down": "Up",
+                    "Left": "Right", "Right": "Left",
+                }.get(state.entry_dir)
+                perpendicular = {
+                    "Up": ("Right", "Left"),
+                    "Down": ("Left", "Right"),
+                    "Left": ("Up", "Down"),
+                    "Right": ("Down", "Up"),
+                }[state.entry_dir]
+                mk_av = tile_map._map_key(gs.map_group, gs.map_num)
+                rec_av = tile_map._store.get(mk_av, {}).get(
+                    tile_map._tile_key(pos_now[0], pos_now[1])
+                )
+                cur_blocked_now = (
+                    set(rec_av.blocked) if rec_av is not None else set()
+                )
+                forced_btn: str | None = None
+                if (
+                    state.entry_dir not in cur_blocked_now
+                    and decision.button != state.entry_dir
+                ):
+                    forced_btn = state.entry_dir
+                elif decision.button == opp:
+                    perp_options = [
+                        d for d in perpendicular if d not in cur_blocked_now
+                    ]
+                    if perp_options:
+                        forced_btn = perp_options[
+                            state.turn % len(perp_options)
+                        ]
+                if forced_btn is not None:
+                    decision = local_brain.LocalDecision(
+                        button=forced_btn, frames=15,
+                        source=(
+                            f"forward_force({forced_btn}"
+                            f",entry={state.entry_dir})"
+                        ),
+                    )
+                    decision_source = decision.source
 
             execute_button(client, decision.button, decision.frames)
             state.last_action = decision.button
