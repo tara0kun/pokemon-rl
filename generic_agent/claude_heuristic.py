@@ -151,11 +151,17 @@ def heuristic_button(
             cur_info = None
             mc = None
         if cur_info and mc is not None:
-            mh_chain = pm.find_path_to_map(
+            mh_chain = mc.map_path(
                 gs.map_group, gs.map_num,
                 effective_goal_map[0], effective_goal_map[1],
-                max_hops=6,
+                max_hops=8,
             )
+            if mh_chain is None:
+                mh_chain = pm.find_path_to_map(
+                    gs.map_group, gs.map_num,
+                    effective_goal_map[0], effective_goal_map[1],
+                    max_hops=6,
+                )
             next_hop_name = None
             if mh_chain:
                 next_hop = mh_chain[0]

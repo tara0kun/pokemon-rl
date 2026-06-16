@@ -186,20 +186,36 @@ class MapCache:
                 row.append((b >> 10) & 0x3)
             collision.append(row)
         conns: dict[str, dict] = {}
+        def _norm(s: str) -> str:
+            parts = s.replace("MAP_", "").split("_")
+            out: list[str] = []
+            for p in parts:
+                if not p:
+                    continue
+                if p[0].isalpha():
+                    out.append(p[0].upper() + p[1:].lower())
+                else:
+                    out.append(p)
+            return "".join(out)
         for c in map_json.get("connections") or []:
             d = c.get("direction")
             if d:
-                raw_name = c.get("map", "").replace("MAP_", "")
-                # Normalize: MAP_ROUTE_101 → Route101, MAP_LITTLEROOT_TOWN → LittlerootTown
-                parts = raw_name.split("_")
-                normalized = "".join(p.capitalize() for p in parts)
                 conns[d] = {
-                    "map_name": normalized,
+                    "map_name": _norm(c.get("map", "")),
                     "offset": int(c.get("offset", 0)),
                 }
         warps_raw = map_json.get("warp_events") or []
         def _norm(s: str) -> str:
-            return "".join(p.capitalize() for p in s.replace("MAP_", "").split("_"))
+            parts = s.replace("MAP_", "").split("_")
+            out: list[str] = []
+            for p in parts:
+                if not p:
+                    continue
+                if p[0].isalpha():
+                    out.append(p[0].upper() + p[1:].lower())
+                else:
+                    out.append(p)
+            return "".join(out)
         warps = [
             {
                 "x": int(w.get("x", 0)),
@@ -241,6 +257,65 @@ class MapCache:
                     continue
                 visited.add((nx, ny))
                 q.append(((nx, ny), path + [btn]))
+        return None
+
+    def neighbor_maps(self, map_g: int, map_n: int) -> set[str]:
+        """All maps directly reachable from (map_g, map_n) via either
+        an edge connection or an interior warp."""
+        info = self.get(map_g, map_n)
+        if info is None:
+            return set()
+        out: set[str] = set()
+        for d, conn in info.connections.items():
+            if conn["map_name"]:
+                out.add(conn["map_name"])
+        for w in info.warps:
+            if w["dest_map"]:
+                out.add(w["dest_map"])
+        return out
+
+    def find_map_by_name(self, name: str) -> tuple[int, int] | None:
+        """Reverse lookup name → (map_g, map_n). Accepts both raw map_groups
+        format ("LittlerootTown_BrendansHouse_1F") and connection/warp
+        normalized form ("LittlerootTownBrendansHouse1F")."""
+        if not self._ensure_index():
+            return None
+        # Build normalized key from input
+        def _norm_key(s: str) -> str:
+            return s.replace("_", "").lower()
+        target = _norm_key(name)
+        for g, grp in enumerate(self._map_groups):
+            for n, mname in enumerate(grp):
+                if _norm_key(mname) == target:
+                    return (g, n)
+        return None
+
+    def map_path(
+        self, start_g: int, start_n: int,
+        target_g: int, target_n: int,
+        max_hops: int = 8,
+    ) -> list[tuple[int, int]] | None:
+        """Graph BFS over (connection + warp) neighbors. Returns list of
+        intermediate maps from start (exclusive) to target (inclusive)."""
+        if (start_g, start_n) == (target_g, target_n):
+            return []
+        q: deque[tuple[tuple[int, int], list[tuple[int, int]]]] = deque([
+            ((start_g, start_n), [])
+        ])
+        visited: set[tuple[int, int]] = {(start_g, start_n)}
+        while q:
+            cur, path = q.popleft()
+            if len(path) >= max_hops:
+                continue
+            for nbr_name in self.neighbor_maps(*cur):
+                nbr_pos = self.find_map_by_name(nbr_name)
+                if nbr_pos is None or nbr_pos in visited:
+                    continue
+                new_path = path + [nbr_pos]
+                if nbr_pos == (target_g, target_n):
+                    return new_path
+                visited.add(nbr_pos)
+                q.append((nbr_pos, new_path))
         return None
 
     def exit_tiles_toward(
