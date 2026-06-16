@@ -346,7 +346,12 @@ class MapCache:
         info = self.get(map_g, map_n)
         if info is None:
             return set()
-        return {(w["x"], w["y"]) for w in info.warps if w["dest_map"] == dest_name}
+        target_key = dest_name.replace("_", "").lower()
+        return {
+            (w["x"], w["y"])
+            for w in info.warps
+            if w["dest_map"].replace("_", "").lower() == target_key
+        }
 
 
 _global_cache: MapCache | None = None
