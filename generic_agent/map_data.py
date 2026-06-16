@@ -358,6 +358,28 @@ class MapCache:
             if w["dest_map"].replace("_", "").lower() == target_key
         }
 
+    def warp_step_direction(
+        self, map_g: int, map_n: int, x: int, y: int,
+    ) -> str | None:
+        """When standing ON a warp tile, direction to press to trigger it.
+
+        Pokemon Emerald doors and edge warps fire when the player walks OFF
+        the warp tile. Door tiles on map boundaries → press toward that
+        boundary. Interior warps (stairs/holes) typically fire on A or any
+        walk attempt; caller should fall back to A then random walk."""
+        info = self.get(map_g, map_n)
+        if info is None:
+            return None
+        if y >= info.height - 1:
+            return "Down"
+        if y <= 0:
+            return "Up"
+        if x <= 0:
+            return "Left"
+        if x >= info.width - 1:
+            return "Right"
+        return None
+
 
 _global_cache: MapCache | None = None
 

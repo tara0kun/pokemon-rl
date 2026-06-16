@@ -190,6 +190,14 @@ def heuristic_button(
                             f"mapbfs:{next_btn}->{next_hop_name}"
                             f"(dist={len(bfs_path)})"
                         )
+                    if bfs_path == [] and (gs.x, gs.y) in target_tiles:
+                        step_btn = mc.warp_step_direction(
+                            gs.map_group, gs.map_num, gs.x, gs.y,
+                        )
+                        if step_btn is not None:
+                            return step_btn, (
+                                f"mapbfs_warp:{step_btn}->{next_hop_name}"
+                            )
         path_hops = pm.find_path_to_map(
             gs.map_group, gs.map_num,
             effective_goal_map[0], effective_goal_map[1],
@@ -205,8 +213,20 @@ def heuristic_button(
             if r is not None and r.from_pos is not None and r.seq:
                 hop_key = f"{next_hop[0]}-{next_hop[1]}"
                 if (gs.x, gs.y) == r.from_pos:
-                    return r.seq[0], (
-                        f"goal_warp:{r.seq[0]}->{hop_key}"
+                    btn = r.seq[0]
+                    if btn == "A":
+                        try:
+                            mc2 = map_data_mod.get_cache()
+                            step = mc2.warp_step_direction(
+                                gs.map_group, gs.map_num, gs.x, gs.y,
+                            )
+                        except (OSError, RuntimeError):
+                            step = None
+                        if step is not None:
+                            btn = step
+                            return btn, f"goal_warp_step:{btn}->{hop_key}"
+                    return btn, (
+                        f"goal_warp:{btn}->{hop_key}"
                         f"@hops={len(path_hops)}"
                     )
                 d = _toward(gs.x, gs.y, r.from_pos[0], r.from_pos[1])
