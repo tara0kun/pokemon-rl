@@ -216,12 +216,17 @@ class MapCache:
                 else:
                     out.append(p)
             return "".join(out)
+        def _safe_int(v) -> int:
+            try:
+                return int(v)
+            except (TypeError, ValueError):
+                return 0
         warps = [
             {
-                "x": int(w.get("x", 0)),
-                "y": int(w.get("y", 0)),
+                "x": _safe_int(w.get("x", 0)),
+                "y": _safe_int(w.get("y", 0)),
                 "dest_map": _norm(str(w.get("dest_map", ""))),
-                "dest_warp_id": int(w.get("dest_warp_id", 0)),
+                "dest_warp_id": _safe_int(w.get("dest_warp_id", 0)),
             }
             for w in warps_raw
         ]
