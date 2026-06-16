@@ -57,16 +57,22 @@ GOAL_TABLE: list[Goal] = [
         desc="Pokemon 0 匹 → Birch's lab (1-4) で starter 取得 (LLM が Route 101 経由 Birch 救助も指示する)",
     ),
     Goal(
-        name="reach_route_102",
-        target_map=(0, 17),
+        name="reach_oldale",
+        target_map=(0, 10),
         condition="first_starter",
-        desc="starter 取得 → Oldale (0-17) 経由 Route 102",
+        desc="starter 取得 → Oldale Town (0-10) で heal、 Route 102 (0-18) へ西",
+    ),
+    Goal(
+        name="reach_route_102",
+        target_map=(0, 18),
+        condition="no_badge",
+        desc="Oldale → Route 102 西 → Petalburg City",
     ),
     Goal(
         name="reach_petalburg_gym",
         target_map=(0, 11),
-        condition="no_badge",
-        desc="Route 102 → Petalburg City gym",
+        condition="badge>=0",
+        desc="Petalburg City gym (Dad's gym) — まず Rustboro 行く",
     ),
     Goal(
         name="reach_rustboro_gym",
