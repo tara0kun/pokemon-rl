@@ -46,6 +46,7 @@ from . import (
     goals as goals_mod,
     knn_explorer as knn_mod,
     llm_advisor as llm_mod,
+    map_data as map_data_mod,
     memory,
     path_memory as path_memory_mod,
     preprocess,
@@ -143,6 +144,46 @@ def heuristic_button(
         and gs.saveblock1_valid
         and (gs.map_group, gs.map_num) != effective_goal_map
     ):
+        try:
+            mc = map_data_mod.get_cache()
+            cur_info = mc.get(gs.map_group, gs.map_num)
+        except (OSError, RuntimeError):
+            cur_info = None
+            mc = None
+        if cur_info and mc is not None:
+            mh_chain = pm.find_path_to_map(
+                gs.map_group, gs.map_num,
+                effective_goal_map[0], effective_goal_map[1],
+                max_hops=6,
+            )
+            next_hop_name = None
+            if mh_chain:
+                next_hop = mh_chain[0]
+                next_hop_name = mc.name_for(*next_hop)
+            elif effective_goal_map is not None:
+                next_hop_name = mc.name_for(*effective_goal_map)
+            if next_hop_name:
+                target_tiles: set[tuple[int, int]] = set()
+                for direction, conn in cur_info.connections.items():
+                    if conn["map_name"] == next_hop_name:
+                        target_tiles |= mc.exit_tiles_toward(
+                            gs.map_group, gs.map_num, direction,
+                        )
+                if not target_tiles:
+                    target_tiles |= mc.warp_tiles_for(
+                        gs.map_group, gs.map_num, next_hop_name,
+                    )
+                if target_tiles and cur_info.walkable(gs.x, gs.y):
+                    bfs_path = mc.bfs_to_tile(
+                        gs.map_group, gs.map_num,
+                        (gs.x, gs.y), target_tiles,
+                    )
+                    if bfs_path:
+                        next_btn = bfs_path[0]
+                        return next_btn, (
+                            f"mapbfs:{next_btn}->{next_hop_name}"
+                            f"(dist={len(bfs_path)})"
+                        )
         path_hops = pm.find_path_to_map(
             gs.map_group, gs.map_num,
             effective_goal_map[0], effective_goal_map[1],
