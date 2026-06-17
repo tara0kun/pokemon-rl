@@ -207,18 +207,18 @@ def should_consult(
         return True
     if screen_signals.get("letter_entry"):
         return True
-    if in_battle and (cur_turn - last_consult_turn >= 8):
+    if in_battle and (cur_turn - last_consult_turn >= 12):
         return True
     if map_changed_recent:
         return True
-    if same_pos_streak >= 8:
+    if same_pos_streak >= 30:
         return True
-    if same_map_streak >= 200 and (cur_turn - last_consult_turn >= 50):
+    if same_map_streak >= 300 and (cur_turn - last_consult_turn >= 80):
         return True
-    # NEW: low HP -> LLM should suggest fleeing battle / heading to Pokemon Center
     if (
-        hp_frac < 0.4
-        and (cur_turn - last_consult_turn >= 30)
+        hp_frac < 0.3
+        and same_pos_streak >= 10
+        and (cur_turn - last_consult_turn >= 60)
     ):
         return True
     return False
