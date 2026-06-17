@@ -43,6 +43,15 @@ class Goal:
             return gs.party_count == 1 and gs.badge_count == 0
         if c == "no_badge":
             return gs.badge_count == 0 and gs.party_count >= 1
+        if c == "no_badge_pre_pokedex":
+            # FLAG_ADVENTURE_STARTED = 0x74 is set on Pokedex receipt, which
+            # bumps total_event_flags by ~3-5 (the cutscene sets several
+            # related flags). Empirically <200 flags = pre-Pokedex.
+            return (
+                gs.badge_count == 0
+                and gs.party_count >= 1
+                and gs.total_event_flags < 200
+            )
         if c.startswith("badge>="):
             n = int(c.split(">=")[1])
             return gs.badge_count >= n
@@ -61,6 +70,12 @@ GOAL_TABLE: list[Goal] = [
         target_map=(0, 10),
         condition="first_starter",
         desc="starter 取得 → Oldale Town (0-10) で Pokemon Center heal",
+    ),
+    Goal(
+        name="reach_route_103_rival",
+        target_map=(0, 18),
+        condition="no_badge_pre_pokedex",
+        desc="Pokedex 取得前: Route 103 (0-18) で Rival 戦闘 → VAR_BIRCH_LAB_STATE=4 → 次の lab 訪問で Pokedex auto-trigger → FLAG_ADVENTURE_STARTED set → Oldale 西 Painter gate 解除",
     ),
     Goal(
         name="reach_route_102",
@@ -90,10 +105,21 @@ GOAL_TABLE: list[Goal] = [
 
 
 def current_goal(gs) -> Goal | None:
+    """First matching goal whose target_map differs from agent's current
+    map. Skipping already-reached goals lets the goal chain advance: if
+    we're at Oldale and `reach_oldale` matches but its target is Oldale,
+    fall through to the next match (e.g. `reach_route_103_rival`)."""
+    cur = (getattr(gs, "map_group", -1), getattr(gs, "map_num", -1))
+    fallback = None
     for g in GOAL_TABLE:
-        if g.matches(gs):
-            return g
-    return None
+        if not g.matches(gs):
+            continue
+        if g.target_map == cur:
+            if fallback is None:
+                fallback = g
+            continue
+        return g
+    return fallback
 
 
 def append_note(note: str) -> None:
