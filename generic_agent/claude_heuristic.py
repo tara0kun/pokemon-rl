@@ -121,6 +121,17 @@ def heuristic_button(
             d for d in NORTH_BIAS_ORDER if d != avoid
         ]
         return order_alt[0], f"front_blocked_pivot:{order_alt[0]}"
+    if (
+        same_pos_streak >= 8
+        and last_action in DIRECTIONS
+        and not gs.in_battle
+        and gs.saveblock1_valid
+    ):
+        cycle = ("A", "A", "A", "B")
+        return cycle[same_pos_streak % len(cycle)], (
+            f"hidden_battle_probe:{cycle[same_pos_streak % len(cycle)]}"
+            f"@streak={same_pos_streak}"
+        )
     explore_target: tuple[int, int] | None = None
     if (
         same_map_streak >= 200
