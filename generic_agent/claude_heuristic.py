@@ -132,6 +132,32 @@ def heuristic_button(
             f"hidden_battle_probe:{cycle[same_pos_streak % len(cycle)]}"
             f"@streak={same_pos_streak}"
         )
+    if (
+        same_map_streak >= 100
+        and not gs.in_battle
+        and gs.saveblock1_valid
+        and (current_goal is None or (gs.map_group, gs.map_num) != (current_goal.target_map or (0, 0)))
+    ):
+        try:
+            mc_w = map_data_mod.get_cache()
+            rival_xy = mc_w.find_npc_by_script_keyword(
+                gs.map_group, gs.map_num, "rival",
+            )
+        except (OSError, RuntimeError):
+            rival_xy = None
+            mc_w = None
+        if rival_xy is not None and mc_w is not None:
+            rx, ry = rival_xy
+            adj = {(rx-1, ry), (rx+1, ry), (rx, ry-1), (rx, ry+1)}
+            adj = {t for t in adj if mc_w.get(gs.map_group, gs.map_num).walkable(*t)}
+            if (gs.x, gs.y) in adj:
+                d = _toward(gs.x, gs.y, rx, ry)
+                return "A", f"rival_talk:A@{rx},{ry}"
+            path = mc_w.bfs_to_tile(
+                gs.map_group, gs.map_num, (gs.x, gs.y), adj,
+            )
+            if path:
+                return path[0], f"rival_seek:{path[0]}->{rx},{ry}(d={len(path)})"
     explore_target: tuple[int, int] | None = None
     if (
         same_map_streak >= 200

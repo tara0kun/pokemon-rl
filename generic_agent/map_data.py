@@ -51,6 +51,7 @@ class MapInfo:
     collision: list[list[int]] = field(default_factory=list)  # [y][x] 0=walkable
     connections: dict[str, dict] = field(default_factory=dict)  # "up": {"map_name":..., "offset":...}
     warps: list[dict] = field(default_factory=list)  # [{x,y,dest_map,dest_warp_id}]
+    object_events: list[dict] = field(default_factory=list)  # [{x,y,script,flag}]
 
     def walkable(self, x: int, y: int) -> bool:
         if x < 0 or y < 0 or y >= len(self.collision) or x >= len(self.collision[0]):
@@ -230,10 +231,22 @@ class MapCache:
             }
             for w in warps_raw
         ]
+        objs_raw = map_json.get("object_events") or []
+        object_events = [
+            {
+                "x": _safe_int(o.get("x", 0)),
+                "y": _safe_int(o.get("y", 0)),
+                "script": str(o.get("script", "")),
+                "flag": str(o.get("flag", "")),
+                "gfx": str(o.get("graphics_id", "")),
+            }
+            for o in objs_raw
+        ]
         info = MapInfo(
             map_g=map_g, map_n=map_n, name=name, layout_id=layout_id,
             width=W, height=H, collision=collision,
             connections=conns, warps=warps,
+            object_events=object_events,
         )
         self._maps[key] = info
         return info
@@ -357,6 +370,22 @@ class MapCache:
             for w in info.warps
             if w["dest_map"].replace("_", "").lower() == target_key
         }
+
+    def find_npc_by_script_keyword(
+        self, map_g: int, map_n: int, keyword: str,
+    ) -> tuple[int, int] | None:
+        """Return canonical (x,y) of first object_event whose script
+        contains `keyword`. Used to find story NPCs (Rival, Birch) by
+        their canonical pokeemerald script name without hard-coding
+        coordinates in our heuristic."""
+        info = self.get(map_g, map_n)
+        if info is None:
+            return None
+        kw = keyword.lower()
+        for oe in info.object_events:
+            if kw in oe.get("script", "").lower():
+                return (oe["x"], oe["y"])
+        return None
 
     def warp_step_direction(
         self, map_g: int, map_n: int, x: int, y: int,
