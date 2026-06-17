@@ -108,7 +108,7 @@ def heuristic_button(
         return "A", "dialog_visible:A"
     if screen_signals.get("menu") and not gs.in_battle:
         return "B", "menu_visible:B"
-    if screen_signals.get("battle_menu") and gs.in_battle:
+    if screen_signals.get("battle_menu"):
         return "A", "battle_menu_visible:A"
     if (
         screen_signals.get("front_blocked")
