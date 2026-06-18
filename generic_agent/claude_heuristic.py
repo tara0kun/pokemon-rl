@@ -902,7 +902,12 @@ def run(
             )
             if visited_count < 30:
                 anomaly_kind = "map_lockin"
-        if anomaly_kind is not None and gs.saveblock1_valid:
+        goal_directed = src.startswith(("mapbfs", "rival_seek", "rival_talk", "goal_"))
+        if (
+            anomaly_kind is not None
+            and gs.saveblock1_valid
+            and not goal_directed
+        ):
             escape_pool = [
                 "B", "Up", "Right", "Down", "Left",
                 "B", "Down", "Left", "Up", "Right",
