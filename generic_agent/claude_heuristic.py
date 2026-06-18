@@ -153,10 +153,25 @@ def heuristic_button(
                 rs_btn = path[0]
                 if same_pos_streak >= 30:
                     rotor = ["Up", "Right", "Down", "Left"]
+                    deltas = {"Up": (0, -1), "Right": (1, 0),
+                              "Down": (0, 1), "Left": (-1, 0)}
+                    cur_info_w = mc_w.get(gs.map_group, gs.map_num)
                     base = rotor.index(rs_btn) if rs_btn in rotor else 0
-                    rs_btn = rotor[(base + 1 + (same_pos_streak // 10)) % 4]
-                    return rs_btn, (
-                        f"rival_seek_pivot:{rs_btn}->{rx},{ry}"
+                    candidates: list[str] = []
+                    for k in range(4):
+                        d = rotor[(base + k) % 4]
+                        if d == last_action and same_pos_streak >= 10:
+                            continue
+                        dx, dy = deltas[d]
+                        nx, ny = gs.x + dx, gs.y + dy
+                        if cur_info_w is not None and cur_info_w.walkable(nx, ny):
+                            candidates.append(d)
+                    if candidates:
+                        choice = candidates[(same_pos_streak // 10) % len(candidates)]
+                    else:
+                        choice = rotor[(base + 1 + (same_pos_streak // 10)) % 4]
+                    return choice, (
+                        f"rival_seek_pivot:{choice}->{rx},{ry}"
                         f"@streak={same_pos_streak}"
                     )
                 return rs_btn, f"rival_seek:{rs_btn}->{rx},{ry}(d={len(path)})"
