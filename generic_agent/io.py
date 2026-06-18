@@ -156,3 +156,18 @@ class MGBAClient:
     def save_state_slot(self, slot: int, flags: int = 1) -> bool:
         r = self._send(f"core.saveStateSlot,{int(slot)},{int(flags)}")
         return not r.is_error
+
+    def load_state_file(self, path: Path | str, flags: int = 1) -> bool:
+        """Load a savestate from disk via mGBA's core:loadStateFile.
+
+        CLAUDE.md forbids saveStateLoad as a way to reset story progress to
+        bypass blockers. This wrapper exists for EMERGENCY RESTORE ONLY:
+        when mGBA itself unintentionally terminates and the in-game save
+        rolls back to an earlier point, loading the last autosnap returns
+        the agent to where it actually was. Do not use for routine skips.
+        """
+        p = Path(path).resolve()
+        if not p.exists():
+            raise EmulatorError(f"savestate not found: {p}")
+        r = self._send(f"core.loadStateFile,{p.as_posix()},{int(flags)}")
+        return not r.is_error
