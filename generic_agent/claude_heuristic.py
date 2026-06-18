@@ -122,14 +122,17 @@ def heuristic_button(
         ]
         return order_alt[0], f"front_blocked_pivot:{order_alt[0]}"
     cur_map = (gs.map_group, gs.map_num)
-    any_goal_targets_here = any(
-        g.matches(gs) and g.target_map == cur_map for g in goals_mod.GOAL_TABLE
+    rival_goal_targets_here = any(
+        g.matches(gs)
+        and g.target_map == cur_map
+        and "rival" in g.name.lower()
+        for g in goals_mod.GOAL_TABLE
     )
     if (
         same_map_streak >= 100
         and not gs.in_battle
         and gs.saveblock1_valid
-        and any_goal_targets_here
+        and rival_goal_targets_here
     ):
         try:
             mc_w = map_data_mod.get_cache()
