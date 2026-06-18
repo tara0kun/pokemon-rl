@@ -60,18 +60,25 @@ class Goal:
                 and rival_defeated == 0
             )
         if c == "rival_defeated_no_pokedex":
-            # After defeating Route 103 Rival, FLAG_DEFEATED_RIVAL_ROUTE103
-            # is set (bumps flags by 1). Pokedex auto-triggers on next
-            # Birch lab entry. Empirical: 195 <= flags < 200 spans this gap.
+            # After Rival defeat: FLAG_DEFEATED_RIVAL_ROUTE103 (0x82) set.
+            # After Pokedex received: FLAG_ADVENTURE_STARTED (0x74) set.
+            # We want this goal active in the gap between those two events.
             try:
                 fbytes = bytes.fromhex(gs.event_flag_bytes_hex or "")
-                defeated_byte = fbytes[0x82 // 8] if len(fbytes) > 0x82 // 8 else 0
-                rival_defeated = (defeated_byte >> (0x82 % 8)) & 1
+                rival_defeated = (
+                    (fbytes[0x82 // 8] >> (0x82 % 8)) & 1
+                    if len(fbytes) > 0x82 // 8 else 0
+                )
+                pokedex_received = (
+                    (fbytes[0x74 // 8] >> (0x74 % 8)) & 1
+                    if len(fbytes) > 0x74 // 8 else 0
+                )
             except (ValueError, IndexError):
                 rival_defeated = 0
+                pokedex_received = 0
             return (
                 rival_defeated == 1
-                and gs.total_event_flags < 200
+                and pokedex_received == 0
                 and gs.badge_count == 0
             )
         if c.startswith("badge>="):
