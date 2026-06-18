@@ -44,13 +44,25 @@ class Goal:
         if c == "no_badge":
             return gs.badge_count == 0 and gs.party_count >= 1
         if c == "no_badge_pre_pokedex":
-            # FLAG_ADVENTURE_STARTED = 0x74 is set on Pokedex receipt, which
-            # bumps total_event_flags by ~3-5 (the cutscene sets several
-            # related flags). Empirically <200 flags = pre-Pokedex.
             return (
                 gs.badge_count == 0
                 and gs.party_count >= 1
                 and gs.total_event_flags < 200
+            )
+        if c == "rival_defeated_no_pokedex":
+            # After defeating Route 103 Rival, FLAG_DEFEATED_RIVAL_ROUTE103
+            # is set (bumps flags by 1). Pokedex auto-triggers on next
+            # Birch lab entry. Empirical: 195 <= flags < 200 spans this gap.
+            try:
+                fbytes = bytes.fromhex(gs.event_flag_bytes_hex or "")
+                defeated_byte = fbytes[0x82 // 8] if len(fbytes) > 0x82 // 8 else 0
+                rival_defeated = (defeated_byte >> (0x82 % 8)) & 1
+            except (ValueError, IndexError):
+                rival_defeated = 0
+            return (
+                rival_defeated == 1
+                and gs.total_event_flags < 200
+                and gs.badge_count == 0
             )
         if c.startswith("badge>="):
             n = int(c.split(">=")[1])
@@ -64,6 +76,12 @@ GOAL_TABLE: list[Goal] = [
         target_map=(1, 4),
         condition="no_party",
         desc="Pokemon 0 匹 → Birch's lab (1-4) で starter 取得",
+    ),
+    Goal(
+        name="return_to_lab_for_pokedex",
+        target_map=(1, 4),
+        condition="rival_defeated_no_pokedex",
+        desc="Rival defeated → Birch lab (1-4) 戻りで auto-Pokedex give event 発動 → FLAG_ADVENTURE_STARTED set",
     ),
     Goal(
         name="reach_oldale",
