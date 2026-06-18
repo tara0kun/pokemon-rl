@@ -321,6 +321,29 @@ def heuristic_button(
     if gs.in_battle:
         if gs.is_trainer_battle:
             return "A", "trainer:A"
+        # Try to catch as soon as battle starts (turn 1) while still solo
+        # in the party. Treecko at Lv10+ one-shots most wild Pokemon on
+        # turn 1 if we just press A → we'd never get to capture anything,
+        # so when party is mono and we have balls, throw IMMEDIATELY.
+        catch_priority = (
+            gs.bag_pokeball_count > 0
+            and gs.party_count <= 2
+            and gs.party0_hp_frac >= 0.3
+        )
+        if catch_priority and battle_turn >= 1:
+            # 2x2 battle menu cursor starts on FIGHT (top-left).
+            # BAG = bottom-left → Down, A → opens bag.
+            # Inside bag: POKE BALLS pocket usually first or second.
+            # The Down→Right→A→A→A→A sequence below was the legacy
+            # attempt that often missed the bag pocket. Replace with a
+            # canonical "open BAG → pick first Poke Ball" sequence:
+            #   Down (FIGHT→PKMN), Down (PKMN→BAG won't work — BAG is
+            #   bottom-right). Actually:
+            #     FIGHT(TL) BAG(TR)
+            #     PKMN(BL)  RUN(BR)
+            #   So BAG = Right of FIGHT. Need Right then A.
+            catch_seq = ("Right", "A", "A", "A", "A", "A", "A", "A")
+            return catch_seq[battle_turn % len(catch_seq)], "wild_catch_try"
         catch_ready = (
             gs.bag_pokeball_count > 0
             and gs.party0_hp_frac >= 0.5
