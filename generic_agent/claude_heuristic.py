@@ -147,10 +147,10 @@ def heuristic_button(
             )
             if path:
                 rs_btn = path[0]
-                if same_pos_streak >= 15:
+                if same_pos_streak >= 30:
                     rotor = ["Up", "Right", "Down", "Left"]
                     base = rotor.index(rs_btn) if rs_btn in rotor else 0
-                    rs_btn = rotor[(base + 1 + (same_pos_streak // 5)) % 4]
+                    rs_btn = rotor[(base + 1 + (same_pos_streak // 10)) % 4]
                     return rs_btn, (
                         f"rival_seek_pivot:{rs_btn}->{rx},{ry}"
                         f"@streak={same_pos_streak}"
