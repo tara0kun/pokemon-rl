@@ -40,7 +40,21 @@ class Goal:
         if c == "no_party":
             return gs.party_count == 0
         if c == "first_starter":
-            return gs.party_count == 1 and gs.badge_count == 0
+            # Pre-Pokedex Oldale milestone. After Pokedex received the agent
+            # has already cycled through Oldale (heal at PC) and should move on.
+            try:
+                fbytes = bytes.fromhex(gs.event_flag_bytes_hex or "")
+                pokedex_received = (
+                    (fbytes[0x74 // 8] >> (0x74 % 8)) & 1
+                    if len(fbytes) > 0x74 // 8 else 0
+                )
+            except (ValueError, IndexError):
+                pokedex_received = 0
+            return (
+                gs.party_count == 1
+                and gs.badge_count == 0
+                and pokedex_received == 0
+            )
         if c == "no_badge":
             return gs.badge_count == 0 and gs.party_count >= 1
         if c == "no_badge_pre_pokedex":
