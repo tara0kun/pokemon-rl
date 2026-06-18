@@ -146,7 +146,19 @@ def heuristic_button(
                 gs.map_group, gs.map_num, (gs.x, gs.y), adj,
             )
             if path:
-                return path[0], f"rival_seek:{path[0]}->{rx},{ry}(d={len(path)})"
+                rs_btn = path[0]
+                if same_pos_streak >= 15 and last_action in DIRECTIONS:
+                    rotor = ["Up", "Right", "Down", "Left"]
+                    try:
+                        idx = rotor.index(last_action)
+                    except ValueError:
+                        idx = 0
+                    rs_btn = rotor[(idx + 1 + (same_pos_streak // 5)) % 4]
+                    return rs_btn, (
+                        f"rival_seek_pivot:{rs_btn}->{rx},{ry}"
+                        f"@streak={same_pos_streak}"
+                    )
+                return rs_btn, f"rival_seek:{rs_btn}->{rx},{ry}(d={len(path)})"
     if (
         same_pos_streak >= 8
         and last_action in DIRECTIONS
