@@ -104,12 +104,12 @@ def heuristic_button(
         reward_state = reward_state_mod.RewardState()
     if screen_signals is None:
         screen_signals = {}
+    if screen_signals.get("battle_menu"):
+        return "A", "battle_menu_visible:A"
     if screen_signals.get("dialog") and not gs.in_battle:
         return "A", "dialog_visible:A"
     if screen_signals.get("menu") and not gs.in_battle:
         return "B", "menu_visible:B"
-    if screen_signals.get("battle_menu"):
-        return "A", "battle_menu_visible:A"
     if (
         screen_signals.get("front_blocked")
         and not gs.in_battle
