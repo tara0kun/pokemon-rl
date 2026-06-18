@@ -44,10 +44,20 @@ class Goal:
         if c == "no_badge":
             return gs.badge_count == 0 and gs.party_count >= 1
         if c == "no_badge_pre_pokedex":
+            # Pre-Pokedex AND Rival not yet defeated (route 103 rival waypoint)
+            try:
+                fbytes = bytes.fromhex(gs.event_flag_bytes_hex or "")
+                rival_defeated = (
+                    (fbytes[0x82 // 8] >> (0x82 % 8)) & 1
+                    if len(fbytes) > 0x82 // 8 else 0
+                )
+            except (ValueError, IndexError):
+                rival_defeated = 0
             return (
                 gs.badge_count == 0
                 and gs.party_count >= 1
                 and gs.total_event_flags < 200
+                and rival_defeated == 0
             )
         if c == "rival_defeated_no_pokedex":
             # After defeating Route 103 Rival, FLAG_DEFEATED_RIVAL_ROUTE103
