@@ -125,7 +125,8 @@ def heuristic_button(
         same_map_streak >= 100
         and not gs.in_battle
         and gs.saveblock1_valid
-        and (current_goal is None or (gs.map_group, gs.map_num) != (current_goal.target_map or (0, 0)))
+        and current_goal is not None
+        and (gs.map_group, gs.map_num) == current_goal.target_map
     ):
         try:
             mc_w = map_data_mod.get_cache()
