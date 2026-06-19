@@ -269,6 +269,18 @@ def heuristic_button(
                     )
                     if bfs_path:
                         next_btn = bfs_path[0]
+                        if (
+                            same_pos_streak >= 20
+                            and last_action == next_btn
+                        ):
+                            perp = {
+                                "Up": "Left", "Down": "Right",
+                                "Left": "Up", "Right": "Down",
+                            }.get(next_btn, next_btn)
+                            return perp, (
+                                f"mapbfs_perp:{perp}<-{next_btn}"
+                                f"@stuck{same_pos_streak}"
+                            )
                         return next_btn, (
                             f"mapbfs:{next_btn}->{next_hop_name}"
                             f"(dist={len(bfs_path)})"
