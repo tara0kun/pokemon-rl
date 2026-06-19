@@ -250,11 +250,28 @@ def read_state(client: MGBAClient) -> GameState:
             slot_id = client.read16(ptr + SB1_BAG_ITEMS + slot * 4)
             if slot_id == 0:
                 break
-            if slot_id == 4:  # POKE_BALL item id
+            if slot_id == 4:  # POKE_BALL item id (unusual — usually in balls pocket)
                 pokeballs = client.read16(
                     ptr + SB1_BAG_ITEMS + slot * 4 + 2
                 )
                 break
+        # Pokemon Emerald keeps Poke Balls in a SEPARATE balls pocket at
+        # SaveBlock1 + 0x650 (16 slots × 4 bytes). The Items pocket
+        # (0x560) holds Potion/Antidote/etc but not balls in normal play.
+        # Quantities are XOR-encrypted with the SaveBlock2 security key.
+        try:
+            sb2_ptr = client.read32(0x03005D90)
+            security_key = client.read32(sb2_ptr + 0xAC)
+            for slot in range(16):
+                slot_id = client.read16(ptr + 0x650 + slot * 4)
+                if slot_id == 0:
+                    break
+                if slot_id == 4:  # POKE_BALL
+                    qty_enc = client.read16(ptr + 0x650 + slot * 4 + 2)
+                    pokeballs += qty_enc ^ (security_key & 0xFFFF)
+                    break
+        except EmulatorError:
+            pass
         flag_bytes = client.read_range(
             ptr + SB1_FLAGS_OFFSET, NUM_FLAG_BYTES,
         )
