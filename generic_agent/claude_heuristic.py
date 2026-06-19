@@ -194,7 +194,7 @@ def heuristic_button(
                     )
                 return rs_btn, f"rival_seek:{rs_btn}->{rx},{ry}(d={len(path)})"
     if (
-        same_pos_streak >= 8
+        8 <= same_pos_streak < 30
         and last_action in DIRECTIONS
         and not gs.in_battle
         and gs.saveblock1_valid
