@@ -108,18 +108,16 @@ def heuristic_button(
         # Pre-empt: when we have balls AND a mono party AND aren't a
         # trainer battle (you can't catch trainers' Pokemon), try to throw.
         # gs.in_battle is unreliable (RAM false negative), but battle_menu
-        # detected via vision means we ARE in battle. Throw on turn 1+.
+        # detected via vision means we ARE in battle. Trigger catch on
+        # first detect — caller manages a state machine to follow through
+        # the bag-select sequence even after battle_menu visibility flips.
         if (
             gs.bag_pokeball_count > 0
             and gs.party_count <= 2
             and gs.party0_hp_frac >= 0.3
             and not gs.is_trainer_battle
-            and battle_turn >= 1
         ):
-            catch_seq = ("Right", "A", "A", "A", "A", "A", "A", "A")
-            return catch_seq[battle_turn % len(catch_seq)], (
-                f"wild_catch_try_screen@t{battle_turn}"
-            )
+            return "Right", "wild_catch_try_screen:init"
         return "A", "battle_menu_visible:A"
     if screen_signals.get("dialog") and not gs.in_battle:
         return "A", "dialog_visible:A"
@@ -621,6 +619,8 @@ def run(
     history_buttons: list[str] = []
     entry_dir: str | None = None
     force_explore_until_turn = 0
+    catch_phase_remaining = 0
+    catch_seq_queue: list[str] = []
     rs = reward_state_mod.RewardState()
     rs.load()
     checkpoint_target: tuple[int, int, int, int] | None = None
@@ -826,7 +826,15 @@ def run(
 
         cur_goal = goals_mod.current_goal(gs) if gs.saveblock1_valid else None
 
-        if llm_buttons_queue:
+        if catch_seq_queue:
+            button = catch_seq_queue.pop(0)
+            src = f"catch_seq_followup:{button}@rem{len(catch_seq_queue)}"
+            decisions["catch_seq_followup"] = (
+                decisions.get("catch_seq_followup", 0) + 1
+            )
+            if not catch_seq_queue:
+                catch_phase_remaining = 0
+        elif llm_buttons_queue:
             valid = {"A","B","Up","Down","Left","Right","Start","Select"}
             llm_btn = llm_buttons_queue.pop(0)
             if llm_btn in valid:
@@ -867,6 +875,9 @@ def run(
             )
         if "escape" in src:
             escape_dir_index = (escape_dir_index + 1) % 4
+        if src.startswith("wild_catch_try_screen:init") and not catch_seq_queue:
+            catch_seq_queue = ["A", "A", "A", "A", "A", "A", "A"]
+            catch_phase_remaining = len(catch_seq_queue)
         key = src.split(":")[0]
         decisions[key] = decisions.get(key, 0) + 1
         history_buttons.append(button)
