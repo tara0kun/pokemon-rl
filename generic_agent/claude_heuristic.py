@@ -105,6 +105,21 @@ def heuristic_button(
     if screen_signals is None:
         screen_signals = {}
     if screen_signals.get("battle_menu"):
+        # Pre-empt: when we have balls AND a mono party AND aren't a
+        # trainer battle (you can't catch trainers' Pokemon), try to throw.
+        # gs.in_battle is unreliable (RAM false negative), but battle_menu
+        # detected via vision means we ARE in battle. Throw on turn 1+.
+        if (
+            gs.bag_pokeball_count > 0
+            and gs.party_count <= 2
+            and gs.party0_hp_frac >= 0.3
+            and not gs.is_trainer_battle
+            and battle_turn >= 1
+        ):
+            catch_seq = ("Right", "A", "A", "A", "A", "A", "A", "A")
+            return catch_seq[battle_turn % len(catch_seq)], (
+                f"wild_catch_try_screen@t{battle_turn}"
+            )
         return "A", "battle_menu_visible:A"
     if screen_signals.get("dialog") and not gs.in_battle:
         return "A", "dialog_visible:A"
