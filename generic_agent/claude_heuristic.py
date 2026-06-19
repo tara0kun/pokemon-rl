@@ -686,8 +686,9 @@ def run(
         # gs.in_battle has a known RAM false-negative on English Emerald
         # (the BATTLE_FLAGS_CANDIDATES addresses stay 0 during the
         # move-select screen), so screen vision is the ground truth.
+        ss_for_battle = locals().get("screen_signals") or {}
         in_battle_seen = gs.in_battle or bool(
-            screen_signals.get("battle_menu")
+            ss_for_battle.get("battle_menu")
         )
         if in_battle_seen:
             battle_turn += 1
