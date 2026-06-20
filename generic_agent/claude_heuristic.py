@@ -267,6 +267,38 @@ def heuristic_button(
                     )
                     if bfs_path:
                         next_btn = bfs_path[0]
+                        delta = {
+                            "Up": (0, -1), "Down": (0, 1),
+                            "Left": (-1, 0), "Right": (1, 0),
+                        }.get(next_btn, (0, 0))
+                        next_tile = (gs.x + delta[0], gs.y + delta[1])
+                        npc_blocking = any(
+                            (nx, ny) == next_tile
+                            for (nx, ny, _gid) in gs.npcs_on_map
+                        )
+                        if npc_blocking:
+                            perp_pool = {
+                                "Up": ["Left", "Right", "Down"],
+                                "Down": ["Right", "Left", "Up"],
+                                "Left": ["Down", "Up", "Right"],
+                                "Right": ["Up", "Down", "Left"],
+                            }.get(next_btn, [])
+                            for cand in perp_pool:
+                                cdx, cdy = {
+                                    "Up": (0, -1), "Down": (0, 1),
+                                    "Left": (-1, 0), "Right": (1, 0),
+                                }[cand]
+                                ctile = (gs.x + cdx, gs.y + cdy)
+                                if any(
+                                    (nx, ny) == ctile
+                                    for (nx, ny, _g) in gs.npcs_on_map
+                                ):
+                                    continue
+                                if cur_info.walkable(*ctile):
+                                    return cand, (
+                                        f"npc_avoid:{cand}<-{next_btn}"
+                                        f"@({next_tile[0]},{next_tile[1]})"
+                                    )
                         if (
                             same_pos_streak >= 20
                             and last_action == next_btn
