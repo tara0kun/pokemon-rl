@@ -256,12 +256,14 @@ class MapCache:
         map_g: int, map_n: int,
         start: tuple[int, int],
         targets: set[tuple[int, int]],
+        blocked_tiles: set[tuple[int, int]] | None = None,
     ) -> list[str] | None:
         info = self.get(map_g, map_n)
         if info is None:
             return None
         if not info.walkable(*start):
             return None
+        blocked = blocked_tiles or set()
         q: deque[tuple[tuple[int, int], list[str]]] = deque([(start, [])])
         visited: set[tuple[int, int]] = {start}
         dirs = [(0, -1, "Up"), (0, 1, "Down"), (-1, 0, "Left"), (1, 0, "Right")]
@@ -272,6 +274,8 @@ class MapCache:
             for dx, dy, btn in dirs:
                 nx, ny = x + dx, y + dy
                 if (nx, ny) in visited or not info.walkable(nx, ny):
+                    continue
+                if (nx, ny) in blocked:
                     continue
                 visited.add((nx, ny))
                 q.append(((nx, ny), path + [btn]))

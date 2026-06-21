@@ -261,9 +261,13 @@ def heuristic_button(
                         gs.map_group, gs.map_num, next_hop_name,
                     )
                 if target_tiles and cur_info.walkable(gs.x, gs.y):
+                    npc_tiles = {
+                        (nx, ny) for (nx, ny, _gid) in gs.npcs_on_map
+                    }
                     bfs_path = mc.bfs_to_tile(
                         gs.map_group, gs.map_num,
                         (gs.x, gs.y), target_tiles,
+                        blocked_tiles=npc_tiles,
                     )
                     if bfs_path:
                         next_btn = bfs_path[0]
