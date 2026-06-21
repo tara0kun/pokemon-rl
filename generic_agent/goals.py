@@ -26,6 +26,52 @@ from pathlib import Path
 from . import config
 
 GOALS_FILE = config.MEMORY_DIR / "goal_notes.jsonl"
+VISITED_MAPS_FILE = config.MEMORY_DIR / "visited_maps.json"
+
+
+_GOAL_ORDER_WEIGHT = {
+    "get_starter_via_lab": 0,
+    "return_to_lab_for_pokedex": 10,
+    "reach_oldale": 20,
+    "reach_route_103_rival": 30,
+    "reach_route_102": 40,
+    "reach_petalburg": 50,
+    "reach_rustboro_gym": 60,
+    "reach_dewford_gym": 70,
+}
+
+
+def _load_visited_maps() -> set[tuple[int, int]]:
+    if not VISITED_MAPS_FILE.exists():
+        return set()
+    try:
+        data = json.loads(VISITED_MAPS_FILE.read_text(encoding="utf-8"))
+        return {tuple(m) for m in data.get("visited", [])}
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return set()
+
+
+def _save_visited_maps(visited: set[tuple[int, int]]) -> None:
+    try:
+        VISITED_MAPS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        VISITED_MAPS_FILE.write_text(
+            json.dumps({"visited": sorted(list(visited))}),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def record_map_visit(map_group: int, map_num: int) -> None:
+    """Persistent map-visit log so goal cascade can skip already-cleared
+    early-game waypoints (reach_oldale, reach_route_102, ...) once the
+    agent has moved further along the canonical Hoenn route."""
+    visited = _load_visited_maps()
+    key = (int(map_group), int(map_num))
+    if key in visited:
+        return
+    visited.add(key)
+    _save_visited_maps(visited)
 
 
 @dataclass
@@ -157,11 +203,24 @@ def current_goal(gs) -> Goal | None:
     """First matching goal whose target_map differs from agent's current
     map. Skipping already-reached goals lets the goal chain advance: if
     we're at Oldale and `reach_oldale` matches but its target is Oldale,
-    fall through to the next match (e.g. `reach_route_103_rival`)."""
+    fall through to the next match (e.g. `reach_route_103_rival`).
+
+    Additionally, persistent visited-map tracking suppresses backtrack
+    goals: once the agent has visited a map farther along the canonical
+    progression than this goal's target, the earlier goal is skipped so
+    the cascade doesn't drag the agent back east when they cross a
+    boundary the wrong way.
+    """
     cur = (getattr(gs, "map_group", -1), getattr(gs, "map_num", -1))
+    if cur != (-1, -1) and cur != (0, 0):
+        record_map_visit(*cur)
+    visited = _load_visited_maps()
     fallback = None
     for g in GOAL_TABLE:
         if not g.matches(gs):
+            continue
+        if g.target_map in visited and g.target_map != cur:
+            # already cleared this waypoint — don't backtrack
             continue
         if g.target_map == cur:
             if fallback is None:
