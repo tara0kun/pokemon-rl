@@ -118,6 +118,20 @@ def heuristic_button(
             and not gs.is_trainer_battle
         ):
             return "Right", "wild_catch_try_screen:init"
+        # Over-leveling guard: when starter is well above expected wild
+        # encounter level AND we lack balls / a 2nd party member, attacking
+        # just burns XP without progress. Pick RUN (bottom-right in the
+        # 2x2 battle menu: Right+Down+A) instead of mashing A on FIGHT.
+        if (
+            not gs.is_trainer_battle
+            and gs.party0_level >= 14
+            and gs.party_count == 1
+            and gs.bag_pokeball_count == 0
+        ):
+            run_seq = ("Right", "Down", "A", "A")
+            return run_seq[battle_turn % len(run_seq)], (
+                f"wild_run_overleveled@lv{gs.party0_level}"
+            )
         return "A", "battle_menu_visible:A"
     if screen_signals.get("dialog") and not gs.in_battle:
         return "A", "dialog_visible:A"
