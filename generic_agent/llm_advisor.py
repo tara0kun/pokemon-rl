@@ -46,6 +46,16 @@ class LLMAdvisor:
     client: Any = None
     total_cost: float = 0.0
     total_calls: int = 0
+    # Hard cap so a long-running wrapper can't accidentally burn the
+    # API budget. Tunable via POKE_RL_LLM_BUDGET_USD env var; default
+    # $1 per heur subprocess (≈800 turns / ~5 min).
+    budget_usd: float = field(
+        default_factory=lambda: float(
+            __import__("os").environ.get(
+                "POKE_RL_LLM_BUDGET_USD", "1.0"
+            )
+        )
+    )
 
     def _ensure_client(self) -> bool:
         if self.client is not None:
@@ -76,6 +86,8 @@ class LLMAdvisor:
         same_pos_streak: int,
         same_map_streak: int,
     ) -> Advice | None:
+        if self.total_cost >= self.budget_usd:
+            return None
         if not self._ensure_client():
             return None
 
