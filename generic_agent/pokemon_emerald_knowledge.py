@@ -11,15 +11,19 @@ from __future__ import annotations
 EARLY_GAME_KNOWLEDGE = """
 POKEMON EMERALD EARLY GAME REFERENCE (use ONLY when uncertain about story progression):
 
-# Maps you should know
-- Player starts in BRENDAN'S HOUSE 2F (group=1, num=1) - small bedroom
+# Maps you should know (canonical IDs from pokeemerald)
+- Player starts in BRENDAN'S HOUSE 2F (1,1) - bedroom
 - Brendan's house 1F (1,0) - living room with Mom
-- LITTLEROOT TOWN outside (0,9) - small town with player house, May's house, Birch's lab
-- BIRCH'S LAB (1,4) - has Pokeballs and assistant
-- May's house 2F (1,9) - has May (rival) sometimes
-- ROUTE 101 (0,16) - grass area NORTH of Littleroot, leads to Oldale
-- OLDALE TOWN (0,17) - has Pokemon Center and Pokemon Mart
-- ROUTE 102 (0,18) - WEST of Oldale, leads to Petalburg
+- LITTLEROOT TOWN outside (0,9)
+- BIRCH'S LAB (1,4)
+- May's house 2F (1,9)
+- ROUTE 101 (0,16) - grass NORTH of Littleroot, leads to Oldale
+- OLDALE TOWN (0,10) - has Pokemon Center and Pokemon Mart (NOTE: id is 10, NOT 17)
+- ROUTE 102 (0,17) - WEST of Oldale, leads to Petalburg
+- PETALBURG CITY (0,0) - has Dad's gym + Pokemon Center + Mart
+- ROUTE 104 (0,19) - WEST/NORTH of Petalburg, leads up to Petalburg Woods
+- PETALBURG WOODS (0,?? typically 7 or 20) - between Route 104 south and north
+- RUSTBORO CITY (0,3) - has Roxanne's Rock-type gym (first badge target)
 
 # Early game sequence (MUST be done in order)
 1. Wake up in player house 2F, set CLOCK (interact with clock on wall north)
@@ -40,16 +44,26 @@ POKEMON EMERALD EARLY GAME REFERENCE (use ONLY when uncertain about story progre
 # POST-STARTER walkthrough (party_count >= 1)
 ABSOLUTELY CRITICAL: After getting starter, the agent must learn battle survival and healing:
 
-15. WALK NORTH through Route 101 (map 0,16) to reach OLDALE TOWN (map 0,17)
+15. WALK NORTH through Route 101 (0,16) to reach OLDALE TOWN (0,10)
 16. In Oldale Town, ENTER the POKEMON CENTER (red roof building):
     - Walk to its door (south entrance), press UP to enter
     - Inside, walk UP to NURSE JOY at counter, press A
     - She fully HEALS your Pokemon (HP back to max). REPEAT WHENEVER HP < 50%.
-17. Continue WEST from Oldale through ROUTE 102 (map 0,18) - more wild grass
-18. Reach PETALBURG CITY (map 0,11) - where Dad (Norman) has his gym
+17. Continue WEST from Oldale through ROUTE 102 (0,17) - more wild grass
+18. Reach PETALBURG CITY (0,0) - where Dad (Norman) has his gym
 19. Petalburg: dad won't fight you yet; he says train more, fights only after 4 badges
-20. Go NORTH through ROUTE 104 then ROUTE 116 to reach RUSTBORO CITY (map 0,12)
+20. Go WEST through ROUTE 104 (0,19), through PETALBURG WOODS, then north to RUSTBORO CITY (0,3)
 21. Rustboro Gym (Rock-type, Roxanne) - first badge target. Train Pokemon to Lv 10-12 before challenging.
+
+# CRITICAL DIRECTIONAL FACTS (canonical map connections)
+- Route 102 (0,17) west edge -> Petalburg City (0,0)
+- Route 102 (0,17) east edge -> Oldale Town (0,10)
+- Petalburg City (0,0) west edge -> Route 104 (0,19)
+- Petalburg City (0,0) east edge -> Route 102 (0,17)
+- Route 104 (0,19) leads NORTH through Petalburg Woods to Rustboro (0,3)
+- If you are on Route 102 (0,17) and need to reach Rustboro, go WEST (left), not east.
+- If you are in Petalburg (0,0), Pokemon Center is in the middle-north area; Mart is east of PC.
+- Pokemon Centers heal at nurse counter (top of PC interior, walk UP and press A).
 
 # Battle survival rules (when in_battle=True)
 - If your HP > 70% and opponent is wild: press A to use first move (FIGHT)
