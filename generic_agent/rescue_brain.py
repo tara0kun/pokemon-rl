@@ -26,8 +26,10 @@ VALID_BUTTONS = {
     "Up", "Down", "Left", "Right", "L", "R",
 }
 
-MODEL_RESCUE = "claude-opus-4-8"
 MODEL_HAIKU = "claude-haiku-4-5"
+MODEL_OPUS = "claude-opus-4-8"
+# Cost-optimised default. Haiku 4.5: $1 input / $5 output / $0.1 cache_read.
+MODEL_RESCUE = MODEL_HAIKU
 MAX_OUTPUT_TOKENS = 120
 
 SYSTEM_PROMPT_RESCUE = (
@@ -146,11 +148,13 @@ class RescueDecision:
     frame_hash: str
 
     def cost_usd(self) -> float:
+        # Pricing matches MODEL_RESCUE; defaulting to Haiku 4.5:
+        # $1 input / $5 output / $0.1 cache_read / $1.25 cache_write per 1M
         return (
-            self.input_tokens * 5.0 / 1_000_000
-            + self.output_tokens * 25.0 / 1_000_000
-            + self.cache_read_tokens * 0.5 / 1_000_000
-            + self.cache_creation_tokens * 6.25 / 1_000_000
+            self.input_tokens * 1.0 / 1_000_000
+            + self.output_tokens * 5.0 / 1_000_000
+            + self.cache_read_tokens * 0.1 / 1_000_000
+            + self.cache_creation_tokens * 1.25 / 1_000_000
         )
 
 
