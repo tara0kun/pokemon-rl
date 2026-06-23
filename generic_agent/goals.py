@@ -37,8 +37,15 @@ _GOAL_ORDER_WEIGHT = {
     "reach_route_102": 40,
     "reach_petalburg": 50,
     "reach_rustboro_gym": 60,
+    "enter_rustboro_gym": 65,
     "reach_dewford_gym": 70,
 }
+
+
+# Goals whose target_map is the actual completion target (Gym building),
+# not just a waypoint. For these, the visited-maps backtrack-suppression
+# is skipped: visiting the gym map once doesn't mean we beat the leader.
+_GOAL_BYPASS_VISITED = {"enter_rustboro_gym"}
 
 
 def _load_visited_maps() -> set[tuple[int, int]]:
@@ -191,6 +198,12 @@ GOAL_TABLE: list[Goal] = [
         desc="Petalburg → Rustboro City (0-3) Stone Badge",
     ),
     Goal(
+        name="enter_rustboro_gym",
+        target_map=(11, 3),
+        condition="no_badge",
+        desc="Rustboro Gym 建物 (11-3) 内部進入 → Roxanne 戦",
+    ),
+    Goal(
         name="reach_dewford_gym",
         target_map=(0, 11),
         condition="badge>=1",
@@ -219,8 +232,15 @@ def current_goal(gs) -> Goal | None:
     for g in GOAL_TABLE:
         if not g.matches(gs):
             continue
-        if g.target_map in visited and g.target_map != cur:
-            # already cleared this waypoint — don't backtrack
+        if (
+            g.target_map in visited
+            and g.target_map != cur
+            and g.name not in _GOAL_BYPASS_VISITED
+        ):
+            # already cleared this waypoint — don't backtrack.
+            # Bypassed for completion-required goals (gyms): visiting
+            # the gym map once doesn't satisfy the goal — only beating
+            # the leader (badge condition) does.
             continue
         if g.target_map == cur:
             if fallback is None:
