@@ -52,6 +52,11 @@ NUM_FLAG_BYTES = 0x12C           # 300 bytes = 2400 event flags (Emerald)
 BATTLE_FLAGS_CANDIDATES = [
     0x020243CC,
     0x020238F0,
+    0x02022FEC,  # Trainer-battle flag — confirmed via Roxanne fight on
+                 # 2026-06-23 where bf=0xc (TRAINER 0x8 + WILD_DOUBLE 0x4).
+                 # Missing this address is the 6-day RAM false-negative bug
+                 # that left every in-battle heuristic (catch_seq,
+                 # wild_run_overleveled, battle_menu cursor reset) bypassed.
 ]
 
 
