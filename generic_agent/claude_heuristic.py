@@ -405,7 +405,19 @@ def heuristic_button(
                     )
     if gs.in_battle:
         if gs.is_trainer_battle:
-            return "A", "trainer:A"
+            # After a faint mid-trainer-battle, the game opens "Choose a
+            # POKEMON." party menu. battle_menu screen detection is False
+            # there, so we fall through here. Pressing A alone confirms
+            # whatever the cursor sits on — usually the just-fainted slot
+            # → "X has no energy left to battle!" → menu reopens, looping
+            # forever. Interleave Down nudges so the cursor walks toward
+            # the bottom of the party (alive Pokemon are typically the
+            # latest catches), with A presses to confirm SEND OUT once a
+            # healthy slot is reached.
+            party_seq = ("Down", "A", "A", "B", "Down", "A", "A", "B")
+            return party_seq[battle_turn % len(party_seq)], (
+                "trainer:party_walk"
+            )
         # Try to catch as soon as battle starts (turn 1) while still solo
         # in the party. Treecko at Lv10+ one-shots most wild Pokemon on
         # turn 1 if we just press A → we'd never get to capture anything,
