@@ -405,19 +405,34 @@ def heuristic_button(
                     )
     if gs.in_battle:
         if gs.is_trainer_battle:
-            # After a faint mid-trainer-battle, the game opens "Choose a
-            # POKEMON." party menu. battle_menu screen detection is False
-            # there, so we fall through here. Pressing A alone confirms
-            # whatever the cursor sits on — usually the just-fainted slot
-            # → "X has no energy left to battle!" → menu reopens, looping
-            # forever. Interleave Down nudges so the cursor walks toward
-            # the bottom of the party (alive Pokemon are typically the
-            # latest catches), with A presses to confirm SEND OUT once a
-            # healthy slot is reached.
-            party_seq = ("Down", "A", "A", "B", "Down", "A", "A", "B")
-            return party_seq[battle_turn % len(party_seq)], (
-                "trainer:party_walk"
+            # GUARD: gs.in_battle from state.py 0x02022FEC is a STALE
+            # trainer-type flag — once set during a trainer battle it
+            # persists into the next overworld, so this branch fires
+            # in overworld too. Only act when the screen actually shows
+            # a battle/menu/dialog UI; otherwise fall through to
+            # overworld navigation.
+            in_battle_ui = (
+                screen_signals.get("dialog")
+                or screen_signals.get("menu")
+                or screen_signals.get("battle_menu")
             )
+            if in_battle_ui:
+                # After a faint mid-trainer-battle, the game opens
+                # "Choose a POKEMON." party menu. battle_menu screen
+                # detection is False there, but `menu` is True. A alone
+                # would confirm the just-fainted slot → "X has no energy
+                # left to battle!" → menu reopens, looping forever.
+                # Interleave Down nudges so the cursor walks toward the
+                # bottom of the party (alive Pokemon are typically the
+                # latest catches), with A presses to confirm SEND OUT
+                # once a healthy slot is reached.
+                party_seq = (
+                    "Down", "A", "A", "B", "Down", "A", "A", "B"
+                )
+                return party_seq[battle_turn % len(party_seq)], (
+                    "trainer:party_walk"
+                )
+            # Stale trainer flag in overworld — drop through to nav.
         # Try to catch as soon as battle starts (turn 1) while still solo
         # in the party. Treecko at Lv10+ one-shots most wild Pokemon on
         # turn 1 if we just press A → we'd never get to capture anything,
