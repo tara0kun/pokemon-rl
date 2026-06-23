@@ -122,6 +122,9 @@ def heuristic_button(
         # encounter level AND we lack balls / a 2nd party member, attacking
         # just burns XP without progress. Pick RUN (bottom-right in the
         # 2x2 battle menu: Right+Down+A) instead of mashing A on FIGHT.
+        # GUARD: only when wild battle (trainer battles can't be run from -
+        # repeatedly trying RUN here would loop the "No running from a
+        # TRAINER battle!" dialog forever).
         if (
             not gs.is_trainer_battle
             and gs.party0_level >= 14
@@ -132,7 +135,14 @@ def heuristic_button(
             return run_seq[battle_turn % len(run_seq)], (
                 f"wild_run_overleveled@lv{gs.party0_level}"
             )
-        return "A", "battle_menu_visible:A"
+        # Default: reset cursor to FIGHT then A. Pressing A blindly may
+        # confirm whatever the cursor sits on (RUN/POKEMON/BAG from the
+        # previous turn), so first nudge Left+Up to land on FIGHT (top-
+        # left of the 2x2 menu), then A → FIGHT, then A → first move.
+        cursor_reset_seq = ("Left", "Up", "A", "A", "A")
+        return cursor_reset_seq[battle_turn % len(cursor_reset_seq)], (
+            "battle_menu_visible:fight_cursor_reset"
+        )
     if screen_signals.get("dialog") and not gs.in_battle:
         return "A", "dialog_visible:A"
     if screen_signals.get("menu") and not gs.in_battle:
