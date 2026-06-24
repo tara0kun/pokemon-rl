@@ -403,6 +403,7 @@ class MapCache:
         info = self.get(map_g, map_n)
         if info is None:
             return None
+        # Edge warps (map boundaries)
         if y >= info.height - 1:
             return "Down"
         if y <= 0:
@@ -411,6 +412,14 @@ class MapCache:
             return "Left"
         if x >= info.width - 1:
             return "Right"
+        # Interior door warp (e.g. building entrance from city outdoor).
+        # In Pokemon Emerald, buildings are entered by walking Up onto the
+        # door tile. If the current (x,y) is in the warps list, default
+        # to Up — covers Rustboro Gym (27,19), Pokemon Center, Mart, etc.
+        # without each warp being on a map edge.
+        for w in info.warps:
+            if w.get("x") == x and w.get("y") == y:
+                return "Up"
         return None
 
 
