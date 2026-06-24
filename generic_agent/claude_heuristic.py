@@ -1293,11 +1293,13 @@ def main() -> int:
     # Pokemon Emerald frame timing: tile-walk costs ~16 frames @ 60fps =
     # 266ms. button hold (frames=15 = 250ms) + this poll delay should
     # exceed walk-finish window or agent's next-tile movement queues
-    # incorrectly. Empirically 1.5s manual walks succeeded where heur
-    # 50ms autonomous chronic-stuck at (31,15-17) bridge. 300ms is the
-    # sweet spot — slow enough for reliable movement, fast enough to
-    # keep iter throughput reasonable.
-    parser.add_argument("--poll", type=float, default=0.3)
+    # incorrectly. Empirically:
+    # - 0.05s: chronic stuck (31,15-17) bridge area, no movement
+    # - 0.3s: range expanded 4→11 tile but still bridge-bound
+    # - manual 1.5s walks (frames=25): consistent successful movement
+    # Bump to 0.6s = matches walk completion + small buffer. Throughput
+    # 12x slower than original but actual movement reliable.
+    parser.add_argument("--poll", type=float, default=0.6)
     args = parser.parse_args()
     return run(args.turns, args.dataset, args.poll)
 
