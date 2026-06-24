@@ -433,40 +433,55 @@ def heuristic_button(
                     "trainer:party_walk"
                 )
             # Stale trainer flag in overworld — drop through to nav.
-        # Try to catch as soon as battle starts (turn 1) while still solo
-        # in the party. Treecko at Lv10+ one-shots most wild Pokemon on
-        # turn 1 if we just press A → we'd never get to capture anything,
-        # so when party is mono and we have balls, throw IMMEDIATELY.
-        catch_priority = (
-            gs.bag_pokeball_count > 0
-            and gs.party_count <= 2
-            and gs.party0_hp_frac >= 0.3
+        # SAME GUARD for wild-battle path: gs.in_battle from the stale
+        # 0x02022FEC flag stays True after a battle ends. Without this
+        # gate the wild_fight_safe / wild_catch_try / wild_run branches
+        # below fire on the overworld, spamming A or RUN-direction
+        # buttons that do nothing useful and freeze nav (observed:
+        # wild_fight_safe = 552/600 turns at (28,7) Route 104 outdoor).
+        in_battle_ui_wild = (
+            screen_signals.get("dialog")
+            or screen_signals.get("menu")
+            or screen_signals.get("battle_menu")
         )
-        if catch_priority and battle_turn >= 1:
-            # 2x2 battle menu cursor starts on FIGHT (top-left).
-            # BAG = bottom-left → Down, A → opens bag.
-            # Inside bag: POKE BALLS pocket usually first or second.
-            # The Down→Right→A→A→A→A sequence below was the legacy
-            # attempt that often missed the bag pocket. Replace with a
-            # canonical "open BAG → pick first Poke Ball" sequence:
-            #   Down (FIGHT→PKMN), Down (PKMN→BAG won't work — BAG is
-            #   bottom-right). Actually:
-            #     FIGHT(TL) BAG(TR)
-            #     PKMN(BL)  RUN(BR)
-            #   So BAG = Right of FIGHT. Need Right then A.
-            catch_seq = ("Right", "A", "A", "A", "A", "A", "A", "A")
-            return catch_seq[battle_turn % len(catch_seq)], "wild_catch_try"
-        catch_ready = (
-            gs.bag_pokeball_count > 0
-            and gs.party0_hp_frac >= 0.5
-            and battle_turn >= 4
-        )
-        if catch_ready and battle_turn % 8 == 0:
-            catch_seq = ("Down", "Right", "A", "A", "A", "A")
-            return catch_seq[battle_turn % len(catch_seq)], "wild_catch_try"
-        if gs.party0_max_hp > 0 and gs.party0_hp_frac >= 0.7:
-            return "A", "wild_fight_safe"
-        return RUN_CYCLE[battle_turn % len(RUN_CYCLE)], "wild_run"
+        if in_battle_ui_wild:
+            # Try to catch as soon as battle starts (turn 1) while still
+            # solo in the party. Treecko at Lv10+ one-shots most wild
+            # Pokemon on turn 1 if we just press A → we'd never get to
+            # capture anything, so when party is mono and we have balls,
+            # throw IMMEDIATELY.
+            catch_priority = (
+                gs.bag_pokeball_count > 0
+                and gs.party_count <= 2
+                and gs.party0_hp_frac >= 0.3
+            )
+            if catch_priority and battle_turn >= 1:
+                # FIGHT(TL) BAG(TR) PKMN(BL) RUN(BR) — BAG = Right of
+                # FIGHT, then A. Sequence below opens BAG and picks the
+                # first Poke Ball.
+                catch_seq = ("Right", "A", "A", "A", "A", "A", "A", "A")
+                return (
+                    catch_seq[battle_turn % len(catch_seq)],
+                    "wild_catch_try",
+                )
+            catch_ready = (
+                gs.bag_pokeball_count > 0
+                and gs.party0_hp_frac >= 0.5
+                and battle_turn >= 4
+            )
+            if catch_ready and battle_turn % 8 == 0:
+                catch_seq = ("Down", "Right", "A", "A", "A", "A")
+                return (
+                    catch_seq[battle_turn % len(catch_seq)],
+                    "wild_catch_try",
+                )
+            if gs.party0_max_hp > 0 and gs.party0_hp_frac >= 0.7:
+                return "A", "wild_fight_safe"
+            return (
+                RUN_CYCLE[battle_turn % len(RUN_CYCLE)],
+                "wild_run",
+            )
+        # Stale wild-battle flag in overworld — drop through to nav.
 
     if not gs.saveblock1_valid:
         return "A", "pre-save:A"
