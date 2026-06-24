@@ -154,9 +154,14 @@ def heuristic_button(
             )
         # Default: reset cursor to FIGHT then A. Pressing A blindly may
         # confirm whatever the cursor sits on (RUN/POKEMON/BAG from the
-        # previous turn), so first nudge Left+Up to land on FIGHT (top-
-        # left of the 2x2 menu), then A → FIGHT, then A → first move.
-        cursor_reset_seq = ("Left", "Up", "A", "A", "A")
+        # previous turn), so first nudge Up+Up+Left to definitively land
+        # on FIGHT (top-left), then A → FIGHT submenu, then A → first
+        # move. Empirically verified during Roxanne battle 06-24: simply
+        # Left+Up wasn't enough — cursor on POKEMON (bottom-left) needs
+        # Up x2 to escape to FIGHT row, then Left to ensure x=0 column.
+        cursor_reset_seq = (
+            "Up", "Up", "Left", "A", "A", "A"
+        )
         return cursor_reset_seq[battle_turn % len(cursor_reset_seq)], (
             "battle_menu_visible:fight_cursor_reset"
         )
