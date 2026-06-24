@@ -1290,7 +1290,14 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--turns", type=int, default=500)
     parser.add_argument("--dataset", action="store_true")
-    parser.add_argument("--poll", type=float, default=0.05)
+    # Pokemon Emerald frame timing: tile-walk costs ~16 frames @ 60fps =
+    # 266ms. button hold (frames=15 = 250ms) + this poll delay should
+    # exceed walk-finish window or agent's next-tile movement queues
+    # incorrectly. Empirically 1.5s manual walks succeeded where heur
+    # 50ms autonomous chronic-stuck at (31,15-17) bridge. 300ms is the
+    # sweet spot — slow enough for reliable movement, fast enough to
+    # keep iter throughput reasonable.
+    parser.add_argument("--poll", type=float, default=0.3)
     args = parser.parse_args()
     return run(args.turns, args.dataset, args.poll)
 
