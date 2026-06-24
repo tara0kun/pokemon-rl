@@ -498,7 +498,13 @@ def heuristic_button(
         and last_action == "A"
     ):
         return "A", "dialog_continue"
-    if same_hash_streak >= 2 and same_pos_streak >= 1:
+    # dialog_frozen handler: spam A while screen+pos both frozen — assumes
+    # a stuck dialog. EXIT after a short window (>=8 same-hash turns) so
+    # we don't burn the whole iter pressing A when there's no actual
+    # dialog. Without this escalation, overworld stuck pos triggered
+    # dialog_frozen 260/600 turns at Rustboro (22,55) with screen never
+    # changing — agent has no way to break out into nav.
+    if 2 <= same_hash_streak <= 7 and same_pos_streak >= 1:
         return "A", "dialog_frozen"
 
     if (
