@@ -104,6 +104,23 @@ def heuristic_button(
         reward_state = reward_state_mod.RewardState()
     if screen_signals is None:
         screen_signals = {}
+    # Stale-flag compensation: gs.in_battle from 0x02022FEC (30ed435)
+    # stays True after a battle ends — overworld nav guards `not
+    # gs.in_battle` would then be permanently False, disabling mapbfs
+    # and all directional movement. Combine with the screen-UI signal
+    # so we only treat the agent as in-battle when the screen actually
+    # shows a battle UI. Monkeypatch gs.in_battle so every downstream
+    # `not gs.in_battle` guard works correctly without churning the
+    # whole decision tree.
+    _in_battle_real = bool(gs.in_battle) and bool(
+        screen_signals.get("battle_menu")
+        or screen_signals.get("dialog")
+        or screen_signals.get("menu")
+    )
+    try:
+        object.__setattr__(gs, "in_battle", _in_battle_real)
+    except Exception:
+        pass
     if screen_signals.get("battle_menu"):
         # Pre-empt: when we have balls AND a mono party AND aren't a
         # trainer battle (you can't catch trainers' Pokemon), try to throw.
