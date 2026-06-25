@@ -340,11 +340,26 @@ class MapCache:
                 q.append((nbr_pos, new_path))
         return None
 
+    # Empirically-verified working transition tiles when canon walkable
+    # disagrees with the game. Format: {(src_map_g, src_map_n, direction):
+    # set of (x,y) that actually trigger the connection in mGBA}.
+    _EMPIRICAL_EXIT_TILES: dict[tuple[int, int, str], set[tuple[int, int]]] = {
+        # Route 104 → Rustboro: tested 2026-06-23 manual escort, only
+        # x=19 worked. Other y=0 tiles canon-walkable but game-blocked
+        # due to Rustboro's (24,58)+ wall mismatch.
+        (0, 19, "up"): {(19, 0)},
+    }
+
     def exit_tiles_toward(
         self, map_g: int, map_n: int, direction: str,
     ) -> set[tuple[int, int]]:
         """Boundary tiles in this map that walking `direction` will cross
         into the connected map."""
+        # Prefer empirical override when available (catches canon-game
+        # walkable mismatches like Route 104 → Rustboro).
+        key = (map_g, map_n, direction)
+        if key in self._EMPIRICAL_EXIT_TILES:
+            return set(self._EMPIRICAL_EXIT_TILES[key])
         info = self.get(map_g, map_n)
         if info is None or direction not in info.connections:
             return set()
