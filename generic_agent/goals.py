@@ -87,6 +87,10 @@ class Goal:
     target_map: tuple[int, int] | None
     condition: str
     desc: str
+    # Optional specific tile target within target_map. Used by grinding
+    # goals (e.g. Route 104 south grass). When None, mapbfs uses default
+    # exit_tiles or warp_tiles. When set, mapbfs targets this exact tile.
+    target_pos: tuple[int, int] | None = None
 
     def matches(self, gs) -> bool:
         c = self.condition
@@ -202,6 +206,20 @@ GOAL_TABLE: list[Goal] = [
         target_map=(11, 3),
         condition="no_badge",
         desc="Rustboro Gym 建物 (11-3) 内部進入 → Roxanne 戦",
+    ),
+    # Grass grinding goal: when Roxanne battle keeps whiteout-ing the
+    # party, Route 104 south near Petalburg Woods entrance has wild
+    # encounters (LOTAD, TAILLOW, ZIGZAGOON). Pick (15, 45) as a target
+    # in the open walkable region around y=42-46 — agent BFS-walks here
+    # then exploration heuristics random-walk over grass tiles, eventually
+    # triggering wild encounter → LOTAD gains XP → BUBBLE one-shots
+    # Roxanne's Geodude.
+    Goal(
+        name="grind_route_104_south",
+        target_map=(0, 19),
+        target_pos=(15, 45),
+        condition="no_badge",
+        desc="Route 104 south grass (15,45) で LOTAD Lv up grinding",
     ),
     Goal(
         name="reach_dewford_gym",

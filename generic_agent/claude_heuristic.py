@@ -297,15 +297,27 @@ def heuristic_button(
                 next_hop_name = mc.name_for(*effective_goal_map)
             if next_hop_name:
                 target_tiles: set[tuple[int, int]] = set()
-                for direction, conn in cur_info.connections.items():
-                    if conn["map_name"] == next_hop_name:
-                        target_tiles |= mc.exit_tiles_toward(
-                            gs.map_group, gs.map_num, direction,
+                # If current_goal has explicit target_pos AND we're on
+                # the target_map, use that single tile (overrides
+                # exit_tiles). Used by grinding goals like
+                # grind_route_104_south to navigate to specific grass tile
+                # rather than a map-boundary exit.
+                if (
+                    current_goal is not None
+                    and getattr(current_goal, "target_pos", None) is not None
+                    and (gs.map_group, gs.map_num) == current_goal.target_map
+                ):
+                    target_tiles.add(current_goal.target_pos)
+                else:
+                    for direction, conn in cur_info.connections.items():
+                        if conn["map_name"] == next_hop_name:
+                            target_tiles |= mc.exit_tiles_toward(
+                                gs.map_group, gs.map_num, direction,
+                            )
+                    if not target_tiles:
+                        target_tiles |= mc.warp_tiles_for(
+                            gs.map_group, gs.map_num, next_hop_name,
                         )
-                if not target_tiles:
-                    target_tiles |= mc.warp_tiles_for(
-                        gs.map_group, gs.map_num, next_hop_name,
-                    )
                 if target_tiles and cur_info.walkable(gs.x, gs.y):
                     npc_tiles = {
                         (nx, ny) for (nx, ny, _gid) in gs.npcs_on_map
