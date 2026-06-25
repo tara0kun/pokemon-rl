@@ -310,10 +310,29 @@ def heuristic_button(
                     npc_tiles = {
                         (nx, ny) for (nx, ny, _gid) in gs.npcs_on_map
                     }
+                    # Add empirically-confirmed dead-end tiles to BFS
+                    # blocked set. tile_map records "blocked" directions
+                    # for each visited tile — if a tile has 4-way blocked
+                    # (all 4 dirs failed in past), it's a sink from which
+                    # no escape; treat as wall so BFS routes around it.
+                    # Catches canon-walkable / game-blocked mismatches
+                    # (Route 104 bridge area was chronic stuck because
+                    # (31,16) Left/Right/Up all blocked in tile_map but
+                    # BFS still routed through it.)
+                    empirical_blocked: set[tuple[int, int]] = set()
+                    mk = tm._map_key(gs.map_group, gs.map_num)
+                    for tk, rec in tm._store.get(mk, {}).items():
+                        if len(rec.blocked) >= 3:
+                            try:
+                                tx, ty = (int(p) for p in tk.split(","))
+                                empirical_blocked.add((tx, ty))
+                            except ValueError:
+                                pass
+                    bfs_blocked = npc_tiles | empirical_blocked
                     bfs_path = mc.bfs_to_tile(
                         gs.map_group, gs.map_num,
                         (gs.x, gs.y), target_tiles,
-                        blocked_tiles=npc_tiles,
+                        blocked_tiles=bfs_blocked,
                     )
                     if bfs_path:
                         next_btn = bfs_path[0]
