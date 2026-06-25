@@ -45,7 +45,7 @@ _GOAL_ORDER_WEIGHT = {
 # Goals whose target_map is the actual completion target (Gym building),
 # not just a waypoint. For these, the visited-maps backtrack-suppression
 # is skipped: visiting the gym map once doesn't mean we beat the leader.
-_GOAL_BYPASS_VISITED = {"enter_rustboro_gym"}
+_GOAL_BYPASS_VISITED = {"enter_rustboro_gym", "grind_route_104_south"}
 
 
 def _load_visited_maps() -> set[tuple[int, int]]:
@@ -201,18 +201,15 @@ GOAL_TABLE: list[Goal] = [
         condition="no_badge",
         desc="Petalburg → Rustboro City (0-3) Stone Badge",
     ),
-    Goal(
-        name="enter_rustboro_gym",
-        target_map=(11, 3),
-        condition="no_badge",
-        desc="Rustboro Gym 建物 (11-3) 内部進入 → Roxanne 戦",
-    ),
-    # Grass grinding goal: when Roxanne battle keeps whiteout-ing the
-    # party, Route 104 south near Petalburg Woods entrance has wild
-    # encounters (LOTAD, TAILLOW, ZIGZAGOON). Pick (15, 45) as a target
-    # in the open walkable region around y=42-46 — agent BFS-walks here
-    # then exploration heuristics random-walk over grass tiles, eventually
-    # triggering wild encounter → LOTAD gains XP → BUBBLE one-shots
+    # Grass grinding goal — placed BEFORE enter_rustboro_gym so it
+    # takes precedence while badge_count == 0. Without level-up grinding,
+    # the team whiteouts every Roxanne attempt. Once Stone Badge is in,
+    # this goal stops matching and enter_rustboro_gym becomes a no-op
+    # (badge>=1 condition not satisfied either). Route 104 south near
+    # Petalburg Woods entrance has wild encounters (LOTAD, TAILLOW,
+    # ZIGZAGOON). target (15, 45) is in open walkable y=42-46 — agent
+    # BFS-walks here then exploration heuristics random-walk over grass
+    # tiles → wild encounter → LOTAD gains XP → BUBBLE one-shots
     # Roxanne's Geodude.
     Goal(
         name="grind_route_104_south",
@@ -220,6 +217,12 @@ GOAL_TABLE: list[Goal] = [
         target_pos=(15, 45),
         condition="no_badge",
         desc="Route 104 south grass (15,45) で LOTAD Lv up grinding",
+    ),
+    Goal(
+        name="enter_rustboro_gym",
+        target_map=(11, 3),
+        condition="no_badge",
+        desc="Rustboro Gym 建物 (11-3) 内部進入 → Roxanne 戦",
     ),
     Goal(
         name="reach_dewford_gym",
