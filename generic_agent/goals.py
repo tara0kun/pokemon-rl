@@ -45,7 +45,7 @@ _GOAL_ORDER_WEIGHT = {
 # Goals whose target_map is the actual completion target (Gym building),
 # not just a waypoint. For these, the visited-maps backtrack-suppression
 # is skipped: visiting the gym map once doesn't mean we beat the leader.
-_GOAL_BYPASS_VISITED = {"enter_rustboro_gym", "grind_route_104_south"}
+_GOAL_BYPASS_VISITED = {"enter_rustboro_gym", "grind_route_104_north"}
 
 
 def _load_visited_maps() -> set[tuple[int, int]]:
@@ -212,11 +212,11 @@ GOAL_TABLE: list[Goal] = [
     # Woods the agent's exploration heuristics carry it south to the
     # other Route 104 warp → grass area for wild encounters.
     Goal(
-        name="grind_route_104_south",
+        name="grind_route_104_north",
         target_map=(0, 19),
-        target_pos=(10, 30),
+        target_pos=(17, 15),
         condition="no_badge",
-        desc="Route 104 (10,30) Petalburg Woods warp 経由 south grass",
+        desc="Route 104 north grass area (canonical 52 grass tile y=10-21)",
     ),
     Goal(
         name="enter_rustboro_gym",

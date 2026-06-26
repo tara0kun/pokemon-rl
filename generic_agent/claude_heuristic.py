@@ -343,8 +343,17 @@ def heuristic_button(
                     perm_blocked = mc.permanent_blocked(
                         gs.map_group, gs.map_num,
                     )
+                    try:
+                        from . import map_knowledge as mk_mod
+                        mk = mk_mod.get_store().get(
+                            gs.map_group, gs.map_num,
+                        )
+                        knowledge_trainer = mk.trainer_los
+                    except Exception:
+                        knowledge_trainer = set()
                     bfs_blocked = (
-                        npc_tiles | empirical_blocked | perm_blocked
+                        npc_tiles | empirical_blocked
+                        | perm_blocked | knowledge_trainer
                     )
                     bfs_path = mc.bfs_to_tile(
                         gs.map_group, gs.map_num,
