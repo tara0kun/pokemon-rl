@@ -341,13 +341,25 @@ def heuristic_button(
                     # BFS still routed through it.)
                     empirical_blocked: set[tuple[int, int]] = set()
                     mk = tm._map_key(gs.map_group, gs.map_num)
+                    _dir_delta = {
+                        "Up": (0, -1), "Down": (0, 1),
+                        "Left": (-1, 0), "Right": (1, 0),
+                    }
                     for tk, rec in tm._store.get(mk, {}).items():
+                        try:
+                            tx, ty = (int(p) for p in tk.split(","))
+                        except ValueError:
+                            continue
                         if len(rec.blocked) >= 3:
-                            try:
-                                tx, ty = (int(p) for p in tk.split(","))
-                                empirical_blocked.add((tx, ty))
-                            except ValueError:
-                                pass
+                            empirical_blocked.add((tx, ty))
+                        # Direction-edge block: 1-way blocked + >=30 fails
+                        # = adjacent tile is unreachable from this side
+                        # (canon walkable=True but game has water/NPC).
+                        for d in rec.blocked:
+                            tried_count = rec.tried.get(d, 0)
+                            if tried_count >= 30 and d in _dir_delta:
+                                dx, dy = _dir_delta[d]
+                                empirical_blocked.add((tx + dx, ty + dy))
                     perm_blocked = mc.permanent_blocked(
                         gs.map_group, gs.map_num,
                     )
