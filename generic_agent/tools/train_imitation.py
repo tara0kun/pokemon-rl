@@ -231,7 +231,11 @@ def main() -> int:
             f"source contains any of {args.exclude_sources}"
         )
     if args.max_samples > 0:
-        rows = rows[: args.max_samples]
+        rows = rows[-args.max_samples:]
+        print(
+            f"[dataset] using LAST {args.max_samples} rows "
+            f"(skipped {len(rows) if len(rows) < args.max_samples else 'older'} stale demos)"
+        )
     print(f"[dataset] {len(rows)} raw rows")
 
     print(f"[model] building arch={args.arch}")
@@ -280,16 +284,28 @@ def main() -> int:
     val_ds.items = [full.items[i] for i in val_idx]
     print(f"[dataset] train={len(train_ds)} val={len(val_ds)}")
 
+    use_cuda = torch.cuda.is_available()
     train_loader = DataLoader(
         train_ds, batch_size=args.batch, shuffle=True,
-        num_workers=0, pin_memory=False,
+        num_workers=0, pin_memory=use_cuda,
     )
     val_loader = DataLoader(
         val_ds, batch_size=args.batch, shuffle=False,
-        num_workers=0, pin_memory=False,
+        num_workers=0, pin_memory=use_cuda,
     )
 
-    device = torch.device("cpu")
+    device = torch.device(
+        "cuda" if torch.cuda.is_available() else "cpu"
+    )
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
+        gpu_name = torch.cuda.get_device_name(0)
+        vram_gb = torch.cuda.get_device_properties(0).total_memory // (
+            1024 ** 3
+        )
+        print(f"[device] CUDA: {gpu_name} (VRAM {vram_gb}GB)")
+    else:
+        print("[device] CPU (cuda unavailable)")
     model = model.to(device)
 
     weights = np.maximum(label_counts, 1)

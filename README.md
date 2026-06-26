@@ -95,16 +95,24 @@ git checkout old
 
 ## ゴール (3 段階)
 
-| 段階 | 達成基準 | 状態 (2026-06-09 朝) |
+| 段階 | 達成基準 | 状態 (2026-06-26) |
 |------|---------|----------------------|
-| **Goal 1: 序盤完了** | starter 受領 + Route 102 到達 | ✅ **達成**: starter 取得 + 11 unique map 訪問 |
-| **Goal 2: Gym 1 (ツツジ)** | Rustboro City で Roxanne 撃破 + バッジ 1 | ⏳ 未達 (推定 +$3-5 API 費用) |
+| **Goal 1: 序盤完了** | starter 受領 + Route 102 到達 | ✅ **達成**: starter 取得 + 30+ unique map 訪問 |
+| **Goal 2: Gym 1 (ツツジ)** | Rustboro City で Roxanne 撃破 + バッジ 1 | ⏳ **autonomous で Gym 内部到達**: 19 fix + 真の root cause 11 段解明、 Roxanne 戦自体は LOTAD Lv 不足で whiteout 繰り返し、 grass area grinding strategy 試行中 |
 | **Goal 3: ポケモンリーグ殿堂入り** | 8 バッジ + チャンピオン撃破 | 🎯 最終目標 |
 | **Stretch: 汎用化** | FireRed / Crystal で同じ codebase 動作確認 | 🎯 portfolio 主軸 |
 
-### Goal 2 までの to-do
-- Route 102 → Petalburg City → Petalburg Woods → Route 104 → Rustboro City → Gym 戦
-- 主な技術課題: 戦闘 RAM bridge (相手 Lv / 技 / type)、 menu 自動化、 マルチ戦闘の継続判断
+### 2026-06-22 → 06-26 milestone (5 day autonomous run)
+- **19 fix + 2 tool + 30+ daily_progress** 全 git push
+- **真の root cause 11 段** 解明・治療: RAM false-negative, cursor reset, party walk, screen-UI gate, goal logic, warp door, in_battle stale flag, dialog frozen, poll timing, empirical exit/blocked tile, BFS reachability
+- **autonomous nav**: bridge 14 hour chronic stuck 突破 → Rustboro 越境 → Gym 内部到達
+- **mGBA crash auto-recovery tool** (uiautomation 経由) で 24/7 robust 化
+- **tile_map empirical accumulation**: canon-game walkable mismatch を自動学習する仕組み実証 (Route 104 10 4-way blocked、 Rustboro 5 蓄積)
+
+### Goal 2 残課題
+- LOTAD Lv 10+ grinding (BUBBLE 2x rock で Geodude 一撃可能)
+- (10,30) Petalburg Woods warp 経由で Route 104 south grass area 到達
+- Roxanne 再戦 + Stone Badge 取得
 
 ---
 
@@ -232,6 +240,37 @@ git checkout old
 | 7 | new_map_grace + STAY hint | 23 / 2 / $1.50 (variance) |
 
 cycle 1 baseline 比で **positions 2.4×、 maps 6×** を同 cost で達成。 cycle 7 で Brain variance 問題 (cache 学習されない path の再現性) を honest documentation。
+
+---
+
+## 2026-06-15 更新: Hybrid LLM-in-loop + 真の自律 self-check
+
+詳細は [generic_agent/daily_progress/2026-06-15.md](generic_agent/daily_progress/2026-06-15.md) 参照。
+
+### 主な前進
+- **starter Pokemon 取得を完全自律で達成** (5 時間 manual + Opus 試行で失敗 → hybrid アーキテクチャ実装 1.5 時間で達成)
+- party_count: 0 → **1 (Lv5)**
+- event flags: 180 → **193**
+- curriculum milestones: 4 → **8** (Route 101, May 家, lab 内部 等含む)
+- demos: 115K → **179K**
+- BC val best_score: 72 → **225**
+
+### アーキテクチャの主な変更
+| component | 内容 |
+|-----------|------|
+| `reward_state.py` | PWhiddy v2 port (event×4、 heal×10、 badge×10、 stuck escalation) + dense intermediate signals |
+| `brain_cnn.py` | STATE_DIM 28 → 2,464 (全 2,400 event bit + HP/lvl/badges/recent_actions/opp_lvl) |
+| `state.py` | gObjectEvents 読込 (16 NPC sprites)、 wall vs NPC blocker 区別 |
+| `llm_advisor.py` + `pokemon_emerald_knowledge.py` | Haiku 4.5 を dialog/menu/stuck で sparse 召喚、 3,687 chars の Emerald 知識 prompt |
+| `path_memory.py` | `find_path_to_map` (multi-hop BFS)、 `find_nearest_unexplored_map` (novelty drive) |
+| `goals.py` | 6 段階階層 goal、 `get_starter` の target_map バグ修正 ((1,0) → (1,4) Birch's lab) |
+| `tools/autonomous_monitor.py` | 60 秒毎 tick + 30 分毎 `self_check_analyze` (8 iter scores + milestones 分析) |
+| `tools/train_imitation.py` + `train_ppo.py` | CPU → **RTX 5060 cu128 GPU** (epoch 13× 高速化)、 SB3 PPO env (30K timesteps 検証完了) |
+
+### 設計の honest 限界
+- PPO 30K は学習指標は positive (explained_variance 0.11) だが story trigger 学習には数百万 steps 必要 (PWhiddy 並み)
+- Champion クリアは現スタックでは届かない見込み (PWhiddy v2 も 3 badge で頭打ち)
+- BC val score の variance は大 (max_button_frac=1.0 残存)
 
 ---
 

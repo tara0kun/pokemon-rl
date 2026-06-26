@@ -29,7 +29,13 @@ import sys
 import time
 from pathlib import Path
 
-from . import config, memory, state as state_mod, tile_map as tile_map_mod
+from . import (
+    config,
+    memory,
+    path_memory as path_memory_mod,
+    state as state_mod,
+    tile_map as tile_map_mod,
+)
 from .io import EmulatorError, MGBAClient
 
 STATE_FILE = config.DATASET_DIR / "claude_play_state.json"
@@ -127,6 +133,14 @@ def cmd_step(
     rel_shot = s["last_screenshot"]
     rec_state = s.get("last_state") or {}
 
+    last_map = rec_state.get("map")
+    last_pos = rec_state.get("pos")
+    last_history = s.get("button_history") or []
+    last_history.append(button)
+    if len(last_history) > 12:
+        last_history = last_history[-12:]
+    s["button_history"] = last_history
+
     record = {
         "session_id": s["session_id"],
         "turn": s["turn"],
@@ -168,6 +182,26 @@ def cmd_step(
     s["last_screenshot"] = str(new_shot.relative_to(config.ROOT)).replace("\\", "/")
     s["last_state"] = ram_after
     _save_state(s)
+
+    if (
+        last_map is not None
+        and last_pos is not None
+        and ram_after.get("map") is not None
+        and ram_after.get("pos") is not None
+        and tuple(ram_after["map"]) != tuple(last_map)
+    ):
+        try:
+            pm = path_memory_mod.TransitionMemory()
+            pm.record_transition(
+                int(last_map[0]), int(last_map[1]),
+                int(last_pos[0]), int(last_pos[1]),
+                int(ram_after["map"][0]), int(ram_after["map"][1]),
+                int(ram_after["pos"][0]), int(ram_after["pos"][1]),
+                last_history,
+            )
+            pm.save()
+        except Exception as exc:
+            print(f"[warn] path_memory record failed: {exc!r}")
 
     print(json.dumps({
         "session_id": s["session_id"],

@@ -33,6 +33,7 @@ Run:
 from __future__ import annotations
 
 import argparse
+import os
 import random
 import sys
 import time
@@ -41,9 +42,16 @@ from pathlib import Path
 
 from . import (
     config,
+    curriculum as curr_mod,
+    goals as goals_mod,
+    knn_explorer as knn_mod,
+    llm_advisor as llm_mod,
+    map_data as map_data_mod,
     memory,
     path_memory as path_memory_mod,
     preprocess,
+    reward_state as reward_state_mod,
+    screen_features as sf_mod,
     state as state_mod,
     tile_map as tile_map_mod,
 )
@@ -51,6 +59,8 @@ from .io import EmulatorError, MGBAClient
 
 DIRECTIONS = ("Up", "Right", "Down", "Left")
 NORTH_BIAS_ORDER = ("Up", "Right", "Left", "Down")
+SOUTH_BIAS_ORDER = ("Down", "Left", "Right", "Up")  # indoor maps: exit is south
+INDOOR_TILE_THRESHOLD = 30  # heuristic for "indoor" maps
 RUN_CYCLE = ("A", "A", "Down", "Right", "A", "A", "A")
 
 
@@ -86,14 +96,454 @@ def heuristic_button(
     recent_pos: list[tuple[int, int, int, int]],
     battle_turn: int,
     escape_dir_index: int,
+    reward_state: reward_state_mod.RewardState | None = None,
+    screen_signals: dict | None = None,
+    current_goal: goals_mod.Goal | None = None,
 ) -> tuple[str, str]:
+    if reward_state is None:
+        reward_state = reward_state_mod.RewardState()
+    if screen_signals is None:
+        screen_signals = {}
+    # Stale-flag compensation: gs.in_battle from 0x02022FEC (30ed435)
+    # stays True after a battle ends — overworld nav guards `not
+    # gs.in_battle` would then be permanently False, disabling mapbfs
+    # and all directional movement. Combine with the screen-UI signal
+    # so we only treat the agent as in-battle when the screen actually
+    # shows a battle UI. Monkeypatch gs.in_battle so every downstream
+    # `not gs.in_battle` guard works correctly without churning the
+    # whole decision tree.
+    _in_battle_real = bool(gs.in_battle) and bool(
+        screen_signals.get("battle_menu")
+        or screen_signals.get("dialog")
+        or screen_signals.get("menu")
+    )
+    try:
+        object.__setattr__(gs, "in_battle", _in_battle_real)
+    except Exception:
+        pass
+    if screen_signals.get("battle_menu"):
+        # Pre-empt: when we have balls AND a mono party AND aren't a
+        # trainer battle (you can't catch trainers' Pokemon), try to throw.
+        # gs.in_battle is unreliable (RAM false negative), but battle_menu
+        # detected via vision means we ARE in battle. Trigger catch on
+        # first detect — caller manages a state machine to follow through
+        # the bag-select sequence even after battle_menu visibility flips.
+        if (
+            gs.bag_pokeball_count > 0
+            and gs.party_count <= 2
+            and gs.party0_hp_frac >= 0.3
+            and not gs.is_trainer_battle
+        ):
+            return "Right", "wild_catch_try_screen:init"
+        # Over-leveling guard: when starter is well above expected wild
+        # encounter level AND we lack balls / a 2nd party member, attacking
+        # just burns XP without progress. Pick RUN (bottom-right in the
+        # 2x2 battle menu: Right+Down+A) instead of mashing A on FIGHT.
+        # GUARD: only when wild battle (trainer battles can't be run from -
+        # repeatedly trying RUN here would loop the "No running from a
+        # TRAINER battle!" dialog forever).
+        if (
+            not gs.is_trainer_battle
+            and gs.party0_level >= 14
+            and gs.party_count == 1
+            and gs.bag_pokeball_count == 0
+        ):
+            run_seq = ("Right", "Down", "A", "A")
+            return run_seq[battle_turn % len(run_seq)], (
+                f"wild_run_overleveled@lv{gs.party0_level}"
+            )
+        # Default: reset cursor to FIGHT then A. Pressing A blindly may
+        # confirm whatever the cursor sits on (RUN/POKEMON/BAG from the
+        # previous turn), so first nudge Up+Up+Left to definitively land
+        # on FIGHT (top-left), then A → FIGHT submenu, then A → first
+        # move. Empirically verified during Roxanne battle 06-24: simply
+        # Left+Up wasn't enough — cursor on POKEMON (bottom-left) needs
+        # Up x2 to escape to FIGHT row, then Left to ensure x=0 column.
+        cursor_reset_seq = (
+            "Up", "Up", "Left", "A", "A", "A"
+        )
+        return cursor_reset_seq[battle_turn % len(cursor_reset_seq)], (
+            "battle_menu_visible:fight_cursor_reset"
+        )
+    if screen_signals.get("dialog") and not gs.in_battle:
+        return "A", "dialog_visible:A"
+    if screen_signals.get("menu") and not gs.in_battle:
+        return "B", "menu_visible:B"
+    if (
+        screen_signals.get("front_blocked")
+        and not gs.in_battle
+        and last_action in DIRECTIONS
+        and same_pos_streak >= 3
+    ):
+        avoid = last_action
+        order_alt = [
+            d for d in NORTH_BIAS_ORDER if d != avoid
+        ]
+        return order_alt[0], f"front_blocked_pivot:{order_alt[0]}"
+    cur_map = (gs.map_group, gs.map_num)
+    rival_goal_targets_here = any(
+        g.matches(gs)
+        and g.target_map == cur_map
+        and "rival" in g.name.lower()
+        for g in goals_mod.GOAL_TABLE
+    )
+    if (
+        same_map_streak >= 100
+        and not gs.in_battle
+        and gs.saveblock1_valid
+        and rival_goal_targets_here
+    ):
+        try:
+            mc_w = map_data_mod.get_cache()
+            rival_xy = mc_w.find_npc_by_script_keyword(
+                gs.map_group, gs.map_num, "rival",
+            )
+        except (OSError, RuntimeError):
+            rival_xy = None
+            mc_w = None
+        if rival_xy is not None and mc_w is not None:
+            rx, ry = rival_xy
+            adj = {(rx-1, ry), (rx+1, ry), (rx, ry-1), (rx, ry+1)}
+            adj = {t for t in adj if mc_w.get(gs.map_group, gs.map_num).walkable(*t)}
+            if (gs.x, gs.y) in adj:
+                d = _toward(gs.x, gs.y, rx, ry)
+                return "A", f"rival_talk:A@{rx},{ry}"
+            path = mc_w.bfs_to_tile(
+                gs.map_group, gs.map_num, (gs.x, gs.y), adj,
+            )
+            if path:
+                rs_btn = path[0]
+                if same_pos_streak >= 30:
+                    rotor = ["Up", "Right", "Down", "Left"]
+                    deltas = {"Up": (0, -1), "Right": (1, 0),
+                              "Down": (0, 1), "Left": (-1, 0)}
+                    cur_info_w = mc_w.get(gs.map_group, gs.map_num)
+                    base = rotor.index(rs_btn) if rs_btn in rotor else 0
+                    candidates: list[str] = []
+                    for k in range(4):
+                        d = rotor[(base + k) % 4]
+                        if d == last_action and same_pos_streak >= 10:
+                            continue
+                        dx, dy = deltas[d]
+                        nx, ny = gs.x + dx, gs.y + dy
+                        if cur_info_w is not None and cur_info_w.walkable(nx, ny):
+                            candidates.append(d)
+                    if candidates:
+                        choice = candidates[(same_pos_streak // 10) % len(candidates)]
+                    else:
+                        choice = rotor[(base + 1 + (same_pos_streak // 10)) % 4]
+                    return choice, (
+                        f"rival_seek_pivot:{choice}->{rx},{ry}"
+                        f"@streak={same_pos_streak}"
+                    )
+                return rs_btn, f"rival_seek:{rs_btn}->{rx},{ry}(d={len(path)})"
+    if (
+        8 <= same_pos_streak < 30
+        and last_action in DIRECTIONS
+        and not gs.in_battle
+        and gs.saveblock1_valid
+    ):
+        cycle = ("A", "A", "A", "B")
+        return cycle[same_pos_streak % len(cycle)], (
+            f"hidden_battle_probe:{cycle[same_pos_streak % len(cycle)]}"
+            f"@streak={same_pos_streak}"
+        )
+    explore_target: tuple[int, int] | None = None
+    if (
+        same_map_streak >= 200
+        and not gs.in_battle
+        and gs.saveblock1_valid
+    ):
+        recent = reward_state.last_visited_maps[-6:]
+        nm = pm.find_nearest_unexplored_map(
+            gs.map_group, gs.map_num, recent, max_hops=6,
+        )
+        if nm is not None:
+            explore_target = nm[0]
+    effective_goal_map = (
+        explore_target
+        if explore_target is not None
+        else (current_goal.target_map if current_goal else None)
+    )
+    if (
+        effective_goal_map is not None
+        and not gs.in_battle
+        and gs.saveblock1_valid
+        and (gs.map_group, gs.map_num) != effective_goal_map
+    ):
+        try:
+            mc = map_data_mod.get_cache()
+            cur_info = mc.get(gs.map_group, gs.map_num)
+        except (OSError, RuntimeError):
+            cur_info = None
+            mc = None
+        if cur_info and mc is not None:
+            mh_chain = mc.map_path(
+                gs.map_group, gs.map_num,
+                effective_goal_map[0], effective_goal_map[1],
+                max_hops=8,
+            )
+            if mh_chain is None:
+                mh_chain = pm.find_path_to_map(
+                    gs.map_group, gs.map_num,
+                    effective_goal_map[0], effective_goal_map[1],
+                    max_hops=6,
+                )
+            next_hop_name = None
+            if mh_chain:
+                next_hop = mh_chain[0]
+                next_hop_name = mc.name_for(*next_hop)
+            elif effective_goal_map is not None:
+                next_hop_name = mc.name_for(*effective_goal_map)
+            if next_hop_name:
+                target_tiles: set[tuple[int, int]] = set()
+                # If current_goal has explicit target_pos AND we're on
+                # the target_map, use that single tile (overrides
+                # exit_tiles). Used by grinding goals like
+                # grind_route_104_south to navigate to specific grass tile
+                # rather than a map-boundary exit.
+                if (
+                    current_goal is not None
+                    and getattr(current_goal, "target_pos", None) is not None
+                    and (gs.map_group, gs.map_num) == current_goal.target_map
+                ):
+                    target_tiles.add(current_goal.target_pos)
+                else:
+                    for direction, conn in cur_info.connections.items():
+                        if conn["map_name"] == next_hop_name:
+                            target_tiles |= mc.exit_tiles_toward(
+                                gs.map_group, gs.map_num, direction,
+                            )
+                    if not target_tiles:
+                        target_tiles |= mc.warp_tiles_for(
+                            gs.map_group, gs.map_num, next_hop_name,
+                        )
+                if target_tiles and cur_info.walkable(gs.x, gs.y):
+                    npc_tiles = {
+                        (nx, ny) for (nx, ny, _gid) in gs.npcs_on_map
+                    }
+                    # Add empirically-confirmed dead-end tiles to BFS
+                    # blocked set. tile_map records "blocked" directions
+                    # for each visited tile — if a tile has 4-way blocked
+                    # (all 4 dirs failed in past), it's a sink from which
+                    # no escape; treat as wall so BFS routes around it.
+                    # Catches canon-walkable / game-blocked mismatches
+                    # (Route 104 bridge area was chronic stuck because
+                    # (31,16) Left/Right/Up all blocked in tile_map but
+                    # BFS still routed through it.)
+                    empirical_blocked: set[tuple[int, int]] = set()
+                    mk = tm._map_key(gs.map_group, gs.map_num)
+                    for tk, rec in tm._store.get(mk, {}).items():
+                        if len(rec.blocked) >= 3:
+                            try:
+                                tx, ty = (int(p) for p in tk.split(","))
+                                empirical_blocked.add((tx, ty))
+                            except ValueError:
+                                pass
+                    bfs_blocked = npc_tiles | empirical_blocked
+                    bfs_path = mc.bfs_to_tile(
+                        gs.map_group, gs.map_num,
+                        (gs.x, gs.y), target_tiles,
+                        blocked_tiles=bfs_blocked,
+                    )
+                    if bfs_path:
+                        next_btn = bfs_path[0]
+                        delta = {
+                            "Up": (0, -1), "Down": (0, 1),
+                            "Left": (-1, 0), "Right": (1, 0),
+                        }.get(next_btn, (0, 0))
+                        next_tile = (gs.x + delta[0], gs.y + delta[1])
+                        npc_blocking = any(
+                            (nx, ny) == next_tile
+                            for (nx, ny, _gid) in gs.npcs_on_map
+                        )
+                        if npc_blocking:
+                            perp_pool = {
+                                "Up": ["Left", "Right", "Down"],
+                                "Down": ["Right", "Left", "Up"],
+                                "Left": ["Down", "Up", "Right"],
+                                "Right": ["Up", "Down", "Left"],
+                            }.get(next_btn, [])
+                            for cand in perp_pool:
+                                cdx, cdy = {
+                                    "Up": (0, -1), "Down": (0, 1),
+                                    "Left": (-1, 0), "Right": (1, 0),
+                                }[cand]
+                                ctile = (gs.x + cdx, gs.y + cdy)
+                                if any(
+                                    (nx, ny) == ctile
+                                    for (nx, ny, _g) in gs.npcs_on_map
+                                ):
+                                    continue
+                                if cur_info.walkable(*ctile):
+                                    return cand, (
+                                        f"npc_avoid:{cand}<-{next_btn}"
+                                        f"@({next_tile[0]},{next_tile[1]})"
+                                    )
+                        if (
+                            same_pos_streak >= 20
+                            and last_action == next_btn
+                        ):
+                            perp = {
+                                "Up": "Left", "Down": "Right",
+                                "Left": "Up", "Right": "Down",
+                            }.get(next_btn, next_btn)
+                            return perp, (
+                                f"mapbfs_perp:{perp}<-{next_btn}"
+                                f"@stuck{same_pos_streak}"
+                            )
+                        return next_btn, (
+                            f"mapbfs:{next_btn}->{next_hop_name}"
+                            f"(dist={len(bfs_path)})"
+                        )
+                    if bfs_path == [] and (gs.x, gs.y) in target_tiles:
+                        step_btn = mc.warp_step_direction(
+                            gs.map_group, gs.map_num, gs.x, gs.y,
+                        )
+                        if step_btn is not None:
+                            return step_btn, (
+                                f"mapbfs_warp:{step_btn}->{next_hop_name}"
+                            )
+        path_hops = pm.find_path_to_map(
+            gs.map_group, gs.map_num,
+            effective_goal_map[0], effective_goal_map[1],
+            max_hops=6,
+        )
+        if path_hops:
+            next_hop = path_hops[0]
+            r = pm.first_transition_record(
+                gs.map_group, gs.map_num,
+                next_hop[0], next_hop[1],
+                prefer_pos=(gs.x, gs.y),
+            )
+            if r is not None and r.from_pos is not None and r.seq:
+                hop_key = f"{next_hop[0]}-{next_hop[1]}"
+                if (gs.x, gs.y) == r.from_pos:
+                    btn = r.seq[0]
+                    if btn == "A":
+                        try:
+                            mc2 = map_data_mod.get_cache()
+                            step = mc2.warp_step_direction(
+                                gs.map_group, gs.map_num, gs.x, gs.y,
+                            )
+                        except (OSError, RuntimeError):
+                            step = None
+                        if step is not None:
+                            btn = step
+                            return btn, f"goal_warp_step:{btn}->{hop_key}"
+                    return btn, (
+                        f"goal_warp:{btn}->{hop_key}"
+                        f"@hops={len(path_hops)}"
+                    )
+                d = _toward(gs.x, gs.y, r.from_pos[0], r.from_pos[1])
+                mk = tm._map_key(gs.map_group, gs.map_num)
+                rec = tm._store.get(mk, {}).get(tm._tile_key(gs.x, gs.y))
+                blocked_here = set(rec.blocked) if rec is not None else set()
+                npc_blocked: set[str] = set()
+                for npc_x, npc_y, _gid in (gs.npcs_on_map or []):
+                    if (npc_x, npc_y) == (gs.x, gs.y):
+                        continue
+                    if npc_x == gs.x and npc_y == gs.y - 1:
+                        npc_blocked.add("Up")
+                    if npc_x == gs.x and npc_y == gs.y + 1:
+                        npc_blocked.add("Down")
+                    if npc_x == gs.x - 1 and npc_y == gs.y:
+                        npc_blocked.add("Left")
+                    if npc_x == gs.x + 1 and npc_y == gs.y:
+                        npc_blocked.add("Right")
+                if d not in blocked_here and d not in npc_blocked:
+                    return d, (
+                        f"goal_toward:{d}->{r.from_pos}@{hop_key}"
+                        f"(hops={len(path_hops)})"
+                    )
     if gs.in_battle:
         if gs.is_trainer_battle:
-            return "A", "trainer:A"
-        return RUN_CYCLE[battle_turn % len(RUN_CYCLE)], "wild_run"
+            # GUARD: gs.in_battle from state.py 0x02022FEC is a STALE
+            # trainer-type flag — once set during a trainer battle it
+            # persists into the next overworld, so this branch fires
+            # in overworld too. Only act when the screen actually shows
+            # a battle/menu/dialog UI; otherwise fall through to
+            # overworld navigation.
+            in_battle_ui = (
+                screen_signals.get("dialog")
+                or screen_signals.get("menu")
+                or screen_signals.get("battle_menu")
+            )
+            if in_battle_ui:
+                # After a faint mid-trainer-battle, the game opens
+                # "Choose a POKEMON." party menu. battle_menu screen
+                # detection is False there, but `menu` is True. A alone
+                # would confirm the just-fainted slot → "X has no energy
+                # left to battle!" → menu reopens, looping forever.
+                # Interleave Down nudges so the cursor walks toward the
+                # bottom of the party (alive Pokemon are typically the
+                # latest catches), with A presses to confirm SEND OUT
+                # once a healthy slot is reached.
+                party_seq = (
+                    "Down", "A", "A", "B", "Down", "A", "A", "B"
+                )
+                return party_seq[battle_turn % len(party_seq)], (
+                    "trainer:party_walk"
+                )
+            # Stale trainer flag in overworld — drop through to nav.
+        # SAME GUARD for wild-battle path: gs.in_battle from the stale
+        # 0x02022FEC flag stays True after a battle ends. Without this
+        # gate the wild_fight_safe / wild_catch_try / wild_run branches
+        # below fire on the overworld, spamming A or RUN-direction
+        # buttons that do nothing useful and freeze nav (observed:
+        # wild_fight_safe = 552/600 turns at (28,7) Route 104 outdoor).
+        in_battle_ui_wild = (
+            screen_signals.get("dialog")
+            or screen_signals.get("menu")
+            or screen_signals.get("battle_menu")
+        )
+        if in_battle_ui_wild:
+            # Try to catch as soon as battle starts (turn 1) while still
+            # solo in the party. Treecko at Lv10+ one-shots most wild
+            # Pokemon on turn 1 if we just press A → we'd never get to
+            # capture anything, so when party is mono and we have balls,
+            # throw IMMEDIATELY.
+            catch_priority = (
+                gs.bag_pokeball_count > 0
+                and gs.party_count <= 2
+                and gs.party0_hp_frac >= 0.3
+            )
+            if catch_priority and battle_turn >= 1:
+                # FIGHT(TL) BAG(TR) PKMN(BL) RUN(BR) — BAG = Right of
+                # FIGHT, then A. Sequence below opens BAG and picks the
+                # first Poke Ball.
+                catch_seq = ("Right", "A", "A", "A", "A", "A", "A", "A")
+                return (
+                    catch_seq[battle_turn % len(catch_seq)],
+                    "wild_catch_try",
+                )
+            catch_ready = (
+                gs.bag_pokeball_count > 0
+                and gs.party0_hp_frac >= 0.5
+                and battle_turn >= 4
+            )
+            if catch_ready and battle_turn % 8 == 0:
+                catch_seq = ("Down", "Right", "A", "A", "A", "A")
+                return (
+                    catch_seq[battle_turn % len(catch_seq)],
+                    "wild_catch_try",
+                )
+            if gs.party0_max_hp > 0 and gs.party0_hp_frac >= 0.7:
+                return "A", "wild_fight_safe"
+            return (
+                RUN_CYCLE[battle_turn % len(RUN_CYCLE)],
+                "wild_run",
+            )
+        # Stale wild-battle flag in overworld — drop through to nav.
 
     if not gs.saveblock1_valid:
         return "A", "pre-save:A"
+
+    if (
+        gs.x == 0 and gs.y == 0
+        and gs.map_group == 0 and gs.map_num == 0
+    ):
+        return "A", "pregame_intro:A"
 
     if (
         same_pos_streak > 0
@@ -101,8 +551,26 @@ def heuristic_button(
         and last_action == "A"
     ):
         return "A", "dialog_continue"
-    if same_hash_streak >= 2 and same_pos_streak >= 1:
+    # dialog_frozen handler: spam A while screen+pos both frozen — assumes
+    # a stuck dialog. EXIT after a short window (>=8 same-hash turns) so
+    # we don't burn the whole iter pressing A when there's no actual
+    # dialog. Without this escalation, overworld stuck pos triggered
+    # dialog_frozen 260/600 turns at Rustboro (22,55) with screen never
+    # changing — agent has no way to break out into nav.
+    if 2 <= same_hash_streak <= 7 and same_pos_streak >= 1:
         return "A", "dialog_frozen"
+
+    if (
+        same_map_streak >= 150
+        and last_action not in ("A", "B")
+        and same_map_streak % 7 == 0
+    ):
+        return "A", "npc_sweep:A"
+    if (
+        same_map_streak >= 200
+        and same_map_streak % 11 == 0
+    ):
+        return "B", "menu_close:B"
 
     cur_x, cur_y = gs.x, gs.y
     cur_map = (gs.map_group, gs.map_num)
@@ -127,35 +595,106 @@ def heuristic_button(
 
     cur_map_key = f"{gs.map_group}-{gs.map_num}"
     from_paths = pm._store.get(cur_map_key, {})
-    candidate: tuple[tuple[int, int], str, list[str]] | None = None
-    best_visits = None
+
+    def _onward_score(target_str: str) -> int:
+        inner = pm._store.get(target_str, {})
+        return sum(1 for n in inner if n != cur_map_key)
+
+    candidate: tuple[tuple[int, int], str, object] | None = None
+    best_key: tuple[int, int, int] | None = None
     for tk, records in from_paths.items():
         try:
             tg, tn = (int(v) for v in tk.split("-"))
         except ValueError:
             continue
         t_visits = map_visit_counts.get((tg, tn), 0)
-        if (
-            best_visits is not None
-            and t_visits >= best_visits
-        ):
-            continue
+        onward = _onward_score(tk)
         for r in records:
             if r.from_pos is None or not r.seq:
                 continue
-            candidate = ((tg, tn), tk, r.seq)
-            best_visits = t_visits
-            target_pos = r.from_pos
-            target_record = r
+            key = (-onward, t_visits, len(r.seq))
+            if best_key is None or key < best_key:
+                candidate = ((tg, tn), tk, r)
+                best_key = key
             break
     if candidate is not None:
-        target_pos = target_record.from_pos  # type: ignore[name-defined]
-        seq = target_record.seq  # type: ignore[name-defined]
+        target_record = candidate[2]
+        target_pos = target_record.from_pos
+        seq = target_record.seq
         if (cur_x, cur_y) == target_pos:
             return seq[0], f"path_memory_exit:{seq[0]}->{candidate[1]}"
         d = _toward(cur_x, cur_y, target_pos[0], target_pos[1])
         if d not in blocked:
             return d, f"toward_exit:{d}->{target_pos}"
+
+    force_marker = config.MEMORY_DIR / "force_explore.flag"
+    force_marker_active = force_marker.exists()
+    if (
+        (same_map_streak >= 400 or force_marker_active)
+        and not gs.in_battle
+        and gs.saveblock1_valid
+    ):
+        far_dir = tm.bfs_frontier_direction(
+            gs.map_group, gs.map_num, cur_x, cur_y, prefer="farthest",
+        )
+        if far_dir and far_dir not in blocked:
+            return far_dir, (
+                f"force_explore:far_frontier:{far_dir}"
+                f"@streak={same_map_streak}"
+            )
+        cp = reward_state.pick_checkpoint(
+            (gs.map_group, gs.map_num),
+        )
+        if cp is not None:
+            cp_g, cp_n, cp_x, cp_y = cp
+            if (cp_g, cp_n) == (gs.map_group, gs.map_num):
+                d = _toward(cur_x, cur_y, cp_x, cp_y)
+                if d not in blocked:
+                    return d, (
+                        f"force_explore:checkpoint:{d}->({cp_x},{cp_y})"
+                    )
+            cp_map_key = f"{cp_g}-{cp_n}"
+            cp_records = pm._store.get(
+                f"{gs.map_group}-{gs.map_num}", {}
+            ).get(cp_map_key)
+            if cp_records:
+                for r in cp_records:
+                    if r.from_pos and r.seq:
+                        if (cur_x, cur_y) == r.from_pos:
+                            return r.seq[0], (
+                                f"force_explore:warp:{r.seq[0]}->{cp_map_key}"
+                            )
+                        d = _toward(
+                            cur_x, cur_y, r.from_pos[0], r.from_pos[1],
+                        )
+                        if d not in blocked:
+                            return d, (
+                                f"force_explore:toward_warp:{d}"
+                                f"->{r.from_pos}"
+                            )
+                        break
+
+    tiles_known = len(tiles)
+    bias_order = (
+        SOUTH_BIAS_ORDER
+        if tiles_known < INDOOR_TILE_THRESHOLD and same_map_streak > 50
+        else NORTH_BIAS_ORDER
+    )
+    scored: list[tuple[float, str, str]] = []
+    for d in bias_order:
+        if d in blocked:
+            continue
+        score = reward_state.score_direction(
+            d, gs.map_group, gs.map_num, cur_x, cur_y,
+            tm._store, blocked, same_map_streak,
+        )
+        scored.append((score, d, "reward_scored"))
+    if scored:
+        scored.sort(key=lambda t: t[0], reverse=True)
+        best_score, best_dir, _ = scored[0]
+        if best_score > float("-inf"):
+            tag = "south_indoor" if bias_order is SOUTH_BIAS_ORDER else "north_outdoor"
+            return best_dir, f"reward_pick:{best_dir}@{best_score:.1f}/{tag}"
 
     unexplored_dirs: list[str] = []
     for d in NORTH_BIAS_ORDER:
@@ -207,6 +746,19 @@ def run(
         print(f"[start] cleared {cleaned} phantom 4-way-blocked tiles")
         tm.save()
     pm = path_memory_mod.TransitionMemory()
+    knn = knn_mod.KNNExplorer(dim=64)
+    knn_path = config.MEMORY_DIR / "knn_explorer.npz"
+    knn.load(knn_path)
+    curriculum = curr_mod.CurriculumIndex()
+    curriculum.load()
+    use_llm = (
+        os.environ.get("POKE_RL_USE_LLM", "0") == "1"
+        and config.load_api_key() is not None
+    )
+    advisor = llm_mod.LLMAdvisor() if use_llm else None
+    llm_buttons_queue: list[str] = []
+    last_consult_turn = -100
+    prev_map_for_consult = None
 
     session_id = time.strftime("%Y%m%dT%H%M%S")
     print(
@@ -226,6 +778,21 @@ def run(
     map_visit_counts: dict[tuple[int, int], int] = {}
     escape_dir_index = 0
     history_buttons: list[str] = []
+    entry_dir: str | None = None
+    force_explore_until_turn = 0
+    catch_phase_remaining = 0
+    catch_seq_queue: list[str] = []
+    rs = reward_state_mod.RewardState()
+    rs.load()
+    checkpoint_target: tuple[int, int, int, int] | None = None
+    checkpoint_target_until = 0
+    prev_in_battle = False
+    prev_hp = 0
+    prev_level = 0
+    prev_party_count = 0
+    prev_first_item_id = 0
+    prev_event_flags = 0
+    prev_badge_count = 0
 
     decisions: dict[str, int] = {}
 
@@ -256,6 +823,14 @@ def run(
                         gs.x, gs.y,
                         history_buttons[-8:],
                     )
+                    if last_pos is not None:
+                        rs.record_new_map(
+                            last_map_key, last_pos, map_key,
+                            (gs.x, gs.y), turn,
+                        )
+                    if last_action in DIRECTIONS:
+                        entry_dir = last_action
+                        force_explore_until_turn = turn + 30
             last_map_key = map_key
             map_visit_counts[map_key] = (
                 map_visit_counts.get(map_key, 0) + 1
@@ -281,25 +856,189 @@ def run(
                         last_action, moved=True,
                     )
             last_pos = pos_now
-        if gs.in_battle:
+        # gs.in_battle has a known RAM false-negative on English Emerald
+        # (the BATTLE_FLAGS_CANDIDATES addresses stay 0 during the
+        # move-select screen), so screen vision is the ground truth.
+        ss_for_battle = locals().get("screen_signals") or {}
+        in_battle_seen = gs.in_battle or bool(
+            ss_for_battle.get("battle_menu")
+        )
+        if in_battle_seen:
             battle_turn += 1
         else:
             battle_turn = 0
 
-        button, src = heuristic_button(
-            gs, tm, pm,
-            map_visit_counts=map_visit_counts,
-            same_pos_streak=same_pos_streak,
-            same_hash_streak=same_hash_streak,
-            same_map_streak=same_map_streak,
-            last_pos=last_pos,
-            last_action=last_action,
-            recent_pos=list(recent_pos),
-            battle_turn=battle_turn,
-            escape_dir_index=escape_dir_index,
-        )
+        if turn > 1 and gs.saveblock1_valid:
+            r_battle = rs.record_battle_event(
+                turn,
+                prev_in_battle=prev_in_battle,
+                cur_in_battle=gs.in_battle,
+                prev_hp=prev_hp,
+                cur_hp=gs.party0_hp,
+                cur_max_hp=gs.party0_max_hp,
+                prev_level=prev_level,
+                cur_level=gs.party0_level,
+                prev_party_count=prev_party_count,
+                cur_party_count=gs.party_count,
+                prev_first_item_id=prev_first_item_id,
+                cur_first_item_id=gs.bag_first_item_id,
+            )
+            r_event = rs.record_event_flag_delta(
+                turn,
+                prev_flags=prev_event_flags,
+                cur_flags=gs.total_event_flags,
+            )
+            r_smp = rs.record_same_map_penalty(turn, same_map_streak)
+            r_heal = rs.record_healing(
+                turn,
+                prev_hp=prev_hp,
+                cur_hp=gs.party0_hp,
+                cur_max_hp=gs.party0_max_hp,
+            )
+            r_badge = rs.record_badge_delta(
+                turn,
+                prev_badges=prev_badge_count,
+                cur_badges=gs.badge_count,
+            )
+            r_coord = rs.record_coord_visit(
+                turn, gs.map_group, gs.map_num, gs.x, gs.y,
+            )
+            if (
+                prev_hp > 0
+                and gs.party0_hp == 0
+                and gs.party0_max_hp > 0
+                and not gs.in_battle
+            ):
+                rs.record_death(turn)
+        prev_in_battle = gs.in_battle
+        prev_hp = gs.party0_hp
+        prev_level = gs.party0_level
+        prev_party_count = gs.party_count
+        prev_first_item_id = gs.bag_first_item_id
+        prev_event_flags = gs.total_event_flags
+        prev_badge_count = gs.badge_count
+
+        screen_signals = {}
+        if turn % 5 == 0:
+            try:
+                facing = last_action if last_action in DIRECTIONS else None
+                screen_signals = sf_mod.detect_from_path(shot, facing=facing)
+            except (OSError, ValueError):
+                screen_signals = {}
+
+        if advisor is not None and not llm_buttons_queue:
+            cur_map_tuple = (gs.map_group, gs.map_num)
+            map_changed = (
+                prev_map_for_consult is not None
+                and cur_map_tuple != prev_map_for_consult
+            )
+            hp_frac_now = (
+                gs.party0_hp_frac
+                if gs.party0_max_hp > 0 else 1.0
+            )
+            if llm_mod.should_consult(
+                screen_signals, same_pos_streak, map_changed,
+                last_consult_turn, turn, gs.in_battle,
+                same_map_streak=same_map_streak,
+                hp_frac=hp_frac_now,
+            ):
+                advice = advisor.consult(
+                    shot, gs, screen_signals,
+                    same_pos_streak, same_map_streak,
+                )
+                if advice and advice.buttons:
+                    llm_buttons_queue = list(advice.buttons)
+                    last_consult_turn = turn
+                    print(
+                        f"  [LLM] {advice.buttons} :: {advice.reason} "
+                        f"(${advice.cost_usd:.4f}, total ${advisor.total_cost:.3f})"
+                    )
+            prev_map_for_consult = cur_map_tuple
+
+        if turn % 10 == 0 and gs.saveblock1_valid:
+            try:
+                arr = preprocess.load_png_as_array(shot)
+                emb = preprocess.frame_embedding(arr, dim=64)
+                novel = knn.query_or_add(emb, threshold=180.0)
+                rs.record_knn_novelty(turn, novel)
+            except (OSError, ValueError):
+                pass
+
+        if (
+            gs.saveblock1_valid
+            and not gs.in_battle
+            and turn % 25 == 0
+        ):
+            try:
+                m = curr_mod.record_milestone_if_new(
+                    client, gs, curriculum,
+                )
+                if m:
+                    decisions["curriculum_milestone"] = (
+                        decisions.get("curriculum_milestone", 0) + 1
+                    )
+                    print(
+                        f"[curriculum] new milestone map=({m.map_g},{m.map_n}) "
+                        f"@({m.pos_x},{m.pos_y}) badges={m.badge_count} "
+                        f"flags={m.total_event_flags}"
+                    )
+            except (OSError, RuntimeError):
+                pass
+
+        cur_goal = goals_mod.current_goal(gs) if gs.saveblock1_valid else None
+
+        if catch_seq_queue:
+            button = catch_seq_queue.pop(0)
+            src = f"catch_seq_followup:{button}@rem{len(catch_seq_queue)}"
+            decisions["catch_seq_followup"] = (
+                decisions.get("catch_seq_followup", 0) + 1
+            )
+            if not catch_seq_queue:
+                catch_phase_remaining = 0
+        elif llm_buttons_queue:
+            valid = {"A","B","Up","Down","Left","Right","Start","Select"}
+            llm_btn = llm_buttons_queue.pop(0)
+            if llm_btn in valid:
+                button = llm_btn
+                src = f"llm:{llm_btn}"
+                decisions["llm"] = decisions.get("llm", 0) + 1
+            else:
+                button, src = heuristic_button(
+                    gs, tm, pm,
+                    map_visit_counts=map_visit_counts,
+                    same_pos_streak=same_pos_streak,
+                    same_hash_streak=same_hash_streak,
+                    same_map_streak=same_map_streak,
+                    last_pos=last_pos,
+                    last_action=last_action,
+                    recent_pos=list(recent_pos),
+                    battle_turn=battle_turn,
+                    escape_dir_index=escape_dir_index,
+                    reward_state=rs,
+                    screen_signals=screen_signals,
+                    current_goal=cur_goal,
+                )
+        else:
+            button, src = heuristic_button(
+                gs, tm, pm,
+                map_visit_counts=map_visit_counts,
+                same_pos_streak=same_pos_streak,
+                same_hash_streak=same_hash_streak,
+                same_map_streak=same_map_streak,
+                last_pos=last_pos,
+                last_action=last_action,
+                recent_pos=list(recent_pos),
+                battle_turn=battle_turn,
+                escape_dir_index=escape_dir_index,
+                reward_state=rs,
+                screen_signals=screen_signals,
+                current_goal=cur_goal,
+            )
         if "escape" in src:
             escape_dir_index = (escape_dir_index + 1) % 4
+        if src.startswith("wild_catch_try_screen:init") and not catch_seq_queue:
+            catch_seq_queue = ["A", "A", "A", "A", "A", "A", "A"]
+            catch_phase_remaining = len(catch_seq_queue)
         key = src.split(":")[0]
         decisions[key] = decisions.get(key, 0) + 1
         history_buttons.append(button)
@@ -346,14 +1085,166 @@ def run(
                     "consecutive_dialog": 0,
                     "map_visit_count": 0,
                     "goal_direction": None,
+                    "party0_hp": gs.party0_hp,
+                    "party0_max_hp": gs.party0_max_hp,
+                    "party0_level": gs.party0_level,
+                    "badge_count": gs.badge_count,
+                    "total_event_flags": gs.total_event_flags,
+                    "event_flag_bytes_hex": gs.event_flag_bytes_hex,
+                    "recent_actions": list(history_buttons)[-3:],
+                    "opponent_level": 0,
+                    "screen_dialog": bool(screen_signals.get("dialog")),
+                    "screen_menu": bool(screen_signals.get("menu")),
                 },
             )
+
+        anomaly_kind: str | None = None
+        rp_list = list(recent_pos)
+        if same_pos_streak >= 8 and not gs.in_battle:
+            anomaly_kind = "pos_stuck"
+        elif (
+            len(rp_list) >= 6
+            and len({(g, n) for g, n, _, _ in rp_list[-6:]}) == 2
+            and not gs.in_battle
+        ):
+            anomaly_kind = "door_ping"
+        elif (
+            len(rp_list) >= 15
+            and len(set(rp_list[-15:])) <= 6
+            and not gs.in_battle
+        ):
+            anomaly_kind = "small_circle"
+        elif (
+            len(rp_list) >= 40
+            and len(set(rp_list[-40:])) <= 12
+            and not gs.in_battle
+        ):
+            anomaly_kind = "med_circle"
+        elif (
+            same_map_streak >= 200
+            and gs.saveblock1_valid
+        ):
+            mk_anom = tm._map_key(gs.map_group, gs.map_num)
+            tiles_now = tm._store.get(mk_anom, {})
+            visited_count = sum(
+                1 for r in tiles_now.values() if r.visits > 0
+            )
+            if visited_count < 30:
+                anomaly_kind = "map_lockin"
+        goal_directed = src.startswith(("mapbfs", "rival_seek", "rival_talk", "goal_"))
+        if (
+            anomaly_kind is not None
+            and gs.saveblock1_valid
+            and not goal_directed
+        ):
+            escape_pool = [
+                "B", "Up", "Right", "Down", "Left",
+                "B", "Down", "Left", "Up", "Right",
+                "B", "B", "A", "B",
+            ]
+            step_idx = (same_pos_streak * 3 + turn) % len(escape_pool)
+            button = escape_pool[step_idx]
+            src = f"anomaly_escape:{anomaly_kind}:{button}"
+            decisions["anomaly_escape"] = (
+                decisions.get("anomaly_escape", 0) + 1
+            )
+
+        recent_maps_list = [
+            (g, n) for g, n, _, _ in list(recent_pos)[-6:]
+        ]
+        door_pingpong = (
+            len(recent_maps_list) >= 4
+            and recent_maps_list[-1] != recent_maps_list[-2]
+            and recent_maps_list[-3] != recent_maps_list[-2]
+            and recent_maps_list[-1] == recent_maps_list[-3]
+            and last_action == button
+            and button in DIRECTIONS
+            and not gs.in_battle
+        )
+        if door_pingpong and gs.saveblock1_valid:
+            perp_pool = {
+                "Up": ["Right", "Down", "Left"],
+                "Down": ["Left", "Up", "Right"],
+                "Left": ["Down", "Right", "Up"],
+                "Right": ["Up", "Left", "Down"],
+            }[button]
+            mk_pp = tm._map_key(gs.map_group, gs.map_num)
+            rec_pp = tm._store.get(mk_pp, {}).get(
+                tm._tile_key(gs.x, gs.y)
+            )
+            cur_blocked_pp = (
+                set(rec_pp.blocked) if rec_pp is not None else set()
+            )
+            alternatives = [
+                d for d in perp_pool if d not in cur_blocked_pp
+            ]
+            if alternatives:
+                button = alternatives[turn % len(alternatives)]
+                src = f"door_pingpong_break:{button}"
+                decisions["door_pingpong_break"] = (
+                    decisions.get("door_pingpong_break", 0) + 1
+                )
+
+        if (
+            entry_dir is not None
+            and turn < force_explore_until_turn
+            and button in DIRECTIONS
+            and not gs.in_battle
+            and gs.saveblock1_valid
+            and not door_pingpong
+        ):
+            opp = {
+                "Up": "Down", "Down": "Up",
+                "Left": "Right", "Right": "Left",
+            }.get(entry_dir)
+            perp_map = {
+                "Up": ("Right", "Left"),
+                "Down": ("Left", "Right"),
+                "Left": ("Up", "Down"),
+                "Right": ("Down", "Up"),
+            }[entry_dir]
+            mk_av = tm._map_key(gs.map_group, gs.map_num)
+            rec_av = tm._store.get(mk_av, {}).get(
+                tm._tile_key(gs.x, gs.y)
+            )
+            cur_blocked_now = (
+                set(rec_av.blocked) if rec_av is not None else set()
+            )
+            forced_btn: str | None = None
+            if entry_dir not in cur_blocked_now and button != entry_dir:
+                forced_btn = entry_dir
+            elif button == opp:
+                perp_options = [
+                    d for d in perp_map if d not in cur_blocked_now
+                ]
+                if perp_options:
+                    forced_btn = perp_options[turn % len(perp_options)]
+            if forced_btn is not None:
+                button = forced_btn
+                src = f"forward_force:{button},entry={entry_dir}"
+                decisions["forward_force"] = (
+                    decisions.get("forward_force", 0) + 1
+                )
 
         try:
             client.tap(button, frames=15)
         except (EmulatorError, ValueError) as exc:
             print(f"  [warn] button {button} failed: {exc}")
         time.sleep(poll_period_sec)
+        if advisor is not None and src.startswith("llm:"):
+            try:
+                gs_after = state_mod.read_state(client)
+                if gs_after.saveblock1_valid:
+                    advisor.push_history(
+                        (gs.x, gs.y), (gs.map_group, gs.map_num),
+                        [button],
+                        (gs_after.x, gs_after.y),
+                        (gs_after.map_group, gs_after.map_num),
+                        moved=(gs.x, gs.y, gs.map_group, gs.map_num) !=
+                              (gs_after.x, gs_after.y, gs_after.map_group, gs_after.map_num),
+                    )
+            except (EmulatorError, ValueError):
+                pass
         last_action = button
 
         if turn % 100 == 0:
@@ -365,10 +1256,64 @@ def run(
         if turn % 100 == 0:
             tm.save()
             pm.save()
+            rs.save()
+
+        if (
+            turn > 0
+            and turn % 150 == 0
+            and gs.saveblock1_valid
+            and not gs.in_battle
+        ):
+            try:
+                snap_path = config.MEMORY_DIR / "savestate_autosnap.ss1"
+                client.save_state_file(snap_path, flags=1)
+                decisions["autosave_savestate"] = (
+                    decisions.get("autosave_savestate", 0) + 1
+                )
+            except (EmulatorError, OSError) as exc:
+                print(f"  [warn] savestate snap failed: {exc}")
+
+        if (
+            turn > 0
+            and turn % 500 == 0
+            and gs.saveblock1_valid
+            and not gs.in_battle
+            and gs.party0_max_hp > 0
+        ):
+            try:
+                save_seq = [
+                    "Start", "Down", "Down", "Down", "Down", "Down",
+                    "A", "A", "A", "A", "B", "B", "B",
+                ]
+                for sb in save_seq:
+                    client.tap(sb, frames=15)
+                    time.sleep(0.3)
+                decisions["ingame_report"] = (
+                    decisions.get("ingame_report", 0) + 1
+                )
+            except (EmulatorError, ValueError) as exc:
+                print(f"  [warn] in-game report failed: {exc}")
 
     tm.save()
     pm.save()
-    print(f"[end] turns={max_turns} decisions={decisions}")
+    rs.save()
+    if gs.saveblock1_valid and not gs.in_battle:
+        try:
+            client.save_state_file(
+                config.MEMORY_DIR / "savestate_final.ss1", flags=1
+            )
+        except (EmulatorError, OSError):
+            pass
+    try:
+        knn.save(knn_path)
+    except OSError:
+        pass
+    print(
+        f"[end] turns={max_turns} decisions={decisions} "
+        f"reward_cumulative={rs.cumulative_reward:.1f} "
+        f"checkpoints={len(rs.cells)} "
+        f"unique_maps={len(rs.last_visited_maps)}"
+    )
     return 0
 
 
@@ -376,7 +1321,16 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--turns", type=int, default=500)
     parser.add_argument("--dataset", action="store_true")
-    parser.add_argument("--poll", type=float, default=0.05)
+    # Pokemon Emerald frame timing: tile-walk costs ~16 frames @ 60fps =
+    # 266ms. button hold (frames=15 = 250ms) + this poll delay should
+    # exceed walk-finish window or agent's next-tile movement queues
+    # incorrectly. Empirically:
+    # - 0.05s: chronic stuck (31,15-17) bridge area, no movement
+    # - 0.3s: range expanded 4→11 tile but still bridge-bound
+    # - manual 1.5s walks (frames=25): consistent successful movement
+    # Bump to 0.6s = matches walk completion + small buffer. Throughput
+    # 12x slower than original but actual movement reliable.
+    parser.add_argument("--poll", type=float, default=0.6)
     args = parser.parse_args()
     return run(args.turns, args.dataset, args.poll)
 

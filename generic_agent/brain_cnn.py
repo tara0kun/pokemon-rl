@@ -63,7 +63,15 @@ IMAGENET_STD = (0.229, 0.224, 0.225)
 # 25     pos_y / 32
 # 26     map_visit_count / 500 (clipped)
 # 27     consecutive_dialog / 20 (clipped)
-STATE_DIM = 28
+NUM_EVENT_FLAG_BITS = 2400  # Pokemon Emerald NUM_FLAG_BYTES * 8
+RECENT_ACTIONS_LEN = 3       # PWhiddy v2: last 3 actions
+NUM_BUTTONS = 8              # PWhiddy v2: Down/Left/Right/Up/A/B/Start/Select
+STATE_DIM = (
+    39                            # 28 original + 11 PWhiddy basic (HP/lvl/flags_total/badges)
+    + NUM_EVENT_FLAG_BITS         # 2400 full event flag bits
+    + RECENT_ACTIONS_LEN * NUM_BUTTONS  # 24 recent-action one-hots
+    + 1                           # opponent level normalized
+)  # = 2464
 
 
 def _dir_index(direction: str | None) -> int:
@@ -100,6 +108,40 @@ def vectorize_state(state: dict[str, Any]) -> np.ndarray:
         v[25] = float(pos[1]) / 32.0
     v[26] = min(1.0, float(state.get("map_visit_count", 0)) / 500.0)
     v[27] = min(1.0, float(state.get("consecutive_dialog", 0)) / 20.0)
+    # PWhiddy v2 obs port (dims 28-38: HP/lvl/badges)
+    hp = float(state.get("party0_hp", 0))
+    max_hp = float(state.get("party0_max_hp", 0))
+    if max_hp > 0:
+        v[28] = max(0.0, min(1.0, hp / max_hp))
+    v[29] = min(1.0, float(state.get("party0_level", 0)) / 50.0)
+    v[30] = min(1.0, float(state.get("total_event_flags", 0)) / 2400.0)
+    badge_count = int(state.get("badge_count", 0))
+    for b in range(8):
+        v[31 + b] = float((badge_count >> b) & 1)
+    # PWhiddy v2 full event flag bit-pack (dims 39 to 39+2399)
+    hex_str = state.get("event_flag_bytes_hex") or ""
+    if hex_str:
+        try:
+            raw = bytes.fromhex(hex_str)
+            for byte_idx in range(min(len(raw), NUM_EVENT_FLAG_BITS // 8)):
+                byte_val = raw[byte_idx]
+                base = 39 + byte_idx * 8
+                for bit in range(8):
+                    if byte_val & (1 << bit):
+                        v[base + bit] = 1.0
+        except ValueError:
+            pass
+    # PWhiddy v2 recent_actions (dims 39+2400 to 39+2400+24)
+    recent_actions_base = 39 + NUM_EVENT_FLAG_BITS
+    recent_actions = state.get("recent_actions") or []
+    for i, btn in enumerate(recent_actions[-RECENT_ACTIONS_LEN:]):
+        if btn in ACTION_LABELS:
+            j = ACTION_LABELS.index(btn)
+            v[recent_actions_base + i * NUM_BUTTONS + j] = 1.0
+    # Opponent level (PWhiddy v1 op_lvl reward signal)
+    v[recent_actions_base + RECENT_ACTIONS_LEN * NUM_BUTTONS] = min(
+        1.0, float(state.get("opponent_level", 0)) / 50.0,
+    )
     return v
 
 
@@ -169,22 +211,30 @@ class ResNetBrainCNN(nn.Module):
 class MultiModalBrainCNN(nn.Module):
     """ResNet-18 visual + MLP over RAM-derived state, late fusion.
 
-    Visual stream: 224x224 RGB -> ResNet-18 (ImageNet pretrained) ->
-        global-avg-pool 512-d.
-    State stream: 28-d structured vector -> MLP(64, 64).
-    Fusion: concat 576-d -> FC(128, dropout 0.3, ReLU) -> FC(num_classes).
+    PWhiddy v2 frame-stack port: takes either a single (B, 3, H, W)
+    image OR a stacked (B, FRAME_STACK*3, H, W) input. Frame stacking
+    is collapsed channel-wise; a 1×1 conv mixes the stack into 3
+    channels before the pretrained ResNet, preserving the ImageNet
+    backbone weights.
+
+    Visual stream: stack-or-single -> 1x1 reduce (if stacked) ->
+        ResNet-18 (ImageNet pretrained) -> global-avg-pool 512-d.
+    State stream: STATE_DIM-d -> MLP(64, 64).
+    Fusion: concat -> FC(128, dropout 0.3, ReLU) -> FC(num_classes).
     """
 
     ARCH = "multimodal"
     IMG_SIZE = RESNET_IMG_SIZE
     NORMALIZE_IMAGENET = True
     USES_STATE = True
+    FRAME_STACK = 4  # PWhiddy v2 stack depth
 
     def __init__(
         self,
         num_classes: int = len(ACTION_LABELS),
         pretrained: bool = True,
         state_dim: int = STATE_DIM,
+        frame_stack: int = 4,
     ) -> None:
         super().__init__()
         weights = ResNet18_Weights.DEFAULT if pretrained else None
@@ -192,6 +242,18 @@ class MultiModalBrainCNN(nn.Module):
         self.visual_feat_dim = backbone.fc.in_features
         backbone.fc = nn.Identity()
         self.backbone = backbone
+        self.frame_stack = frame_stack
+
+        self.stack_reduce = nn.Conv2d(
+            3 * frame_stack, 3, kernel_size=1, bias=True,
+        )
+        with torch.no_grad():
+            w = torch.zeros(3, 3 * frame_stack, 1, 1)
+            for ch in range(3):
+                for s in range(frame_stack):
+                    w[ch, s * 3 + ch, 0, 0] = 1.0 / frame_stack
+            self.stack_reduce.weight.copy_(w)
+            self.stack_reduce.bias.zero_()
 
         self.state_mlp = nn.Sequential(
             nn.Linear(state_dim, 64),
@@ -209,6 +271,8 @@ class MultiModalBrainCNN(nn.Module):
     def forward(
         self, image: torch.Tensor, state: torch.Tensor
     ) -> torch.Tensor:
+        if image.shape[1] == 3 * self.frame_stack:
+            image = self.stack_reduce(image)
         v = self.backbone(image)
         s = self.state_mlp(state)
         return self.head(torch.cat([v, s], dim=1))
@@ -227,7 +291,10 @@ def build_model(arch: str) -> nn.Module:
 class CNNBrain:
     def __init__(self, model_path: Path | str) -> None:
         self.model_path = Path(model_path)
-        ckpt = torch.load(self.model_path, map_location="cpu")
+        self.device = torch.device(
+            "cuda" if torch.cuda.is_available() else "cpu"
+        )
+        ckpt = torch.load(self.model_path, map_location=self.device)
         if isinstance(ckpt, dict) and "state_dict" in ckpt:
             arch = ckpt.get("arch", "tiny")
             state = ckpt["state_dict"]
@@ -241,6 +308,7 @@ class CNNBrain:
         self.arch = arch
         self.model = build_model(arch)
         self.model.load_state_dict(state)
+        self.model.to(self.device)
         self.model.eval()
         self.img_size = type(self.model).IMG_SIZE
         self.normalize_imagenet = type(self.model).NORMALIZE_IMAGENET
@@ -256,16 +324,27 @@ class CNNBrain:
             screenshot_path,
             img_size=self.img_size,
             normalize_imagenet=self.normalize_imagenet,
-        ).unsqueeze(0)
+        ).unsqueeze(0).to(self.device)
         if self.uses_state:
             vec = vectorize_state(state or {})
-            s = torch.from_numpy(vec).unsqueeze(0)
+            s = torch.from_numpy(vec).unsqueeze(0).to(self.device)
             logits = self.model(img, s)
         else:
             logits = self.model(img)
-        probs = F.softmax(logits, dim=1).squeeze(0)
-        idx = int(torch.argmax(probs).item())
-        return ACTION_LABELS[idx], float(probs[idx].item())
+        probs = F.softmax(logits, dim=1).squeeze(0).cpu().numpy()
+        # Action masking: zero out probs for directions known to be blocked.
+        # Falls back to next-best valid action — prevents wall-bumping.
+        if state:
+            blocked = set(state.get("blocked_here") or [])
+            if blocked:
+                for i, lbl in enumerate(ACTION_LABELS):
+                    if lbl in blocked:
+                        probs[i] = 0.0
+                total = float(probs.sum())
+                if total > 0:
+                    probs = probs / total
+        idx = int(probs.argmax())
+        return ACTION_LABELS[idx], float(probs[idx])
 
 
 def parameter_count(model: nn.Module) -> int:

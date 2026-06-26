@@ -26,16 +26,11 @@ VALID_BUTTONS = {
     "Up", "Down", "Left", "Right", "L", "R",
 }
 
-MODEL_RESCUE = "claude-sonnet-4-6"
-MODEL_OPUS = "claude-opus-4-8"
 MODEL_HAIKU = "claude-haiku-4-5"
+MODEL_OPUS = "claude-opus-4-8"
+# Cost-optimised default. Haiku 4.5: $1 input / $5 output / $0.1 cache_read.
+MODEL_RESCUE = MODEL_HAIKU
 MAX_OUTPUT_TOKENS = 120
-
-PRICING_USD_PER_M = {
-    "claude-opus-4-8":   {"in": 5.0, "out": 25.0, "cr": 0.5, "cw": 6.25},
-    "claude-sonnet-4-6": {"in": 3.0, "out": 15.0, "cr": 0.3, "cw": 3.75},
-    "claude-haiku-4-5":  {"in": 1.0, "out":  5.0, "cr": 0.1, "cw": 1.25},
-}
 
 SYSTEM_PROMPT_RESCUE = (
     "You help an automated Pokemon Emerald agent get unstuck. "
@@ -153,14 +148,13 @@ class RescueDecision:
     frame_hash: str
 
     def cost_usd(self) -> float:
-        rates = PRICING_USD_PER_M.get(
-            MODEL_RESCUE, PRICING_USD_PER_M["claude-opus-4-8"]
-        )
+        # Pricing matches MODEL_RESCUE; defaulting to Haiku 4.5:
+        # $1 input / $5 output / $0.1 cache_read / $1.25 cache_write per 1M
         return (
-            self.input_tokens * rates["in"] / 1_000_000
-            + self.output_tokens * rates["out"] / 1_000_000
-            + self.cache_read_tokens * rates["cr"] / 1_000_000
-            + self.cache_creation_tokens * rates["cw"] / 1_000_000
+            self.input_tokens * 1.0 / 1_000_000
+            + self.output_tokens * 5.0 / 1_000_000
+            + self.cache_read_tokens * 0.1 / 1_000_000
+            + self.cache_creation_tokens * 1.25 / 1_000_000
         )
 
 

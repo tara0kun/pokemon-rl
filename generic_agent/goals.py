@@ -1,0 +1,292 @@
+"""Claude Plays Pokemon (Anthropic, 2025) hierarchical goal stack.
+
+CPP demonstrated that LLM agents do far better with explicit goal
+decomposition: a high-level objective ("get Stone Badge"), one or two
+mid-level subgoals ("reach Petalburg Gym"), and a low-level executor
+(button presses). It also kept a persistent "memory notes" file across
+turns so the agent didn't repeatedly retry the same dead-ends.
+
+For our $0 heuristic, we encode the early-game progression as a
+goal table — each entry is conditional on a specific RAM signal
+(event flag count, party count, or badge count). The CURRENT goal
+is inferred at every step; the heuristic uses its target_map as a
+soft routing hint when picking a direction.
+
+Goal selection is data-driven from gs (no fragile hard-coded checks
+beyond the Pokemon-Emerald early-game milestones). All maps named
+here are from pokeemerald decomp; treat them as labels the heuristic
+prefers, never as hard requirements.
+"""
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+
+from . import config
+
+GOALS_FILE = config.MEMORY_DIR / "goal_notes.jsonl"
+VISITED_MAPS_FILE = config.MEMORY_DIR / "visited_maps.json"
+
+
+_GOAL_ORDER_WEIGHT = {
+    "get_starter_via_lab": 0,
+    "return_to_lab_for_pokedex": 10,
+    "reach_oldale": 20,
+    "reach_route_103_rival": 30,
+    "reach_route_102": 40,
+    "reach_petalburg": 50,
+    "reach_rustboro_gym": 60,
+    "enter_rustboro_gym": 65,
+    "reach_dewford_gym": 70,
+}
+
+
+# Goals whose target_map is the actual completion target (Gym building),
+# not just a waypoint. For these, the visited-maps backtrack-suppression
+# is skipped: visiting the gym map once doesn't mean we beat the leader.
+_GOAL_BYPASS_VISITED = {"enter_rustboro_gym", "grind_route_104_south"}
+
+
+def _load_visited_maps() -> set[tuple[int, int]]:
+    if not VISITED_MAPS_FILE.exists():
+        return set()
+    try:
+        data = json.loads(VISITED_MAPS_FILE.read_text(encoding="utf-8"))
+        return {tuple(m) for m in data.get("visited", [])}
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return set()
+
+
+def _save_visited_maps(visited: set[tuple[int, int]]) -> None:
+    try:
+        VISITED_MAPS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        VISITED_MAPS_FILE.write_text(
+            json.dumps({"visited": sorted(list(visited))}),
+            encoding="utf-8",
+        )
+    except OSError:
+        pass
+
+
+def record_map_visit(map_group: int, map_num: int) -> None:
+    """Persistent map-visit log so goal cascade can skip already-cleared
+    early-game waypoints (reach_oldale, reach_route_102, ...) once the
+    agent has moved further along the canonical Hoenn route."""
+    visited = _load_visited_maps()
+    key = (int(map_group), int(map_num))
+    if key in visited:
+        return
+    visited.add(key)
+    _save_visited_maps(visited)
+
+
+@dataclass
+class Goal:
+    name: str
+    target_map: tuple[int, int] | None
+    condition: str
+    desc: str
+    # Optional specific tile target within target_map. Used by grinding
+    # goals (e.g. Route 104 south grass). When None, mapbfs uses default
+    # exit_tiles or warp_tiles. When set, mapbfs targets this exact tile.
+    target_pos: tuple[int, int] | None = None
+
+    def matches(self, gs) -> bool:
+        c = self.condition
+        if c == "no_party":
+            return gs.party_count == 0
+        if c == "first_starter":
+            # Pre-Pokedex Oldale milestone. After Pokedex received the agent
+            # has already cycled through Oldale (heal at PC) and should move on.
+            try:
+                fbytes = bytes.fromhex(gs.event_flag_bytes_hex or "")
+                pokedex_received = (
+                    (fbytes[0x74 // 8] >> (0x74 % 8)) & 1
+                    if len(fbytes) > 0x74 // 8 else 0
+                )
+            except (ValueError, IndexError):
+                pokedex_received = 0
+            return (
+                gs.party_count == 1
+                and gs.badge_count == 0
+                and pokedex_received == 0
+            )
+        if c == "no_badge":
+            return gs.badge_count == 0 and gs.party_count >= 1
+        if c == "no_badge_pre_pokedex":
+            # Pre-Pokedex AND Rival not yet defeated (route 103 rival waypoint)
+            try:
+                fbytes = bytes.fromhex(gs.event_flag_bytes_hex or "")
+                rival_defeated = (
+                    (fbytes[0x82 // 8] >> (0x82 % 8)) & 1
+                    if len(fbytes) > 0x82 // 8 else 0
+                )
+            except (ValueError, IndexError):
+                rival_defeated = 0
+            return (
+                gs.badge_count == 0
+                and gs.party_count >= 1
+                and gs.total_event_flags < 200
+                and rival_defeated == 0
+            )
+        if c == "rival_defeated_no_pokedex":
+            # After Rival defeat: FLAG_DEFEATED_RIVAL_ROUTE103 (0x82) set.
+            # After Pokedex received: FLAG_ADVENTURE_STARTED (0x74) set.
+            # We want this goal active in the gap between those two events.
+            try:
+                fbytes = bytes.fromhex(gs.event_flag_bytes_hex or "")
+                rival_defeated = (
+                    (fbytes[0x82 // 8] >> (0x82 % 8)) & 1
+                    if len(fbytes) > 0x82 // 8 else 0
+                )
+                pokedex_received = (
+                    (fbytes[0x74 // 8] >> (0x74 % 8)) & 1
+                    if len(fbytes) > 0x74 // 8 else 0
+                )
+            except (ValueError, IndexError):
+                rival_defeated = 0
+                pokedex_received = 0
+            return (
+                rival_defeated == 1
+                and pokedex_received == 0
+                and gs.badge_count == 0
+            )
+        if c.startswith("badge>="):
+            n = int(c.split(">=")[1])
+            return gs.badge_count >= n
+        return False
+
+
+GOAL_TABLE: list[Goal] = [
+    Goal(
+        name="get_starter_via_lab",
+        target_map=(1, 4),
+        condition="no_party",
+        desc="Pokemon 0 匹 → Birch's lab (1-4) で starter 取得",
+    ),
+    Goal(
+        name="return_to_lab_for_pokedex",
+        target_map=(1, 4),
+        condition="rival_defeated_no_pokedex",
+        desc="Rival defeated → Birch lab (1-4) 戻りで auto-Pokedex give event 発動 → FLAG_ADVENTURE_STARTED set",
+    ),
+    Goal(
+        name="reach_oldale",
+        target_map=(0, 10),
+        condition="first_starter",
+        desc="starter 取得 → Oldale Town (0-10) で Pokemon Center heal",
+    ),
+    Goal(
+        name="reach_route_103_rival",
+        target_map=(0, 18),
+        condition="no_badge_pre_pokedex",
+        desc="Pokedex 取得前: Route 103 (0-18) で Rival 戦闘 → VAR_BIRCH_LAB_STATE=4 → 次の lab 訪問で Pokedex auto-trigger → FLAG_ADVENTURE_STARTED set → Oldale 西 Painter gate 解除",
+    ),
+    Goal(
+        name="reach_route_102",
+        target_map=(0, 17),
+        condition="no_badge",
+        desc="Oldale → Route 102 (0-17) 西 → Petalburg",
+    ),
+    Goal(
+        name="reach_petalburg",
+        target_map=(0, 0),
+        condition="no_badge",
+        desc="Route 102 → Petalburg City (0-0)",
+    ),
+    Goal(
+        name="reach_rustboro_gym",
+        target_map=(0, 3),
+        condition="no_badge",
+        desc="Petalburg → Rustboro City (0-3) Stone Badge",
+    ),
+    # Grass grinding goal — placed BEFORE enter_rustboro_gym so it
+    # takes precedence while badge_count == 0. Without level-up grinding
+    # the team whiteouts every Roxanne attempt. Empirical BFS check
+    # (iter 260) confirmed (15,45) and any y>=35 tile on Route 104 is
+    # UNREACHABLE from the north (19,0) entry given canon walkable +
+    # tile_map blocked data. The only south-bound exit is the Petalburg
+    # Woods warp at (10,30). Aim for that — once on the warp tile, the
+    # interior-door fix (6c1153832) auto-presses Up → Woods → from
+    # Woods the agent's exploration heuristics carry it south to the
+    # other Route 104 warp → grass area for wild encounters.
+    Goal(
+        name="grind_route_104_south",
+        target_map=(0, 19),
+        target_pos=(10, 30),
+        condition="no_badge",
+        desc="Route 104 (10,30) Petalburg Woods warp 経由 south grass",
+    ),
+    Goal(
+        name="enter_rustboro_gym",
+        target_map=(11, 3),
+        condition="no_badge",
+        desc="Rustboro Gym 建物 (11-3) 内部進入 → Roxanne 戦",
+    ),
+    Goal(
+        name="reach_dewford_gym",
+        target_map=(0, 11),
+        condition="badge>=1",
+        desc="Stone Badge → Dewford Town (0-11)",
+    ),
+]
+
+
+def current_goal(gs) -> Goal | None:
+    """First matching goal whose target_map differs from agent's current
+    map. Skipping already-reached goals lets the goal chain advance: if
+    we're at Oldale and `reach_oldale` matches but its target is Oldale,
+    fall through to the next match (e.g. `reach_route_103_rival`).
+
+    Additionally, persistent visited-map tracking suppresses backtrack
+    goals: once the agent has visited a map farther along the canonical
+    progression than this goal's target, the earlier goal is skipped so
+    the cascade doesn't drag the agent back east when they cross a
+    boundary the wrong way.
+    """
+    cur = (getattr(gs, "map_group", -1), getattr(gs, "map_num", -1))
+    if cur != (-1, -1) and cur != (0, 0):
+        record_map_visit(*cur)
+    visited = _load_visited_maps()
+    fallback = None
+    for g in GOAL_TABLE:
+        if not g.matches(gs):
+            continue
+        if (
+            g.target_map in visited
+            and g.target_map != cur
+            and g.name not in _GOAL_BYPASS_VISITED
+        ):
+            # already cleared this waypoint — don't backtrack.
+            # Bypassed for completion-required goals (gyms): visiting
+            # the gym map once doesn't satisfy the goal — only beating
+            # the leader (badge condition) does.
+            continue
+        if g.target_map == cur:
+            if fallback is None:
+                fallback = g
+            continue
+        return g
+    return fallback
+
+
+def append_note(note: str) -> None:
+    """CPP-style persistent memory — write a short note for later runs."""
+    try:
+        GOALS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with GOALS_FILE.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"note": note}, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+
+def read_notes(limit: int = 20) -> list[str]:
+    if not GOALS_FILE.exists():
+        return []
+    try:
+        with GOALS_FILE.open("r", encoding="utf-8") as f:
+            lines = f.readlines()[-limit:]
+        return [json.loads(l).get("note", "") for l in lines]
+    except (OSError, json.JSONDecodeError):
+        return []
