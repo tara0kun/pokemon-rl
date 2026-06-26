@@ -118,9 +118,8 @@ generic_agent/__pycache__/
 generic_agent/rom/*.gba
 generic_agent/rom/*.sav
 
-# Generated data/model dirs (regenerable from training)
-generic_agent/dataset/
-generic_agent/models/
-
-# Debug screenshots in root (test artifacts)
-/*.png
+# Phase 3 imitation learning artifacts (large/regenerable)
+generic_agent/models/*.pt
+generic_agent/dataset/screens/
+generic_agent/dataset/demonstrations.jsonl
+generic_agent/tools/__pycache__/

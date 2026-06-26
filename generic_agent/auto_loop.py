@@ -91,8 +91,15 @@ class AutoLoopState:
     force_explore_until_turn: int = 0
 
 
-def take_screenshot(client: MGBAClient, turn: int) -> Path:
-    p = config.SCREENSHOT_DIR / f"auto_{turn:05d}.png"
+def take_screenshot(
+    client: MGBAClient, turn: int, session_id: str | None = None
+) -> Path:
+    if session_id:
+        sess_dir = config.DATASET_DIR / "screens" / session_id
+        sess_dir.mkdir(parents=True, exist_ok=True)
+        p = sess_dir / f"t{turn:05d}.png"
+    else:
+        p = config.SCREENSHOT_DIR / f"auto_{turn:05d}.png"
     client.screenshot(p)
     time.sleep(0.15)
     return p
@@ -108,7 +115,12 @@ def execute_button(
         print(f"  [warn] button {button} failed: {exc}")
 
 
-def run(max_turns: int, budget_usd: float | None) -> int:
+def run(
+    max_turns: int,
+    budget_usd: float | None,
+    record_dataset: bool = False,
+    cnn_model_path: Path | None = None,
+) -> int:
     config.ensure_runtime_dirs()
     client = MGBAClient()
     if not client.ping():
@@ -124,6 +136,20 @@ def run(max_turns: int, budget_usd: float | None) -> int:
     path_memory = path_memory_mod.TransitionMemory()
     surveyor = explorer_mod.MapSurveyor(tile_map)
     state = AutoLoopState()
+    session_id = (
+        time.strftime("%Y%m%dT%H%M%S") if record_dataset else None
+    )
+    if record_dataset:
+        print(f"[dataset] recording demonstrations under session_id={session_id}")
+
+    cnn_brain = None
+    if cnn_model_path is not None:
+        from . import brain_cnn as _bcnn
+        cnn_brain = _bcnn.CNNBrain(cnn_model_path)
+        print(
+            f"[cnn] loaded {cnn_model_path.name} — "
+            f"navigate/rescue API calls disabled, $0/turn"
+        )
     use_rescue = True
     try:
         from . import rescue_brain  # noqa: F401
@@ -139,7 +165,7 @@ def run(max_turns: int, budget_usd: float | None) -> int:
     try:
         while state.turn < max_turns:
             state.turn += 1
-            shot = take_screenshot(client, state.turn)
+            shot = take_screenshot(client, state.turn, session_id)
             arr = preprocess.load_png_as_array(shot)
             fhash = preprocess.frame_hash(arr)
 
@@ -522,6 +548,47 @@ def run(max_turns: int, budget_usd: float | None) -> int:
                 state.costs.recovery_steps += 1
 
             def _call_brain(kind: str) -> local_brain.LocalDecision | None:
+                if cnn_brain is not None:
+                    try:
+                        cnn_state: dict[str, object] = {
+                            "in_battle": gs.in_battle,
+                            "is_trainer": gs.is_trainer_battle,
+                            "pos": list(pos_now) if pos_now else None,
+                            "map": list(map_key),
+                            "suppress_dir": state.suppress_dir,
+                            "oscillating": oscillating,
+                            "same_pos_streak": state.same_pos_streak,
+                            "same_map_streak": state.same_map_streak,
+                            "consecutive_dialog": state.consecutive_dialog,
+                            "map_visit_count": (
+                                state.map_visit_counts.get(map_key, 0)
+                            ),
+                            "goal_direction": None,
+                        }
+                        if pos_now is not None:
+                            mk_cnn = tile_map._map_key(
+                                gs.map_group, gs.map_num
+                            )
+                            rec_cnn = tile_map._store.get(mk_cnn, {}).get(
+                                tile_map._tile_key(pos_now[0], pos_now[1])
+                            )
+                            if rec_cnn is not None:
+                                cnn_state["blocked_here"] = list(rec_cnn.blocked)
+                            if not gs.in_battle:
+                                cnn_state["bfs_first"] = (
+                                    tile_map.bfs_frontier_direction(
+                                        gs.map_group, gs.map_num,
+                                        pos_now[0], pos_now[1],
+                                        prefer="nearest",
+                                    )
+                                )
+                        btn, conf = cnn_brain.predict(shot, cnn_state)
+                        return local_brain.LocalDecision(
+                            button=btn, frames=15,
+                            source=f"cnn({kind},conf={conf:.2f})",
+                        )
+                    except Exception as exc:
+                        print(f"  [warn] CNN predict failed: {exc!r}")
                 if not use_rescue:
                     return None
                 if budget_usd and state.costs.total_usd >= budget_usd:
@@ -916,6 +983,68 @@ def run(max_turns: int, budget_usd: float | None) -> int:
             if len(state.history) > 20:
                 state.history = state.history[-20:]
 
+            if record_dataset:
+                src_lower = decision_source.lower()
+                trainable = (
+                    "navigate" in src_lower
+                    or "rescue" in src_lower
+                    or "cache" in src_lower
+                    or "dialog_continue" in src_lower
+                    or "battle" in src_lower
+                )
+                random_walk = (
+                    "recovery.rand" in src_lower
+                    or "fallback" in src_lower
+                    or "escape-fallback" in src_lower
+                )
+                if trainable and not random_walk:
+                    rel_shot = str(
+                        shot.relative_to(config.ROOT)
+                    ).replace("\\", "/")
+                    demo_blocked: list[str] = []
+                    demo_bfs: str | None = None
+                    if pos_now is not None:
+                        mk_dm = tile_map._map_key(
+                            gs.map_group, gs.map_num
+                        )
+                        rec_dm = tile_map._store.get(mk_dm, {}).get(
+                            tile_map._tile_key(pos_now[0], pos_now[1])
+                        )
+                        if rec_dm is not None:
+                            demo_blocked = list(rec_dm.blocked)
+                        if not gs.in_battle:
+                            demo_bfs = tile_map.bfs_frontier_direction(
+                                gs.map_group, gs.map_num,
+                                pos_now[0], pos_now[1],
+                                prefer="nearest",
+                            )
+                    memory.append_to_path(
+                        config.DATASET_INDEX,
+                        {
+                            "session_id": session_id,
+                            "turn": state.turn,
+                            "screenshot": rel_shot,
+                            "button": decision.button,
+                            "source": decision_source,
+                            "fhash": fhash[:12],
+                            "map": list(map_key),
+                            "pos": list(pos_now) if pos_now else None,
+                            "in_battle": gs.in_battle,
+                            "is_trainer": gs.is_trainer_battle,
+                            "blocked_here": demo_blocked,
+                            "bfs_first": demo_bfs,
+                            "suppress_dir": state.suppress_dir,
+                            "oscillating": oscillating,
+                            "same_pos_streak": state.same_pos_streak,
+                            "same_map_streak": state.same_map_streak,
+                            "consecutive_dialog": state.consecutive_dialog,
+                            "map_visit_count": (
+                                state.map_visit_counts.get(map_key, 0)
+                            ),
+                            "goal_direction": None,
+                        },
+                    )
+
             memory.append_run_log({
                 "turn": state.turn,
                 "fhash": fhash[:12],
@@ -1011,8 +1140,25 @@ def main() -> int:
         "--budget", type=float, default=None,
         help="USD cap; stop when reached",
     )
+    parser.add_argument(
+        "--dataset", action="store_true",
+        help="Persist screenshots + (image, action) pairs to dataset/ "
+             "for imitation learning training",
+    )
+    parser.add_argument(
+        "--cnn",
+        default=None,
+        help="Path to a trained TinyBrainCNN .pt — when set, navigate/"
+             "rescue API calls are replaced by CNN inference ($0/turn)",
+    )
     args = parser.parse_args()
-    return run(max_turns=args.turns, budget_usd=args.budget)
+    cnn_path = Path(args.cnn) if args.cnn else None
+    return run(
+        max_turns=args.turns,
+        budget_usd=args.budget,
+        record_dataset=args.dataset,
+        cnn_model_path=cnn_path,
+    )
 
 
 if __name__ == "__main__":

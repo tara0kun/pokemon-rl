@@ -1,0 +1,27 @@
+{
+  "session_id": "20260612T121335",
+  "turn": 396,
+  "last_screenshot": "dataset/screens/20260612T121335/t00396.png",
+  "last_state": {
+    "map": [
+      1,
+      2
+    ],
+    "pos": [
+      4,
+      2
+    ],
+    "in_battle": false,
+    "is_trainer": false,
+    "battle_flags": 0,
+    "saveblock1_valid": true,
+    "blocked_here": [
+      "Down",
+      "Right"
+    ],
+    "tile_visits": 57,
+    "bfs_first": "Up",
+    "bfs_first_farthest": "Up",
+    "tile_summary": "tiles_seen=57 cur=(4,2) blocked_here=['Down', 'Right'] unexplored_nearby=[(1, 2), (2, 1), (3, 2), (4, 1), (6, 2)]"
+  }
+}
