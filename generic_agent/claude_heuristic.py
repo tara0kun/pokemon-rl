@@ -265,11 +265,19 @@ def heuristic_button(
         if explore_target is not None
         else (current_goal.target_map if current_goal else None)
     )
+    same_map_with_target_pos = (
+        current_goal is not None
+        and getattr(current_goal, "target_pos", None) is not None
+        and current_goal.target_map == (gs.map_group, gs.map_num)
+    )
     if (
         effective_goal_map is not None
         and not gs.in_battle
         and gs.saveblock1_valid
-        and (gs.map_group, gs.map_num) != effective_goal_map
+        and (
+            (gs.map_group, gs.map_num) != effective_goal_map
+            or same_map_with_target_pos
+        )
     ):
         try:
             mc = map_data_mod.get_cache()
