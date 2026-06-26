@@ -116,6 +116,29 @@ git checkout old
 
 ---
 
+## Daily progress timeline (簡潔履歴)
+
+各日の主成果と milestone。 詳細は [generic_agent/daily_progress/](generic_agent/daily_progress/) 参照。
+
+| 日付 | 何をしたか | 主成果 |
+|---|---|---|
+| **2026-06-08** | rule-based RL → VLM agent 大転換、 新 architecture (auto_loop + 3-layer Brain + RAM bridge + cache) v6 実装 | 旧 23,000 行コード `old` branch に凍結 |
+| **2026-06-09** | Brain navigate 完成、 Birch event 突破、 portfolio README v1 | 序盤 cutscene 通過自動化 |
+| **2026-06-10** | cycle 9-13: explorer 改善 + ban list で coverage 拡大 | unique pos 100+ 達成 |
+| **2026-06-11** | cycle 14-20: path_memory + dialog handling 改善、 v34 で score 279 | wild battle 発生 area (Route 102) 到達、 whiteout 確認 |
+| **2026-06-12** | cycle 21-24: 位置認識 path_memory (Option X) deploy、 v46 で stuck 1408→4 turn 劇減 | mechanical stuck 解消 |
+| **2026-06-15** | Hybrid LLM-in-loop architecture + PWhiddy v2 reward + novelty exploration | **STARTER autonomous 取得**、 milestone |
+| **2026-06-18** | Rival waypoint インフラ (`find_npc_by_script_keyword`)、 heur_rc=-1 timeout 4 修正 | iter 30+ 連続 heur_rc=0 安定走行 |
+| **2026-06-19** | anomaly_escape override bug 修正、 score 83 plateau 30+ iter 連続 解消 | mapbfs / rival_seek が anomaly_escape に上書きされる critical bug fix |
+| **2026-06-19 PM** | catch infrastructure 完成 (Balls pocket + SaveBlock2 XOR decode)、 wild_catch_try_screen 早期 path | iter 394 で 800 demo 安定収集 |
+| **2026-06-22** | Wally event 突破、 5 day chronic stuck of Petalburg 終焉 | **Route 104 + Petalburg Woods 突破 → Rustboro 直前** |
+| **2026-06-23** | Gym 内 Marc 撃破 + LOS 回避 (Josh/Tommy x=1/x=2 column) | **🏆 Roxanne battle 開始**、 Stone Badge 寸前 |
+| **2026-06-24** | 6 day RAM false-negative bug 発見・治療 (30ed435 BATTLE_FLAGS 0x02022FEC)、 4 fix deploy | RAM/cursor/screen/goal 4 root cause 治療、 ただし実 game 進捗ゼロ |
+| **2026-06-25** | 14 hour autonomous + savestate restore で Roxanne 再戦、 13 fix → 16 fix 累計 deploy、 mGBA auto-recovery tool | **真の root cause 7 段解明**、 bridge chronic stuck 完全治療、 Gym 内部到達 |
+| **2026-06-26** | 19 fix (target_pos + grind goal) + 20 fix (permanent_blocked Twin LOS/Haley)、 main branch protection、 PR #1 open、 repo 整頓 (tools 17→10) | autonomous nav 完成検証、 ただし Roxanne 撃破は LOTAD grinding 必要 |
+
+---
+
 ## アーキテクチャ
 
 ### 概観

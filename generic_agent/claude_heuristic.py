@@ -265,11 +265,19 @@ def heuristic_button(
         if explore_target is not None
         else (current_goal.target_map if current_goal else None)
     )
+    same_map_with_target_pos = (
+        current_goal is not None
+        and getattr(current_goal, "target_pos", None) is not None
+        and current_goal.target_map == (gs.map_group, gs.map_num)
+    )
     if (
         effective_goal_map is not None
         and not gs.in_battle
         and gs.saveblock1_valid
-        and (gs.map_group, gs.map_num) != effective_goal_map
+        and (
+            (gs.map_group, gs.map_num) != effective_goal_map
+            or same_map_with_target_pos
+        )
     ):
         try:
             mc = map_data_mod.get_cache()
@@ -333,14 +341,40 @@ def heuristic_button(
                     # BFS still routed through it.)
                     empirical_blocked: set[tuple[int, int]] = set()
                     mk = tm._map_key(gs.map_group, gs.map_num)
+                    _dir_delta = {
+                        "Up": (0, -1), "Down": (0, 1),
+                        "Left": (-1, 0), "Right": (1, 0),
+                    }
                     for tk, rec in tm._store.get(mk, {}).items():
+                        try:
+                            tx, ty = (int(p) for p in tk.split(","))
+                        except ValueError:
+                            continue
                         if len(rec.blocked) >= 3:
-                            try:
-                                tx, ty = (int(p) for p in tk.split(","))
-                                empirical_blocked.add((tx, ty))
-                            except ValueError:
-                                pass
-                    bfs_blocked = npc_tiles | empirical_blocked
+                            empirical_blocked.add((tx, ty))
+                        # Direction-edge block: 1-way blocked + >=30 fails
+                        # = adjacent tile is unreachable from this side
+                        # (canon walkable=True but game has water/NPC).
+                        for d in rec.blocked:
+                            tried_count = rec.tried.get(d, 0)
+                            if tried_count >= 200 and d in _dir_delta:
+                                dx, dy = _dir_delta[d]
+                                empirical_blocked.add((tx + dx, ty + dy))
+                    perm_blocked = mc.permanent_blocked(
+                        gs.map_group, gs.map_num,
+                    )
+                    try:
+                        from . import map_knowledge as mk_mod
+                        mk = mk_mod.get_store().get(
+                            gs.map_group, gs.map_num,
+                        )
+                        knowledge_trainer = mk.trainer_los
+                    except Exception:
+                        knowledge_trainer = set()
+                    bfs_blocked = (
+                        npc_tiles | empirical_blocked
+                        | perm_blocked | knowledge_trainer
+                    )
                     bfs_path = mc.bfs_to_tile(
                         gs.map_group, gs.map_num,
                         (gs.x, gs.y), target_tiles,
