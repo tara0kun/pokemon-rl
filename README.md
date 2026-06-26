@@ -95,16 +95,24 @@ git checkout old
 
 ## ゴール (3 段階)
 
-| 段階 | 達成基準 | 状態 (2026-06-09 朝) |
+| 段階 | 達成基準 | 状態 (2026-06-26) |
 |------|---------|----------------------|
-| **Goal 1: 序盤完了** | starter 受領 + Route 102 到達 | ✅ **達成**: starter 取得 + 11 unique map 訪問 |
-| **Goal 2: Gym 1 (ツツジ)** | Rustboro City で Roxanne 撃破 + バッジ 1 | ⏳ 未達 (推定 +$3-5 API 費用) |
+| **Goal 1: 序盤完了** | starter 受領 + Route 102 到達 | ✅ **達成**: starter 取得 + 30+ unique map 訪問 |
+| **Goal 2: Gym 1 (ツツジ)** | Rustboro City で Roxanne 撃破 + バッジ 1 | ⏳ **autonomous で Gym 内部到達**: 19 fix + 真の root cause 11 段解明、 Roxanne 戦自体は LOTAD Lv 不足で whiteout 繰り返し、 grass area grinding strategy 試行中 |
 | **Goal 3: ポケモンリーグ殿堂入り** | 8 バッジ + チャンピオン撃破 | 🎯 最終目標 |
 | **Stretch: 汎用化** | FireRed / Crystal で同じ codebase 動作確認 | 🎯 portfolio 主軸 |
 
-### Goal 2 までの to-do
-- Route 102 → Petalburg City → Petalburg Woods → Route 104 → Rustboro City → Gym 戦
-- 主な技術課題: 戦闘 RAM bridge (相手 Lv / 技 / type)、 menu 自動化、 マルチ戦闘の継続判断
+### 2026-06-22 → 06-26 milestone (5 day autonomous run)
+- **19 fix + 2 tool + 30+ daily_progress** 全 git push
+- **真の root cause 11 段** 解明・治療: RAM false-negative, cursor reset, party walk, screen-UI gate, goal logic, warp door, in_battle stale flag, dialog frozen, poll timing, empirical exit/blocked tile, BFS reachability
+- **autonomous nav**: bridge 14 hour chronic stuck 突破 → Rustboro 越境 → Gym 内部到達
+- **mGBA crash auto-recovery tool** (uiautomation 経由) で 24/7 robust 化
+- **tile_map empirical accumulation**: canon-game walkable mismatch を自動学習する仕組み実証 (Route 104 10 4-way blocked、 Rustboro 5 蓄積)
+
+### Goal 2 残課題
+- LOTAD Lv 10+ grinding (BUBBLE 2x rock で Geodude 一撃可能)
+- (10,30) Petalburg Woods warp 経由で Route 104 south grass area 到達
+- Roxanne 再戦 + Stone Badge 取得
 
 ---
 
