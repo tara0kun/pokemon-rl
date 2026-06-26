@@ -350,6 +350,30 @@ class MapCache:
         (0, 19, "up"): {(19, 0)},
     }
 
+    # Permanent trainer-LOS / NPC zones that BFS should treat as walls
+    # even when canon collision says walkable. Walking into these tiles
+    # triggers a trainer battle the agent cannot decisively win at its
+    # current level — and post-battle dialog often pulls the agent
+    # backward, undoing BFS progress. Better to route around.
+    _PERMANENT_BLOCKED_TILES: dict[tuple[int, int], set[tuple[int, int]]] = {
+        # Route 104 — Gina (27,15) + Mia (28,15) twin trainers with
+        # downward LOS, plus Haley (31,24) Lass with upward LOS.
+        # iter 270 (06-26) confirmed BFS path through (27-29, 15-18)
+        # gets the agent pulled into Twin battle then back-walked away
+        # from (10,30) Woods warp target.
+        (0, 19): {
+            (26, 15), (26, 16), (26, 17), (26, 18),
+            (27, 15), (27, 16), (27, 17), (27, 18),
+            (28, 15), (28, 16), (28, 17), (28, 18),
+            (29, 15), (29, 16), (29, 17), (29, 18),
+            (31, 20), (31, 21), (31, 22), (31, 23), (31, 24),
+        },
+    }
+
+    def permanent_blocked(self, map_g: int, map_n: int) -> set[tuple[int, int]]:
+        """Tiles that BFS should always treat as walls (trainer LOS etc)."""
+        return set(self._PERMANENT_BLOCKED_TILES.get((map_g, map_n), set()))
+
     def exit_tiles_toward(
         self, map_g: int, map_n: int, direction: str,
     ) -> set[tuple[int, int]]:

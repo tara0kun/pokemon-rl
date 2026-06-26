@@ -340,7 +340,12 @@ def heuristic_button(
                                 empirical_blocked.add((tx, ty))
                             except ValueError:
                                 pass
-                    bfs_blocked = npc_tiles | empirical_blocked
+                    perm_blocked = mc.permanent_blocked(
+                        gs.map_group, gs.map_num,
+                    )
+                    bfs_blocked = (
+                        npc_tiles | empirical_blocked | perm_blocked
+                    )
                     bfs_path = mc.bfs_to_tile(
                         gs.map_group, gs.map_num,
                         (gs.x, gs.y), target_tiles,
