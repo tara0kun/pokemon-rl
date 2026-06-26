@@ -117,3 +117,10 @@ generic_agent/memory/frame_cache.json
 generic_agent/__pycache__/
 generic_agent/rom/*.gba
 generic_agent/rom/*.sav
+
+# Generated data/model dirs (regenerable from training)
+generic_agent/dataset/
+generic_agent/models/
+
+# Debug screenshots in root (test artifacts)
+/*.png
