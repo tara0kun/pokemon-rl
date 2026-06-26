@@ -357,7 +357,7 @@ def heuristic_button(
                         # (canon walkable=True but game has water/NPC).
                         for d in rec.blocked:
                             tried_count = rec.tried.get(d, 0)
-                            if tried_count >= 30 and d in _dir_delta:
+                            if tried_count >= 200 and d in _dir_delta:
                                 dx, dy = _dir_delta[d]
                                 empirical_blocked.add((tx + dx, ty + dy))
                     perm_blocked = mc.permanent_blocked(
