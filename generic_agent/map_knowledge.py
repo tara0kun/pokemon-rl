@@ -84,6 +84,7 @@ class MapKnowledge:
     height: int = 0
     grass_tiles: set[tuple[int, int]] = field(default_factory=set)
     trainer_los: set[tuple[int, int]] = field(default_factory=set)
+    tile_elevation: dict[tuple[int, int], int] = field(default_factory=dict)
     warps: dict[tuple[int, int], dict] = field(default_factory=dict)
     npcs: list[dict] = field(default_factory=list)
     encounters_seen: list[dict] = field(default_factory=list)
@@ -119,6 +120,9 @@ class MapKnowledge:
             "height": self.height,
             "grass_tiles": sorted(list(self.grass_tiles)),
             "trainer_los": sorted(list(self.trainer_los)),
+            "tile_elevation": {
+                f"{x},{y}": e for (x, y), e in self.tile_elevation.items()
+            },
             "warps": {f"{x},{y}": v for (x, y), v in self.warps.items()},
             "npcs": self.npcs,
             "encounters_seen": self.encounters_seen,
@@ -138,6 +142,10 @@ class MapKnowledge:
         )
         mk.grass_tiles = {tuple(t) for t in data.get("grass_tiles", [])}
         mk.trainer_los = {tuple(t) for t in data.get("trainer_los", [])}
+        mk.tile_elevation = {
+            tuple(map(int, k.split(","))): v
+            for k, v in data.get("tile_elevation", {}).items()
+        }
         mk.warps = {
             tuple(map(int, k.split(","))): v
             for k, v in data.get("warps", {}).items()
@@ -239,6 +247,8 @@ class MapKnowledgeStore:
                             continue
                         b = struct.unpack_from("<H", data, off)[0]
                         meta = b & 0x3FF
+                        elev = (b >> 12) & 0xF
+                        mk.tile_elevation[(x, y)] = elev
                         if meta in GRASS_METATILES:
                             mk.grass_tiles.add((x, y))
         except OSError:

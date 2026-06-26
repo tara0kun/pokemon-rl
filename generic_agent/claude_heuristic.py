@@ -369,8 +369,10 @@ def heuristic_button(
                             gs.map_group, gs.map_num,
                         )
                         knowledge_trainer = mk.trainer_los
+                        knowledge_elev = mk.tile_elevation
                     except Exception:
                         knowledge_trainer = set()
+                        knowledge_elev = {}
                     bfs_blocked = (
                         npc_tiles | empirical_blocked
                         | perm_blocked | knowledge_trainer
@@ -379,6 +381,7 @@ def heuristic_button(
                         gs.map_group, gs.map_num,
                         (gs.x, gs.y), target_tiles,
                         blocked_tiles=bfs_blocked,
+                        tile_elevation=knowledge_elev,
                     )
                     if bfs_path:
                         next_btn = bfs_path[0]

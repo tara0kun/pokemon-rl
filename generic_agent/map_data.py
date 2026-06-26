@@ -257,6 +257,7 @@ class MapCache:
         start: tuple[int, int],
         targets: set[tuple[int, int]],
         blocked_tiles: set[tuple[int, int]] | None = None,
+        tile_elevation: dict[tuple[int, int], int] | None = None,
     ) -> list[str] | None:
         info = self.get(map_g, map_n)
         if info is None:
@@ -264,6 +265,7 @@ class MapCache:
         if not info.walkable(*start):
             return None
         blocked = blocked_tiles or set()
+        elev = tile_elevation or {}
         q: deque[tuple[tuple[int, int], list[str]]] = deque([(start, [])])
         visited: set[tuple[int, int]] = {start}
         dirs = [(0, -1, "Up"), (0, 1, "Down"), (-1, 0, "Left"), (1, 0, "Right")]
@@ -271,12 +273,23 @@ class MapCache:
             (x, y), path = q.popleft()
             if (x, y) in targets:
                 return path
+            cur_e = elev.get((x, y))
             for dx, dy, btn in dirs:
                 nx, ny = x + dx, y + dy
                 if (nx, ny) in visited or not info.walkable(nx, ny):
                     continue
                 if (nx, ny) in blocked:
                     continue
+                # elev=0 関与は自由 (collision のみ判定)
+                # elev != 0 同士 で違う層 → block (mismatch)
+                if elev:
+                    n_e = elev.get((nx, ny))
+                    if (
+                        cur_e is not None and n_e is not None
+                        and cur_e != 0 and n_e != 0
+                        and cur_e != n_e
+                    ):
+                        continue
                 visited.add((nx, ny))
                 q.append(((nx, ny), path + [btn]))
         return None
