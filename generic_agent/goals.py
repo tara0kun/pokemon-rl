@@ -202,21 +202,21 @@ GOAL_TABLE: list[Goal] = [
         desc="Petalburg → Rustboro City (0-3) Stone Badge",
     ),
     # Grass grinding goal — placed BEFORE enter_rustboro_gym so it
-    # takes precedence while badge_count == 0. Without level-up grinding,
-    # the team whiteouts every Roxanne attempt. Once Stone Badge is in,
-    # this goal stops matching and enter_rustboro_gym becomes a no-op
-    # (badge>=1 condition not satisfied either). Route 104 south near
-    # Petalburg Woods entrance has wild encounters (LOTAD, TAILLOW,
-    # ZIGZAGOON). target (15, 45) is in open walkable y=42-46 — agent
-    # BFS-walks here then exploration heuristics random-walk over grass
-    # tiles → wild encounter → LOTAD gains XP → BUBBLE one-shots
-    # Roxanne's Geodude.
+    # takes precedence while badge_count == 0. Without level-up grinding
+    # the team whiteouts every Roxanne attempt. Empirical BFS check
+    # (iter 260) confirmed (15,45) and any y>=35 tile on Route 104 is
+    # UNREACHABLE from the north (19,0) entry given canon walkable +
+    # tile_map blocked data. The only south-bound exit is the Petalburg
+    # Woods warp at (10,30). Aim for that — once on the warp tile, the
+    # interior-door fix (6c1153832) auto-presses Up → Woods → from
+    # Woods the agent's exploration heuristics carry it south to the
+    # other Route 104 warp → grass area for wild encounters.
     Goal(
         name="grind_route_104_south",
         target_map=(0, 19),
-        target_pos=(15, 45),
+        target_pos=(10, 30),
         condition="no_badge",
-        desc="Route 104 south grass (15,45) で LOTAD Lv up grinding",
+        desc="Route 104 (10,30) Petalburg Woods warp 経由 south grass",
     ),
     Goal(
         name="enter_rustboro_gym",
