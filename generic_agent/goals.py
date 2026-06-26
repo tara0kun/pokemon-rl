@@ -264,6 +264,8 @@ def current_goal(gs) -> Goal | None:
             # the leader (badge condition) does.
             continue
         if g.target_map == cur:
+            if g.target_pos is not None:
+                return g
             if fallback is None:
                 fallback = g
             continue
