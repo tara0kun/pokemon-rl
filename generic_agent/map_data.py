@@ -297,16 +297,12 @@ class MapCache:
                     continue
                 if (nx, ny) in visited:
                     continue
-                # elev=0 関与は自由 (collision のみ判定)
-                # elev != 0 同士 で違う層 → block (mismatch)
-                if elev:
-                    n_e = elev.get((nx, ny))
-                    if (
-                        cur_e is not None and n_e is not None
-                        and cur_e != 0 and n_e != 0
-                        and cur_e != n_e
-                    ):
-                        continue
+                # NOTE: elev mismatch BFS check temporarily disabled
+                # (was 28 fix). Real grass (behavior-based, 31 fix)
+                # requires elev=3 → elev=1 transitions in canon-walkable
+                # tiles. (24, 16) Down 200 fail empirical via tile_map
+                # direction-edge accumulation handles the actual blocked
+                # transitions; let BFS find canon-walkable paths.
                 visited.add((nx, ny))
                 q.append(((nx, ny), path + [btn]))
         return None
