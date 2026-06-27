@@ -258,6 +258,7 @@ class MapCache:
         targets: set[tuple[int, int]],
         blocked_tiles: set[tuple[int, int]] | None = None,
         tile_elevation: dict[tuple[int, int], int] | None = None,
+        ledge_jumps: dict[tuple[int, int], tuple[int, int]] | None = None,
     ) -> list[str] | None:
         info = self.get(map_g, map_n)
         if info is None:
@@ -266,6 +267,7 @@ class MapCache:
             return None
         blocked = blocked_tiles or set()
         elev = tile_elevation or {}
+        ledges = ledge_jumps or {}
         q: deque[tuple[tuple[int, int], list[str]]] = deque([(start, [])])
         visited: set[tuple[int, int]] = {start}
         dirs = [(0, -1, "Up"), (0, 1, "Down"), (-1, 0, "Left"), (1, 0, "Right")]
@@ -276,9 +278,24 @@ class MapCache:
             cur_e = elev.get((x, y))
             for dx, dy, btn in dirs:
                 nx, ny = x + dx, y + dy
-                if (nx, ny) in visited or not info.walkable(nx, ny):
+                if not info.walkable(nx, ny):
                     continue
                 if (nx, ny) in blocked:
+                    continue
+                # Ledge: stepping onto a ledge tile JUMPs in its direction.
+                # Treat as 1-way edge from (x,y) → (nx+ljdx, ny+ljdy).
+                # Only if the press direction matches ledge direction.
+                jump = ledges.get((nx, ny))
+                if jump is not None and (dx, dy) == jump:
+                    final = (nx + jump[0], ny + jump[1])
+                    if final in visited or not info.walkable(*final):
+                        continue
+                    if final in blocked:
+                        continue
+                    visited.add(final)
+                    q.append((final, path + [btn]))
+                    continue
+                if (nx, ny) in visited:
                     continue
                 # elev=0 関与は自由 (collision のみ判定)
                 # elev != 0 同士 で違う層 → block (mismatch)

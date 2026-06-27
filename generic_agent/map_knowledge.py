@@ -49,6 +49,22 @@ KNOWLEDGE_DIR = config.MEMORY_DIR / "map_knowledge"
 # their encounter tiles.
 GRASS_METATILES = {0x208, 0x209}
 
+# Ledge JUMP behavior IDs from pokeemerald metatile_behaviors.h, mapped
+# to (dx, dy) direction the agent jumps when stepping onto the tile.
+# Ledges are 1-way edges: stepping onto a JUMP tile from the OPPOSITE
+# direction lands the agent on (x+dx, y+dy) regardless of the next
+# tile's elevation.
+LEDGE_JUMP_BEHAVIORS = {
+    0x39: (1, 0),    # JUMP_EAST
+    0x3A: (-1, 0),   # JUMP_WEST
+    0x3B: (0, -1),   # JUMP_NORTH
+    0x3C: (0, 1),    # JUMP_SOUTH
+    0x3D: (1, -1),   # JUMP_NORTHEAST
+    0x3E: (-1, -1),  # JUMP_NORTHWEST
+    0x3F: (1, 1),    # JUMP_SOUTHEAST
+    0x40: (-1, 1),   # JUMP_SOUTHWEST
+}
+
 # LOS direction deltas. trainer_los expansion walks `sight` cells in
 # the trainer's facing direction(s).
 _LOS_FROM_FACE: dict[str, list[tuple[int, int]]] = {
@@ -85,6 +101,12 @@ class MapKnowledge:
     grass_tiles: set[tuple[int, int]] = field(default_factory=set)
     trainer_los: set[tuple[int, int]] = field(default_factory=set)
     tile_elevation: dict[tuple[int, int], int] = field(default_factory=dict)
+    # ledge_jumps: {(x,y): (dx,dy)} = JUMP behavior tiles, 1-way edge
+    # in (dx,dy) direction (e.g. (0,1)=south). Pokemon Emerald ledges
+    # let agent step OFF bridge layer to ground layer in jump direction.
+    ledge_jumps: dict[tuple[int, int], tuple[int, int]] = field(
+        default_factory=dict,
+    )
     warps: dict[tuple[int, int], dict] = field(default_factory=dict)
     npcs: list[dict] = field(default_factory=list)
     encounters_seen: list[dict] = field(default_factory=list)
@@ -123,6 +145,9 @@ class MapKnowledge:
             "tile_elevation": {
                 f"{x},{y}": e for (x, y), e in self.tile_elevation.items()
             },
+            "ledge_jumps": {
+                f"{x},{y}": list(d) for (x, y), d in self.ledge_jumps.items()
+            },
             "warps": {f"{x},{y}": v for (x, y), v in self.warps.items()},
             "npcs": self.npcs,
             "encounters_seen": self.encounters_seen,
@@ -145,6 +170,10 @@ class MapKnowledge:
         mk.tile_elevation = {
             tuple(map(int, k.split(","))): v
             for k, v in data.get("tile_elevation", {}).items()
+        }
+        mk.ledge_jumps = {
+            tuple(map(int, k.split(","))): tuple(v)
+            for k, v in data.get("ledge_jumps", {}).items()
         }
         mk.warps = {
             tuple(map(int, k.split(","))): v
@@ -217,12 +246,30 @@ class MapKnowledgeStore:
         mk.trainer_los.add((x, y))
         self.save(mk)
 
+    def _load_behavior_table(self) -> dict[int, int]:
+        """Cache primary tileset metatile → behavior mapping (2-byte/entry)."""
+        if hasattr(self, "_beh_cache"):
+            return self._beh_cache
+        cache: dict[int, int] = {}
+        try:
+            prim = (config.MEMORY_DIR / "map_cache"
+                    / "primary_general_attr.bin").read_bytes()
+            for meta in range(min(0x200, len(prim) // 2)):
+                cache[meta] = struct.unpack_from(
+                    "<H", prim, meta * 2,
+                )[0] & 0xFF
+        except OSError:
+            pass
+        self._beh_cache = cache
+        return cache
+
     def _seed_from_canon(self, mk: MapKnowledge) -> None:
         """Populate grass / trainer_los / warps / npcs / exits from
         pokeemerald decomp via map_data.MapCache."""
         info = self._mc.get(mk.map_g, mk.map_n)
         if info is None:
             return
+        beh_table = self._load_behavior_table()
         mk.name = info.name
         mk.width = info.width
         mk.height = info.height
@@ -251,6 +298,11 @@ class MapKnowledgeStore:
                         mk.tile_elevation[(x, y)] = elev
                         if meta in GRASS_METATILES:
                             mk.grass_tiles.add((x, y))
+                        beh = beh_table.get(meta)
+                        if beh in LEDGE_JUMP_BEHAVIORS:
+                            mk.ledge_jumps[(x, y)] = (
+                                LEDGE_JUMP_BEHAVIORS[beh]
+                            )
         except OSError:
             pass
         # NPCs and trainer LOS from object_events
