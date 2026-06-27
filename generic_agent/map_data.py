@@ -278,13 +278,9 @@ class MapCache:
             cur_e = elev.get((x, y))
             for dx, dy, btn in dirs:
                 nx, ny = x + dx, y + dy
-                if not info.walkable(nx, ny):
-                    continue
-                if (nx, ny) in blocked:
-                    continue
-                # Ledge: stepping onto a ledge tile JUMPs in its direction.
-                # Treat as 1-way edge from (x,y) → (nx+ljdx, ny+ljdy).
-                # Only if the press direction matches ledge direction.
+                # Ledge: pressing into a wall-collision tile that has
+                # ledge_jumps behavior makes agent JUMP over it.
+                # press direction must match jump direction.
                 jump = ledges.get((nx, ny))
                 if jump is not None and (dx, dy) == jump:
                     final = (nx + jump[0], ny + jump[1])
@@ -294,6 +290,10 @@ class MapCache:
                         continue
                     visited.add(final)
                     q.append((final, path + [btn]))
+                    continue
+                if not info.walkable(nx, ny):
+                    continue
+                if (nx, ny) in blocked:
                     continue
                 if (nx, ny) in visited:
                     continue
@@ -392,18 +392,19 @@ class MapCache:
         # gets the agent pulled into Twin battle then back-walked away
         # from (10,30) Woods warp target.
         (0, 19): {
-            (26, 15), (26, 16), (26, 17), (26, 18),
-            (27, 15), (27, 16), (27, 17), (27, 18),
-            (28, 15), (28, 16), (28, 17), (28, 18),
-            (29, 15), (29, 16), (29, 17), (29, 18),
-            (31, 20), (31, 21), (31, 22), (31, 23), (31, 24),
-            (21, 22), (21, 23), (21, 24),
+            (27, 15),
+            (27, 16), (27, 17), (27, 18),
+            (28, 15),
+            (28, 16), (28, 17), (28, 18),
+            (31, 24),
+            (30, 24), (29, 24), (28, 24), (27, 24), (26, 24), (25, 24),
             (21, 25),
+            (21, 22), (21, 23), (21, 24),
             (21, 26), (21, 27), (21, 28),
             (18, 25), (19, 25), (20, 25),
             (22, 25), (23, 25), (24, 25),
-            (11, 41), (11, 42), (11, 43),
             (11, 44),
+            (11, 41), (11, 42), (11, 43),
             (12, 44), (13, 44), (14, 44),
         },
     }
