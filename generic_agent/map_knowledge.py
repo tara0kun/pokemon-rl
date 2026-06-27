@@ -42,12 +42,18 @@ from . import config, map_data as md
 
 KNOWLEDGE_DIR = config.MEMORY_DIR / "map_knowledge"
 
-# Canon metatile ID ranges that mean "encounter grass" in the outdoor
-# tilesets used across Hoenn. Pokemon Emerald's PrimaryTileset_General
-# uses 0x208 + 0x209 for short/tall grass; secondary tilesets used by
-# routes (PetalburgWoods, Mauville, etc.) reuse the same indices for
-# their encounter tiles.
-GRASS_METATILES = {0x208, 0x209}
+# 🎯 灯台下暗し fix (06-28): GRASS_METATILES = {0x208, 0x209} was wrong
+# — those are MB_POND_WATER (behavior 0x10) in Rustboro tileset.
+# Real encounter grass is determined by BEHAVIOR byte from metatile
+# attribute table (primary/secondary tileset metatile_attributes.bin).
+# Grass behaviors per pokeemerald metatile_behaviors.h:
+#   0x02 = MB_TALL_GRASS (wild encounter)
+#   0x03 = MB_LONG_GRASS (wild encounter)
+#   0x07 = MB_SHORT_GRASS (encounter)
+#   0x09 = MB_LONG_GRASS_SOUTH_EDGE
+GRASS_BEHAVIORS = {0x02, 0x03, 0x07, 0x09}
+# Retain old name for compatibility; new code uses behavior path below.
+GRASS_METATILES: set[int] = set()
 
 # Ledge JUMP behavior IDs from pokeemerald metatile_behaviors.h, mapped
 # to (dx, dy) direction the agent jumps when stepping onto the tile.
@@ -296,9 +302,9 @@ class MapKnowledgeStore:
                         meta = b & 0x3FF
                         elev = (b >> 12) & 0xF
                         mk.tile_elevation[(x, y)] = elev
-                        if meta in GRASS_METATILES:
-                            mk.grass_tiles.add((x, y))
                         beh = beh_table.get(meta)
+                        if beh in GRASS_BEHAVIORS:
+                            mk.grass_tiles.add((x, y))
                         if beh in LEDGE_JUMP_BEHAVIORS:
                             mk.ledge_jumps[(x, y)] = (
                                 LEDGE_JUMP_BEHAVIORS[beh]

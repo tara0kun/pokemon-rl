@@ -214,9 +214,9 @@ GOAL_TABLE: list[Goal] = [
     Goal(
         name="grind_route_104_north",
         target_map=(0, 19),
-        target_pos=(17, 15),
+        target_pos=(7, 7),
         condition="no_badge",
-        desc="Route 104 north grass area (canonical 52 grass tile y=10-21)",
+        desc="Route 104 Mom area west real grass (behavior MB_TALL_GRASS, 126 tile)",
     ),
     Goal(
         name="enter_rustboro_gym",
