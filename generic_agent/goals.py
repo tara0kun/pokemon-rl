@@ -210,8 +210,9 @@ GOAL_TABLE: list[Goal] = [
     Goal(
         name="enter_rustboro_gym",
         target_map=(11, 3),
+        target_pos=(5, 2),  # Roxanne canonical position inside Gym
         condition="no_badge",
-        desc="Rustboro Gym 建物 (11-3) 直接突入 → Wingull Water Gun で Roxanne 撃破",
+        desc="Rustboro Gym (11-3) Roxanne (5, 2) 直接接触 → Wingull Water Gun 撃破",
     ),
     Goal(
         name="grind_route_104_north",
