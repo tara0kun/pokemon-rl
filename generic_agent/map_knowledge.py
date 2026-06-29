@@ -42,12 +42,34 @@ from . import config, map_data as md
 
 KNOWLEDGE_DIR = config.MEMORY_DIR / "map_knowledge"
 
-# Canon metatile ID ranges that mean "encounter grass" in the outdoor
-# tilesets used across Hoenn. Pokemon Emerald's PrimaryTileset_General
-# uses 0x208 + 0x209 for short/tall grass; secondary tilesets used by
-# routes (PetalburgWoods, Mauville, etc.) reuse the same indices for
-# their encounter tiles.
-GRASS_METATILES = {0x208, 0x209}
+# 🎯 灯台下暗し fix (06-28): GRASS_METATILES = {0x208, 0x209} was wrong
+# — those are MB_POND_WATER (behavior 0x10) in Rustboro tileset.
+# Real encounter grass is determined by BEHAVIOR byte from metatile
+# attribute table (primary/secondary tileset metatile_attributes.bin).
+# Grass behaviors per pokeemerald metatile_behaviors.h:
+#   0x02 = MB_TALL_GRASS (wild encounter)
+#   0x03 = MB_LONG_GRASS (wild encounter)
+#   0x07 = MB_SHORT_GRASS (encounter)
+#   0x09 = MB_LONG_GRASS_SOUTH_EDGE
+GRASS_BEHAVIORS = {0x02, 0x03, 0x07, 0x09}
+# Retain old name for compatibility; new code uses behavior path below.
+GRASS_METATILES: set[int] = set()
+
+# Ledge JUMP behavior IDs from pokeemerald metatile_behaviors.h, mapped
+# to (dx, dy) direction the agent jumps when stepping onto the tile.
+# Ledges are 1-way edges: stepping onto a JUMP tile from the OPPOSITE
+# direction lands the agent on (x+dx, y+dy) regardless of the next
+# tile's elevation.
+LEDGE_JUMP_BEHAVIORS = {
+    0x39: (1, 0),    # JUMP_EAST
+    0x3A: (-1, 0),   # JUMP_WEST
+    0x3B: (0, -1),   # JUMP_NORTH
+    0x3C: (0, 1),    # JUMP_SOUTH
+    0x3D: (1, -1),   # JUMP_NORTHEAST
+    0x3E: (-1, -1),  # JUMP_NORTHWEST
+    0x3F: (1, 1),    # JUMP_SOUTHEAST
+    0x40: (-1, 1),   # JUMP_SOUTHWEST
+}
 
 # LOS direction deltas. trainer_los expansion walks `sight` cells in
 # the trainer's facing direction(s).
@@ -84,6 +106,13 @@ class MapKnowledge:
     height: int = 0
     grass_tiles: set[tuple[int, int]] = field(default_factory=set)
     trainer_los: set[tuple[int, int]] = field(default_factory=set)
+    tile_elevation: dict[tuple[int, int], int] = field(default_factory=dict)
+    # ledge_jumps: {(x,y): (dx,dy)} = JUMP behavior tiles, 1-way edge
+    # in (dx,dy) direction (e.g. (0,1)=south). Pokemon Emerald ledges
+    # let agent step OFF bridge layer to ground layer in jump direction.
+    ledge_jumps: dict[tuple[int, int], tuple[int, int]] = field(
+        default_factory=dict,
+    )
     warps: dict[tuple[int, int], dict] = field(default_factory=dict)
     npcs: list[dict] = field(default_factory=list)
     encounters_seen: list[dict] = field(default_factory=list)
@@ -119,6 +148,12 @@ class MapKnowledge:
             "height": self.height,
             "grass_tiles": sorted(list(self.grass_tiles)),
             "trainer_los": sorted(list(self.trainer_los)),
+            "tile_elevation": {
+                f"{x},{y}": e for (x, y), e in self.tile_elevation.items()
+            },
+            "ledge_jumps": {
+                f"{x},{y}": list(d) for (x, y), d in self.ledge_jumps.items()
+            },
             "warps": {f"{x},{y}": v for (x, y), v in self.warps.items()},
             "npcs": self.npcs,
             "encounters_seen": self.encounters_seen,
@@ -138,6 +173,14 @@ class MapKnowledge:
         )
         mk.grass_tiles = {tuple(t) for t in data.get("grass_tiles", [])}
         mk.trainer_los = {tuple(t) for t in data.get("trainer_los", [])}
+        mk.tile_elevation = {
+            tuple(map(int, k.split(","))): v
+            for k, v in data.get("tile_elevation", {}).items()
+        }
+        mk.ledge_jumps = {
+            tuple(map(int, k.split(","))): tuple(v)
+            for k, v in data.get("ledge_jumps", {}).items()
+        }
         mk.warps = {
             tuple(map(int, k.split(","))): v
             for k, v in data.get("warps", {}).items()
@@ -209,12 +252,30 @@ class MapKnowledgeStore:
         mk.trainer_los.add((x, y))
         self.save(mk)
 
+    def _load_behavior_table(self) -> dict[int, int]:
+        """Cache primary tileset metatile → behavior mapping (2-byte/entry)."""
+        if hasattr(self, "_beh_cache"):
+            return self._beh_cache
+        cache: dict[int, int] = {}
+        try:
+            prim = (config.MEMORY_DIR / "map_cache"
+                    / "primary_general_attr.bin").read_bytes()
+            for meta in range(min(0x200, len(prim) // 2)):
+                cache[meta] = struct.unpack_from(
+                    "<H", prim, meta * 2,
+                )[0] & 0xFF
+        except OSError:
+            pass
+        self._beh_cache = cache
+        return cache
+
     def _seed_from_canon(self, mk: MapKnowledge) -> None:
         """Populate grass / trainer_los / warps / npcs / exits from
         pokeemerald decomp via map_data.MapCache."""
         info = self._mc.get(mk.map_g, mk.map_n)
         if info is None:
             return
+        beh_table = self._load_behavior_table()
         mk.name = info.name
         mk.width = info.width
         mk.height = info.height
@@ -239,8 +300,15 @@ class MapKnowledgeStore:
                             continue
                         b = struct.unpack_from("<H", data, off)[0]
                         meta = b & 0x3FF
-                        if meta in GRASS_METATILES:
+                        elev = (b >> 12) & 0xF
+                        mk.tile_elevation[(x, y)] = elev
+                        beh = beh_table.get(meta)
+                        if beh in GRASS_BEHAVIORS:
                             mk.grass_tiles.add((x, y))
+                        if beh in LEDGE_JUMP_BEHAVIORS:
+                            mk.ledge_jumps[(x, y)] = (
+                                LEDGE_JUMP_BEHAVIORS[beh]
+                            )
         except OSError:
             pass
         # NPCs and trainer LOS from object_events

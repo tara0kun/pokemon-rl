@@ -257,6 +257,8 @@ class MapCache:
         start: tuple[int, int],
         targets: set[tuple[int, int]],
         blocked_tiles: set[tuple[int, int]] | None = None,
+        tile_elevation: dict[tuple[int, int], int] | None = None,
+        ledge_jumps: dict[tuple[int, int], tuple[int, int]] | None = None,
     ) -> list[str] | None:
         info = self.get(map_g, map_n)
         if info is None:
@@ -264,6 +266,8 @@ class MapCache:
         if not info.walkable(*start):
             return None
         blocked = blocked_tiles or set()
+        elev = tile_elevation or {}
+        ledges = ledge_jumps or {}
         q: deque[tuple[tuple[int, int], list[str]]] = deque([(start, [])])
         visited: set[tuple[int, int]] = {start}
         dirs = [(0, -1, "Up"), (0, 1, "Down"), (-1, 0, "Left"), (1, 0, "Right")]
@@ -271,12 +275,34 @@ class MapCache:
             (x, y), path = q.popleft()
             if (x, y) in targets:
                 return path
+            cur_e = elev.get((x, y))
             for dx, dy, btn in dirs:
                 nx, ny = x + dx, y + dy
-                if (nx, ny) in visited or not info.walkable(nx, ny):
+                # Ledge: pressing into a wall-collision tile that has
+                # ledge_jumps behavior makes agent JUMP over it.
+                # press direction must match jump direction.
+                jump = ledges.get((nx, ny))
+                if jump is not None and (dx, dy) == jump:
+                    final = (nx + jump[0], ny + jump[1])
+                    if final in visited or not info.walkable(*final):
+                        continue
+                    if final in blocked:
+                        continue
+                    visited.add(final)
+                    q.append((final, path + [btn]))
+                    continue
+                if not info.walkable(nx, ny):
                     continue
                 if (nx, ny) in blocked:
                     continue
+                if (nx, ny) in visited:
+                    continue
+                # NOTE: elev mismatch BFS check temporarily disabled
+                # (was 28 fix). Real grass (behavior-based, 31 fix)
+                # requires elev=3 → elev=1 transitions in canon-walkable
+                # tiles. (24, 16) Down 200 fail empirical via tile_map
+                # direction-edge accumulation handles the actual blocked
+                # transitions; let BFS find canon-walkable paths.
                 visited.add((nx, ny))
                 q.append(((nx, ny), path + [btn]))
         return None
@@ -362,18 +388,19 @@ class MapCache:
         # gets the agent pulled into Twin battle then back-walked away
         # from (10,30) Woods warp target.
         (0, 19): {
-            (26, 15), (26, 16), (26, 17), (26, 18),
-            (27, 15), (27, 16), (27, 17), (27, 18),
-            (28, 15), (28, 16), (28, 17), (28, 18),
-            (29, 15), (29, 16), (29, 17), (29, 18),
-            (31, 20), (31, 21), (31, 22), (31, 23), (31, 24),
-            (21, 22), (21, 23), (21, 24),
+            (27, 15),
+            (27, 16), (27, 17), (27, 18),
+            (28, 15),
+            (28, 16), (28, 17), (28, 18),
+            (31, 24),
+            (30, 24), (29, 24), (28, 24), (27, 24), (26, 24), (25, 24),
             (21, 25),
+            (21, 22), (21, 23), (21, 24),
             (21, 26), (21, 27), (21, 28),
             (18, 25), (19, 25), (20, 25),
             (22, 25), (23, 25), (24, 25),
-            (11, 41), (11, 42), (11, 43),
             (11, 44),
+            (11, 41), (11, 42), (11, 43),
             (12, 44), (13, 44), (14, 44),
         },
     }
