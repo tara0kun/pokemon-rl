@@ -274,8 +274,17 @@ def read_state(client: MGBAClient) -> GameState:
         flag_byte_starter = client.read8(ptr + SB1_FLAGS_OFFSET + (0x55 // 8))
         flag_starter = bool(flag_byte_starter & (1 << (0x55 % 8)))
         first_item_id = client.read16(ptr + SB1_BAG_ITEMS + 0)
-        first_item_qty = client.read16(ptr + SB1_BAG_ITEMS + 2)
-        if first_item_id > 600:
+        first_item_qty_enc = client.read16(ptr + SB1_BAG_ITEMS + 2)
+        # 35 fix (06-29): Pokemon Emerald bag quantities are XOR-encrypted
+        # with SaveBlock2 security_key bottom 16 bits. Previously displayed
+        # raw encrypted value (61548 / 22819 = noise).
+        try:
+            sb2_ptr_for_key = client.read32(0x03005D90)
+            sec_key = client.read32(sb2_ptr_for_key + 0xAC)
+            first_item_qty = first_item_qty_enc ^ (sec_key & 0xFFFF)
+        except EmulatorError:
+            first_item_qty = first_item_qty_enc
+        if first_item_id > 600 or first_item_qty > 999:
             first_item_id = first_item_qty = 0
         for slot in range(30):
             slot_id = client.read16(ptr + SB1_BAG_ITEMS + slot * 4)
