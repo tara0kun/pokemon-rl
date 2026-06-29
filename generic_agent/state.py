@@ -75,6 +75,7 @@ class GameState:
     party0_level: int = 0
     party0_hp: int = 0
     party0_max_hp: int = 0
+    party0_species: int = 0  # decrypted species_id (Wingull=278, Grovyle=253, etc)
     party_count: int = 0
     flag_birch_met: bool = False
     flag_starter_received: bool = False
@@ -230,6 +231,31 @@ def read_state(client: MGBAClient) -> GameState:
     except EmulatorError:
         lv = hp = max_hp = 0
 
+    # Decrypt party0 species (Pokemon Emerald box-pokemon encryption)
+    # See 06-29 audit: agent lead was misidentified as Grovyle for 35+ hours.
+    party0_species_id = 0
+    try:
+        pv = client.read32(PLAYER_PARTY_ADDR + 0x00)
+        otid = client.read32(PLAYER_PARTY_ADDR + 0x04)
+        key = pv ^ otid
+        # Substruct order is determined by personality % 24.
+        perms = [
+            "GAEM", "GAME", "GEAM", "GEMA", "GMAE", "GMEA",
+            "AGEM", "AGME", "AEGM", "AEMG", "AMGE", "AMEG",
+            "EGAM", "EGMA", "EAGM", "EAMG", "EMGA", "EMAG",
+            "MGAE", "MGEA", "MAGE", "MAEG", "MEGA", "MEAG",
+        ]
+        order = perms[pv % 24]
+        g_idx = order.index("G")
+        g_offset = 0x20 + g_idx * 12  # G substruct base
+        enc1 = client.read32(PLAYER_PARTY_ADDR + g_offset)
+        dec1 = enc1 ^ key
+        party0_species_id = dec1 & 0xFFFF
+        if party0_species_id > 1000:
+            party0_species_id = 0
+    except EmulatorError:
+        party0_species_id = 0
+
     party_count = 0
     flag_birch = False
     flag_starter = False
@@ -296,6 +322,7 @@ def read_state(client: MGBAClient) -> GameState:
         party0_level=lv,
         party0_hp=hp,
         party0_max_hp=max_hp,
+        party0_species=party0_species_id,
         party_count=party_count,
         flag_birch_met=flag_birch,
         flag_starter_received=flag_starter,
