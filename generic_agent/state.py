@@ -303,6 +303,13 @@ def read_state(client: MGBAClient) -> GameState:
                     break
         except EmulatorError:
             pass
+    except EmulatorError:
+        pass
+
+    # 34 fix (06-29): Independent try block for flag bytes read.
+    # Previously bundled with bag/party reads — when any earlier read
+    # raised EmulatorError, flag_hex stayed empty silently.
+    try:
         flag_bytes = client.read_range(
             ptr + SB1_FLAGS_OFFSET, NUM_FLAG_BYTES,
         )
