@@ -52,11 +52,15 @@ NUM_FLAG_BYTES = 0x12C           # 300 bytes = 2400 event flags (Emerald)
 BATTLE_FLAGS_CANDIDATES = [
     0x020243CC,
     0x020238F0,
-    0x02022FEC,  # Trainer-battle flag — confirmed via Roxanne fight on
-                 # 2026-06-23 where bf=0xc (TRAINER 0x8 + WILD_DOUBLE 0x4).
-                 # Missing this address is the 6-day RAM false-negative bug
-                 # that left every in-battle heuristic (catch_seq,
-                 # wild_run_overleveled, battle_menu cursor reset) bypassed.
+    # 36 fix (06-29): Removed 0x02022FEC from candidates.
+    # Original intent (30ed435, 06-24): catch missed in_battle states
+    # during Roxanne fight where 0x020243CC was 0 (RAM false-negative).
+    # But 0x02022FEC is set ONCE at battle start and NEVER cleared on
+    # exit. Result: stale flag persists indefinitely after the battle
+    # ends, making in_battle=True a false-positive for ALL subsequent
+    # overworld turns (verified 06-29: agent overworld but RAM said
+    # in_battle=True). heur compensates via screen-UI gate, but state
+    # reads to external code (cron, audit) showed wrong in_battle.
 ]
 
 
