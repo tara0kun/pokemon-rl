@@ -737,8 +737,27 @@ def heuristic_button(
     if scored:
         scored.sort(key=lambda t: t[0], reverse=True)
         best_score, best_dir, _ = scored[0]
+        # 38 fix (06-29 user 指示): unvisited tile への積極的 approach。
+        # reward_pick が chronic 時 same direction picking で stuck する。
+        # reward_pick で best_score を返す前に、 unvisited tile 方向が
+        # 存在し、 かつ same_pos_streak >= 5 (chronic 兆候) なら unvisited 優先。
         if best_score > float("-inf"):
             tag = "south_indoor" if bias_order is SOUTH_BIAS_ORDER else "north_outdoor"
+            if same_pos_streak >= 5:
+                unvisited_chronic: list[str] = []
+                for d in NORTH_BIAS_ORDER:
+                    if d in blocked:
+                        continue
+                    dx, dy = tile_map_mod.DELTA[d]
+                    nk = tm._tile_key(cur_x + dx, cur_y + dy)
+                    neighbor = tiles.get(nk)
+                    if neighbor is None or neighbor.visits == 0:
+                        unvisited_chronic.append(d)
+                if unvisited_chronic:
+                    return unvisited_chronic[0], (
+                        f"explore_unvisited_chronic:{unvisited_chronic[0]}"
+                        f"@streak={same_pos_streak}"
+                    )
             return best_dir, f"reward_pick:{best_dir}@{best_score:.1f}/{tag}"
 
     unexplored_dirs: list[str] = []

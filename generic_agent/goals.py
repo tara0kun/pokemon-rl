@@ -201,28 +201,24 @@ GOAL_TABLE: list[Goal] = [
         condition="no_badge",
         desc="Petalburg → Rustboro City (0-3) Stone Badge",
     ),
-    # Grass grinding goal — placed BEFORE enter_rustboro_gym so it
-    # takes precedence while badge_count == 0. Without level-up grinding
-    # the team whiteouts every Roxanne attempt. Empirical BFS check
-    # (iter 260) confirmed (15,45) and any y>=35 tile on Route 104 is
-    # UNREACHABLE from the north (19,0) entry given canon walkable +
-    # tile_map blocked data. The only south-bound exit is the Petalburg
-    # Woods warp at (10,30). Aim for that — once on the warp tile, the
-    # interior-door fix (6c1153832) auto-presses Up → Woods → from
-    # Woods the agent's exploration heuristics carry it south to the
-    # other Route 104 warp → grass area for wild encounters.
+    # 37 fix (06-29): 35+ hour wrong strategy 訂正。
+    # 旧 grind_route_104_north target=(2,11) は LOTAD grind 前提だったが
+    # 33 fix evidence で agent species = Wingull Lv 21 (not Grovyle/Lotad)。
+    # Wingull Water Gun (40 power, water type) 2x vs rock = Roxanne の
+    # Geodude/Nosepass 一撃可能性高 = **grind 不要**。
+    # 直接 Gym 突入が真の戦略。 goal 順序 = enter_rustboro_gym 先。
+    Goal(
+        name="enter_rustboro_gym",
+        target_map=(11, 3),
+        condition="no_badge",
+        desc="Rustboro Gym 建物 (11-3) 直接突入 → Wingull Water Gun で Roxanne 撃破",
+    ),
     Goal(
         name="grind_route_104_north",
         target_map=(0, 19),
         target_pos=(2, 11),
         condition="no_badge",
-        desc="Route 104 closest reachable real grass (2, 11) - via south detour 45 step",
-    ),
-    Goal(
-        name="enter_rustboro_gym",
-        target_map=(11, 3),
-        condition="no_badge",
-        desc="Rustboro Gym 建物 (11-3) 内部進入 → Roxanne 戦",
+        desc="(deprecated 37 fix) Wingull Lv 21 で grind 不要だが fallback として保持",
     ),
     Goal(
         name="reach_dewford_gym",
