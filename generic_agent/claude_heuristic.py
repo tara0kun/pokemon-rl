@@ -249,10 +249,20 @@ def heuristic_button(
             f"@streak={same_pos_streak}"
         )
     explore_target: tuple[int, int] | None = None
+    # 32 fix (06-29): target_pos goal active 時は explore_target hijack 抑制。
+    # explore_target が別 map を target に設定すると effective_goal_map が
+    # override され、 mapbfs が target_pos でなく exit_tiles を target に使う
+    # = 50+ hour autonomous で agent が grass tile に到達しない真因。
+    same_map_with_target_pos = (
+        current_goal is not None
+        and getattr(current_goal, "target_pos", None) is not None
+        and current_goal.target_map == (gs.map_group, gs.map_num)
+    )
     if (
         same_map_streak >= 200
         and not gs.in_battle
         and gs.saveblock1_valid
+        and not same_map_with_target_pos
     ):
         recent = reward_state.last_visited_maps[-6:]
         nm = pm.find_nearest_unexplored_map(
@@ -264,11 +274,6 @@ def heuristic_button(
         explore_target
         if explore_target is not None
         else (current_goal.target_map if current_goal else None)
-    )
-    same_map_with_target_pos = (
-        current_goal is not None
-        and getattr(current_goal, "target_pos", None) is not None
-        and current_goal.target_map == (gs.map_group, gs.map_num)
     )
     if (
         effective_goal_map is not None
