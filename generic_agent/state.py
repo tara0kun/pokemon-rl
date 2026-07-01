@@ -53,21 +53,29 @@ BATTLE_FLAGS_CANDIDATES = [
     # 0x02022FEC = US Emerald gBattleTypeFlags (JP 0x02022E90 + US->JP
     # offset 0x15C, cross-checked against old-branch pokemon_env.py).
     # 30ed435 (06-24) added it to fix the Roxanne RAM false-negative
-    # (0x020243CC reads 0 during the move-select screen). "36 fix"
-    # (06-29) removed it claiming it "never clears on battle exit" and
-    # caused overworld false-positives. That claim is WRONG: a live read
-    # on 07-01 in the Rustboro overworld (long after many Roxanne
-    # battles) showed 0x02022FEC == 0, i.e. it DOES clear on exit. The
-    # removal was a self-inflicted regression that re-opened the
-    # false-negative; restored here as the primary (first) candidate so
-    # the reliable address wins.
+    # (0x020243CC reads 0 during the move-select screen); the "36 fix"
+    # (06-29) removed it claiming it never clears; restored 07-01.
+    # NUANCE (verified 07-01): it clears on a NORMAL battle exit but does
+    # NOT clear on a WHITEOUT/loss teardown — it lingers non-zero (0xc)
+    # while walking the overworld afterwards. So this flag alone is NOT a
+    # reliable in_battle signal; _read_battle_flags gates it on gMain's
+    # game-mode callback below.
     0x02022FEC,
     # Unverified fallbacks (some other battle global): both read 0 during
     # the Roxanne fight (the original false-negative) and 0 in overworld.
-    # Kept last so the reliable address above is preferred.
     0x020243CC,
     0x020238F0,
 ]
+
+# gMain.callback2 (US Emerald) — the game-mode function pointer. It is
+# CB2_Overworld in the field and CB2_BattleMain (etc.) in battle, flipping
+# immediately on battle entry/exit, so it distinguishes "actually in battle
+# now" from "stale gBattleTypeFlags left over after a whiteout". This is the
+# self-clearing signal the old-branch pokemon_env.py used (cb2_overworld).
+GMAIN_CB2_ADDR = 0x030022C4
+# Field/overworld callback2 values where a set gBattleTypeFlags must NOT be
+# read as in-battle. 0x08085E5D = CB2_Overworld (US), live-observed 07-01.
+CB2_OVERWORLD_SET = frozenset({0x08085E5D})
 
 
 BATTLE_TYPE_TRAINER = 0x0008
@@ -194,6 +202,17 @@ def _read_battle_flags(client: MGBAClient) -> tuple[bool, int]:
             continue
         if v >= 0x00010000:
             continue
+        # gBattleTypeFlags is set but may be stale (whiteout leaves it non-
+        # zero in the overworld). Confirm we are ACTUALLY in a battle via the
+        # game-mode callback: in the field it is CB2_Overworld; only in a
+        # real battle is it a battle callback. This flips instantly on exit,
+        # unlike the flag, so it kills the post-whiteout false positive.
+        try:
+            cb2 = client.read32(GMAIN_CB2_ADDR)
+        except EmulatorError:
+            cb2 = None
+        if cb2 is not None and cb2 in CB2_OVERWORLD_SET:
+            return False, 0
         return True, v
     return False, 0
 
@@ -279,6 +298,16 @@ def read_state(client: MGBAClient) -> GameState:
         party_count = client.read8(ptr + SB1_PLAYER_PARTY_COUNT)
         if party_count > 6:
             party_count = 0
+        # Badges = event flags FLAG_BADGE01_GET (0x867) .. BADGE08 (0x86E).
+        # Previously `badges` stayed hardcoded 0, so badge_count always read
+        # 0 even after earning a badge (Stone Badge won 07-01 but reported
+        # as 0). Count the set badge flags.
+        badges = 0
+        for _bi in range(8):
+            _fn = 0x867 + _bi
+            _fb = client.read8(ptr + SB1_FLAGS_OFFSET + _fn // 8)
+            if (_fb >> (_fn % 8)) & 1:
+                badges += 1
         flag_byte_birch = client.read8(ptr + SB1_FLAGS_OFFSET + (0x52 // 8))
         flag_birch = bool(flag_byte_birch & (1 << (0x52 % 8)))
         flag_byte_starter = client.read8(ptr + SB1_FLAGS_OFFSET + (0x55 // 8))
