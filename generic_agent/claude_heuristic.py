@@ -260,11 +260,20 @@ def heuristic_button(
         and getattr(current_goal, "target_pos", None) is not None
         and current_goal.target_map == (gs.map_group, gs.map_num)
     )
+    # Directed story-journey goals (e.g. the Dewford chain) must not be
+    # hijacked by explore_target: Route104 accumulates a huge same_map_streak
+    # (its north/south split kept the agent there for thousands of turns), so
+    # without this the hijack fires and overrides the now-routable woods path.
+    directed_goal = (
+        current_goal is not None
+        and current_goal.name.startswith("dewford")
+    )
     if (
         same_map_streak >= 200
         and not gs.in_battle
         and gs.saveblock1_valid
         and not same_map_with_target_pos
+        and not directed_goal
     ):
         recent = reward_state.last_visited_maps[-6:]
         nm = pm.find_nearest_unexplored_map(

@@ -38,6 +38,10 @@ _GOAL_ORDER_WEIGHT = {
     "reach_petalburg": 50,
     "reach_rustboro_gym": 60,
     "enter_rustboro_gym": 65,
+    "dewford_to_woods": 66,
+    "dewford_woods_south": 67,
+    "dewford_to_briney": 68,
+    "dewford_sail": 69,
     "reach_dewford_gym": 70,
 }
 
@@ -45,7 +49,13 @@ _GOAL_ORDER_WEIGHT = {
 # Goals whose target_map is the actual completion target (Gym building),
 # not just a waypoint. For these, the visited-maps backtrack-suppression
 # is skipped: visiting the gym map once doesn't mean we beat the leader.
-_GOAL_BYPASS_VISITED = {"enter_rustboro_gym", "grind_route_104_north"}
+_GOAL_BYPASS_VISITED = {
+    "enter_rustboro_gym", "grind_route_104_north",
+    # Dewford journey waypoints re-visit maps (Route104 north AND south are
+    # the same map id), so visited-map suppression must not disable them.
+    "dewford_to_woods", "dewford_woods_south",
+    "dewford_to_briney", "dewford_sail",
+}
 
 
 def _load_visited_maps() -> set[tuple[int, int]]:
@@ -155,6 +165,20 @@ class Goal:
         if c.startswith("badge>="):
             n = int(c.split(">=")[1])
             return gs.badge_count >= n
+        # Dewford journey (post Stone Badge). Route 104 (0,19) is split into
+        # a NORTH region (Rustboro side, y<34) and a SOUTH beach (Mr.Briney,
+        # y>=34) that are NOT walkably connected within the map — you cross
+        # via Petalburg Woods (24,11). So the goal chain is position-aware:
+        # north Route104 -> Woods -> south Route104 -> Briney's house -> sail.
+        cur = (gs.map_group, gs.map_num)
+        if c == "dewford_route104_north":
+            return gs.badge_count >= 1 and cur == (0, 19) and gs.y < 34
+        if c == "dewford_in_woods":
+            return gs.badge_count >= 1 and cur == (24, 11)
+        if c == "dewford_route104_south":
+            return gs.badge_count >= 1 and cur == (0, 19) and gs.y >= 34
+        if c == "dewford_in_briney_house":
+            return gs.badge_count >= 1 and cur == (17, 0)
         return False
 
 
@@ -220,6 +244,36 @@ GOAL_TABLE: list[Goal] = [
         target_pos=(2, 11),
         condition="no_badge",
         desc="(deprecated 37 fix) Wingull Lv 21 で grind 不要だが fallback として保持",
+    ),
+    # --- Dewford journey (post Stone Badge) ---
+    # Route104 north and the Mr.Briney beach (south) are the SAME map but not
+    # walkably connected; the crossing is through Petalburg Woods (24,11).
+    # Then Mr.Briney sails you across the water (Route105/106) to Dewford.
+    Goal(
+        name="dewford_to_woods",
+        target_map=(24, 11),  # PetalburgWoods
+        condition="dewford_route104_north",
+        desc="Stone Badge 後: Route104 北 → Petalburg Woods (24-11) に入る",
+    ),
+    Goal(
+        name="dewford_woods_south",
+        target_map=(24, 11),
+        target_pos=(16, 38),  # south exit warp -> Route104 south beach
+        condition="dewford_in_woods",
+        desc="Petalburg Woods を南下し南口 (16,38) から Route104 南浜へ",
+    ),
+    Goal(
+        name="dewford_to_briney",
+        target_map=(17, 0),  # Route104_MrBrineysHouse
+        condition="dewford_route104_south",
+        desc="Route104 南浜 → Mr.Briney's House (17-0) に入る",
+    ),
+    Goal(
+        name="dewford_sail",
+        target_map=(17, 0),
+        target_pos=(5, 3),  # Mr.Briney NPC — talk to sail to Dewford
+        condition="dewford_in_briney_house",
+        desc="Mr.Briney (5,3) に話しかけて Dewford へ航海",
     ),
     Goal(
         name="reach_dewford_gym",
