@@ -104,18 +104,19 @@ def heuristic_button(
         reward_state = reward_state_mod.RewardState()
     if screen_signals is None:
         screen_signals = {}
-    # Stale-flag compensation: gs.in_battle from 0x02022FEC (30ed435)
-    # stays True after a battle ends — overworld nav guards `not
-    # gs.in_battle` would then be permanently False, disabling mapbfs
-    # and all directional movement. Combine with the screen-UI signal
-    # so we only treat the agent as in-battle when the screen actually
-    # shows a battle UI. Monkeypatch gs.in_battle so every downstream
-    # `not gs.in_battle` guard works correctly without churning the
-    # whole decision tree.
-    _in_battle_real = bool(gs.in_battle) and bool(
+    # in_battle ground truth: gs.in_battle now comes from the verified US
+    # gBattleTypeFlags (0x02022FEC, restored in state.py), which reads
+    # non-zero for the ENTIRE battle (including the move-select screen)
+    # and clears to 0 in the overworld (live-verified 07-01). So trust it,
+    # and ALSO latch on the battle_menu vision signal (the FIGHT/BAG/
+    # POKEMON/RUN box, which is battle-exclusive) so a one-frame RAM miss
+    # can't drop us to overworld nav mid-battle. Do NOT OR dialog/menu
+    # here — those also appear in the overworld and would false-positive.
+    # (The previous code AND-ed with vision and forced in_battle=False on
+    # every turn vision wasn't sampled — that, combined with the turn%5
+    # detection throttle, is what made the FIGHT branch dead 4/5 turns.)
+    _in_battle_real = bool(gs.in_battle) or bool(
         screen_signals.get("battle_menu")
-        or screen_signals.get("dialog")
-        or screen_signals.get("menu")
     )
     try:
         object.__setattr__(gs, "in_battle", _in_battle_real)
@@ -310,6 +311,7 @@ def heuristic_button(
                 next_hop_name = mc.name_for(*effective_goal_map)
             if next_hop_name:
                 target_tiles: set[tuple[int, int]] = set()
+                interact_target: tuple[int, int] | None = None
                 # If current_goal has explicit target_pos AND we're on
                 # the target_map, use that single tile (overrides
                 # exit_tiles). Used by grinding goals like
@@ -320,7 +322,31 @@ def heuristic_button(
                     and getattr(current_goal, "target_pos", None) is not None
                     and (gs.map_group, gs.map_num) == current_goal.target_map
                 ):
-                    target_tiles.add(current_goal.target_pos)
+                    tpos = current_goal.target_pos
+                    # gs.npcs_on_map lists the PLAYER too (its own object
+                    # event at (gs.x,gs.y)); exclude it or the agent's own
+                    # tile gets wrongly rejected as an approach candidate.
+                    npc_now = {
+                        (nx, ny) for (nx, ny, _g) in gs.npcs_on_map
+                        if (nx, ny) != (gs.x, gs.y)
+                    }
+                    # A target tile occupied by an NPC (e.g. a gym leader
+                    # like Roxanne standing on (5,2)) or marked unwalkable
+                    # can never be a BFS destination — BFS returns None and
+                    # the agent wanders near it forever. Route instead to a
+                    # walkable, unoccupied neighbour and interact (face + A)
+                    # to talk / trigger the battle.
+                    if cur_info.walkable(*tpos) and tpos not in npc_now:
+                        target_tiles.add(tpos)
+                    else:
+                        interact_target = tpos
+                        for dx, dy in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+                            nb = (tpos[0] + dx, tpos[1] + dy)
+                            if (
+                                cur_info.walkable(*nb)
+                                and nb not in npc_now
+                            ):
+                                target_tiles.add(nb)
                 else:
                     for direction, conn in cur_info.connections.items():
                         if conn["map_name"] == next_hop_name:
@@ -442,6 +468,23 @@ def heuristic_button(
                             f"(dist={len(bfs_path)})"
                         )
                     if bfs_path == [] and (gs.x, gs.y) in target_tiles:
+                        if interact_target is not None:
+                            ix, iy = interact_target
+                            if iy < gs.y:
+                                face = "Up"
+                            elif iy > gs.y:
+                                face = "Down"
+                            elif ix < gs.x:
+                                face = "Left"
+                            else:
+                                face = "Right"
+                            # Turn to face the NPC first (pressing into the
+                            # blocked tile only rotates, no move), then A to
+                            # talk -> triggers the gym-leader battle. Alternate
+                            # via last_action so we don't mash one button.
+                            if last_action == face:
+                                return "A", f"npc_interact:A->{ix},{iy}"
+                            return face, f"npc_interact:{face}->{ix},{iy}"
                         step_btn = mc.warp_step_direction(
                             gs.map_group, gs.map_num, gs.x, gs.y,
                         )
@@ -857,6 +900,8 @@ def run(
     prev_first_item_id = 0
     prev_event_flags = 0
     prev_badge_count = 0
+    prev_battle_menu = False  # latch: keep detecting every turn once a
+    # battle menu is seen, so animation frames don't drop us to nav
 
     decisions: dict[str, int] = {}
 
@@ -982,13 +1027,24 @@ def run(
         prev_event_flags = gs.total_event_flags
         prev_badge_count = gs.badge_count
 
+        # Root-cause fix (07-01): the ONLY branch that presses A on FIGHT
+        # keys off THIS turn's battle_menu vision signal, but detection was
+        # throttled to turn%5==0 — so on 4/5 battle turns the FIGHT branch
+        # was dead and control fell through to overworld nav, pressing
+        # movement buttons at the battle screen (the entire-session Roxanne
+        # failure). detect_from_path is a sub-ms CPU pixel pass on the PNG
+        # already captured this turn (no API, no emulator round-trip), so
+        # compute EVERY turn while a battle is even suspected; keep the
+        # 5-turn cadence in the overworld to preserve tuned nav behavior.
+        battle_suspected = bool(gs.in_battle) or prev_battle_menu
         screen_signals = {}
-        if turn % 5 == 0:
+        if battle_suspected or turn % 5 == 0:
             try:
                 facing = last_action if last_action in DIRECTIONS else None
                 screen_signals = sf_mod.detect_from_path(shot, facing=facing)
             except (OSError, ValueError):
                 screen_signals = {}
+        prev_battle_menu = bool(screen_signals.get("battle_menu"))
 
         if advisor is not None and not llm_buttons_queue:
             cur_map_tuple = (gs.map_group, gs.map_num)

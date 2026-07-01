@@ -443,11 +443,35 @@ class MapCache:
         if info is None:
             return set()
         target_key = dest_name.replace("_", "").lower()
-        return {
-            (w["x"], w["y"])
-            for w in info.warps
-            if w["dest_map"].replace("_", "").lower() == target_key
-        }
+        out: set[tuple[int, int]] = set()
+        for w in info.warps:
+            if w["dest_map"].replace("_", "").lower() != target_key:
+                continue
+            wx, wy = w["x"], w["y"]
+            # Interior door warps (Gym/PC/Mart/house entrances) sit on a
+            # tile the collision map marks NON-walkable, so bfs_to_tile can
+            # never reach the warp tile itself and goal routing produces no
+            # direction — the agent then wanders (this was the chronic
+            # Rustboro "east-edge oscillation"). In Emerald you enter such a
+            # door by standing on the tile directly BELOW it and pressing
+            # Up. Return that walkable approach tile as the navigation
+            # target; warp_step_direction() then fires "Up" on arrival.
+            # Edge warps (on a map boundary) and already-walkable warps
+            # (interior stairs/holes) keep the raw tile — BFS can reach it.
+            on_edge = (
+                wx <= 0 or wy <= 0
+                or wx >= info.width - 1 or wy >= info.height - 1
+            )
+            approach = (wx, wy + 1)
+            if (
+                not on_edge
+                and not info.walkable(wx, wy)
+                and info.walkable(*approach)
+            ):
+                out.add(approach)
+            else:
+                out.add((wx, wy))
+        return out
 
     def find_npc_by_script_keyword(
         self, map_g: int, map_n: int, keyword: str,
@@ -493,6 +517,12 @@ class MapCache:
         # without each warp being on a map edge.
         for w in info.warps:
             if w.get("x") == x and w.get("y") == y:
+                return "Up"
+        # Approach case: standing directly BELOW a door warp (the walkable
+        # tile warp_tiles_for now routes to) — step Up into the door to
+        # trigger it.
+        for w in info.warps:
+            if w.get("x") == x and w.get("y") == y - 1:
                 return "Up"
         return None
 

@@ -50,17 +50,23 @@ SB1_BAG_ITEMS = 0x0560           # struct ItemSlot bagPocket_Items[30]
 NUM_FLAG_BYTES = 0x12C           # 300 bytes = 2400 event flags (Emerald)
 
 BATTLE_FLAGS_CANDIDATES = [
+    # 0x02022FEC = US Emerald gBattleTypeFlags (JP 0x02022E90 + US->JP
+    # offset 0x15C, cross-checked against old-branch pokemon_env.py).
+    # 30ed435 (06-24) added it to fix the Roxanne RAM false-negative
+    # (0x020243CC reads 0 during the move-select screen). "36 fix"
+    # (06-29) removed it claiming it "never clears on battle exit" and
+    # caused overworld false-positives. That claim is WRONG: a live read
+    # on 07-01 in the Rustboro overworld (long after many Roxanne
+    # battles) showed 0x02022FEC == 0, i.e. it DOES clear on exit. The
+    # removal was a self-inflicted regression that re-opened the
+    # false-negative; restored here as the primary (first) candidate so
+    # the reliable address wins.
+    0x02022FEC,
+    # Unverified fallbacks (some other battle global): both read 0 during
+    # the Roxanne fight (the original false-negative) and 0 in overworld.
+    # Kept last so the reliable address above is preferred.
     0x020243CC,
     0x020238F0,
-    # 36 fix (06-29): Removed 0x02022FEC from candidates.
-    # Original intent (30ed435, 06-24): catch missed in_battle states
-    # during Roxanne fight where 0x020243CC was 0 (RAM false-negative).
-    # But 0x02022FEC is set ONCE at battle start and NEVER cleared on
-    # exit. Result: stale flag persists indefinitely after the battle
-    # ends, making in_battle=True a false-positive for ALL subsequent
-    # overworld turns (verified 06-29: agent overworld but RAM said
-    # in_battle=True). heur compensates via screen-UI gate, but state
-    # reads to external code (cron, audit) showed wrong in_battle.
 ]
 
 
