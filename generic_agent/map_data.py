@@ -382,27 +382,16 @@ class MapCache:
     # current level — and post-battle dialog often pulls the agent
     # backward, undoing BFS progress. Better to route around.
     _PERMANENT_BLOCKED_TILES: dict[tuple[int, int], set[tuple[int, int]]] = {
-        # Route 104 — Gina (27,15) + Mia (28,15) twin trainers with
-        # downward LOS, plus Haley (31,24) Lass with upward LOS.
-        # iter 270 (06-26) confirmed BFS path through (27-29, 15-18)
-        # gets the agent pulled into Twin battle then back-walked away
-        # from (10,30) Woods warp target.
-        (0, 19): {
-            (27, 15),
-            (27, 16), (27, 17), (27, 18),
-            (28, 15),
-            (28, 16), (28, 17), (28, 18),
-            (31, 24),
-            (30, 24), (29, 24), (28, 24), (27, 24), (26, 24), (25, 24),
-            (21, 25),
-            (21, 22), (21, 23), (21, 24),
-            (21, 26), (21, 27), (21, 28),
-            (18, 25), (19, 25), (20, 25),
-            (22, 25), (23, 25), (24, 25),
-            (11, 44),
-            (11, 41), (11, 42), (11, 43),
-            (12, 44), (13, 44), (14, 44),
-        },
+        # Route 104 — REMOVED (07-01). This was a trainer-LOS avoidance
+        # injection (Gina/Mia twins, Haley, etc.) added when the agent could
+        # not win battles and got back-walked after losing. It also blocked
+        # (21,22-24) — the ONLY walkable passage from the north (Rustboro)
+        # half of Route104 to the (10,30) Petalburg Woods warp — making
+        # Dewford unreachable. Post Stone Badge the agent wins trainer
+        # battles (Part B type-optimal moves + fixed battle handling), so it
+        # should FIGHT through these trainers, not avoid them. Verified:
+        # with this injection gone the Woods warp is reachable from the
+        # Rustboro entrance (742-tile connected region, pure collision).
     }
 
     def permanent_blocked(self, map_g: int, map_n: int) -> set[tuple[int, int]]:
