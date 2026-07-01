@@ -50,14 +50,32 @@ SB1_BAG_ITEMS = 0x0560           # struct ItemSlot bagPocket_Items[30]
 NUM_FLAG_BYTES = 0x12C           # 300 bytes = 2400 event flags (Emerald)
 
 BATTLE_FLAGS_CANDIDATES = [
+    # 0x02022FEC = US Emerald gBattleTypeFlags (JP 0x02022E90 + US->JP
+    # offset 0x15C, cross-checked against old-branch pokemon_env.py).
+    # 30ed435 (06-24) added it to fix the Roxanne RAM false-negative
+    # (0x020243CC reads 0 during the move-select screen); the "36 fix"
+    # (06-29) removed it claiming it never clears; restored 07-01.
+    # NUANCE (verified 07-01): it clears on a NORMAL battle exit but does
+    # NOT clear on a WHITEOUT/loss teardown — it lingers non-zero (0xc)
+    # while walking the overworld afterwards. So this flag alone is NOT a
+    # reliable in_battle signal; _read_battle_flags gates it on gMain's
+    # game-mode callback below.
+    0x02022FEC,
+    # Unverified fallbacks (some other battle global): both read 0 during
+    # the Roxanne fight (the original false-negative) and 0 in overworld.
     0x020243CC,
     0x020238F0,
-    0x02022FEC,  # Trainer-battle flag — confirmed via Roxanne fight on
-                 # 2026-06-23 where bf=0xc (TRAINER 0x8 + WILD_DOUBLE 0x4).
-                 # Missing this address is the 6-day RAM false-negative bug
-                 # that left every in-battle heuristic (catch_seq,
-                 # wild_run_overleveled, battle_menu cursor reset) bypassed.
 ]
+
+# gMain.callback2 (US Emerald) — the game-mode function pointer. It is
+# CB2_Overworld in the field and CB2_BattleMain (etc.) in battle, flipping
+# immediately on battle entry/exit, so it distinguishes "actually in battle
+# now" from "stale gBattleTypeFlags left over after a whiteout". This is the
+# self-clearing signal the old-branch pokemon_env.py used (cb2_overworld).
+GMAIN_CB2_ADDR = 0x030022C4
+# Field/overworld callback2 values where a set gBattleTypeFlags must NOT be
+# read as in-battle. 0x08085E5D = CB2_Overworld (US), live-observed 07-01.
+CB2_OVERWORLD_SET = frozenset({0x08085E5D})
 
 
 BATTLE_TYPE_TRAINER = 0x0008
@@ -75,6 +93,7 @@ class GameState:
     party0_level: int = 0
     party0_hp: int = 0
     party0_max_hp: int = 0
+    party0_species: int = 0  # decrypted species_id (Wingull=278, Grovyle=253, etc)
     party_count: int = 0
     flag_birch_met: bool = False
     flag_starter_received: bool = False
@@ -183,6 +202,17 @@ def _read_battle_flags(client: MGBAClient) -> tuple[bool, int]:
             continue
         if v >= 0x00010000:
             continue
+        # gBattleTypeFlags is set but may be stale (whiteout leaves it non-
+        # zero in the overworld). Confirm we are ACTUALLY in a battle via the
+        # game-mode callback: in the field it is CB2_Overworld; only in a
+        # real battle is it a battle callback. This flips instantly on exit,
+        # unlike the flag, so it kills the post-whiteout false positive.
+        try:
+            cb2 = client.read32(GMAIN_CB2_ADDR)
+        except EmulatorError:
+            cb2 = None
+        if cb2 is not None and cb2 in CB2_OVERWORLD_SET:
+            return False, 0
         return True, v
     return False, 0
 
@@ -230,6 +260,31 @@ def read_state(client: MGBAClient) -> GameState:
     except EmulatorError:
         lv = hp = max_hp = 0
 
+    # Decrypt party0 species (Pokemon Emerald box-pokemon encryption)
+    # See 06-29 audit: agent lead was misidentified as Grovyle for 35+ hours.
+    party0_species_id = 0
+    try:
+        pv = client.read32(PLAYER_PARTY_ADDR + 0x00)
+        otid = client.read32(PLAYER_PARTY_ADDR + 0x04)
+        key = pv ^ otid
+        # Substruct order is determined by personality % 24.
+        perms = [
+            "GAEM", "GAME", "GEAM", "GEMA", "GMAE", "GMEA",
+            "AGEM", "AGME", "AEGM", "AEMG", "AMGE", "AMEG",
+            "EGAM", "EGMA", "EAGM", "EAMG", "EMGA", "EMAG",
+            "MGAE", "MGEA", "MAGE", "MAEG", "MEGA", "MEAG",
+        ]
+        order = perms[pv % 24]
+        g_idx = order.index("G")
+        g_offset = 0x20 + g_idx * 12  # G substruct base
+        enc1 = client.read32(PLAYER_PARTY_ADDR + g_offset)
+        dec1 = enc1 ^ key
+        party0_species_id = dec1 & 0xFFFF
+        if party0_species_id > 1000:
+            party0_species_id = 0
+    except EmulatorError:
+        party0_species_id = 0
+
     party_count = 0
     flag_birch = False
     flag_starter = False
@@ -243,13 +298,32 @@ def read_state(client: MGBAClient) -> GameState:
         party_count = client.read8(ptr + SB1_PLAYER_PARTY_COUNT)
         if party_count > 6:
             party_count = 0
+        # Badges = event flags FLAG_BADGE01_GET (0x867) .. BADGE08 (0x86E).
+        # Previously `badges` stayed hardcoded 0, so badge_count always read
+        # 0 even after earning a badge (Stone Badge won 07-01 but reported
+        # as 0). Count the set badge flags.
+        badges = 0
+        for _bi in range(8):
+            _fn = 0x867 + _bi
+            _fb = client.read8(ptr + SB1_FLAGS_OFFSET + _fn // 8)
+            if (_fb >> (_fn % 8)) & 1:
+                badges += 1
         flag_byte_birch = client.read8(ptr + SB1_FLAGS_OFFSET + (0x52 // 8))
         flag_birch = bool(flag_byte_birch & (1 << (0x52 % 8)))
         flag_byte_starter = client.read8(ptr + SB1_FLAGS_OFFSET + (0x55 // 8))
         flag_starter = bool(flag_byte_starter & (1 << (0x55 % 8)))
         first_item_id = client.read16(ptr + SB1_BAG_ITEMS + 0)
-        first_item_qty = client.read16(ptr + SB1_BAG_ITEMS + 2)
-        if first_item_id > 600:
+        first_item_qty_enc = client.read16(ptr + SB1_BAG_ITEMS + 2)
+        # 35 fix (06-29): Pokemon Emerald bag quantities are XOR-encrypted
+        # with SaveBlock2 security_key bottom 16 bits. Previously displayed
+        # raw encrypted value (61548 / 22819 = noise).
+        try:
+            sb2_ptr_for_key = client.read32(0x03005D90)
+            sec_key = client.read32(sb2_ptr_for_key + 0xAC)
+            first_item_qty = first_item_qty_enc ^ (sec_key & 0xFFFF)
+        except EmulatorError:
+            first_item_qty = first_item_qty_enc
+        if first_item_id > 600 or first_item_qty > 999:
             first_item_id = first_item_qty = 0
         for slot in range(30):
             slot_id = client.read16(ptr + SB1_BAG_ITEMS + slot * 4)
@@ -277,6 +351,13 @@ def read_state(client: MGBAClient) -> GameState:
                     break
         except EmulatorError:
             pass
+    except EmulatorError:
+        pass
+
+    # 34 fix (06-29): Independent try block for flag bytes read.
+    # Previously bundled with bag/party reads — when any earlier read
+    # raised EmulatorError, flag_hex stayed empty silently.
+    try:
         flag_bytes = client.read_range(
             ptr + SB1_FLAGS_OFFSET, NUM_FLAG_BYTES,
         )
@@ -296,6 +377,7 @@ def read_state(client: MGBAClient) -> GameState:
         party0_level=lv,
         party0_hp=hp,
         party0_max_hp=max_hp,
+        party0_species=party0_species_id,
         party_count=party_count,
         flag_birch_met=flag_birch,
         flag_starter_received=flag_starter,
