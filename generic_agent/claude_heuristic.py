@@ -553,26 +553,29 @@ def heuristic_button(
             # in overworld too. Only act when the screen actually shows
             # a battle/menu/dialog UI; otherwise fall through to
             # overworld navigation.
-            in_battle_ui = (
-                screen_signals.get("dialog")
-                or screen_signals.get("menu")
-                or screen_signals.get("battle_menu")
+            # gs.in_battle is now reliable (0x02022FEC clears in the
+            # overworld), so we no longer require a vision UI signal to act.
+            # Crucially, the post-faint "Choose a POKEMON" LIST screen
+            # reports NO signal at all (dialog/menu/battle_menu all False) —
+            # the old in_battle_ui gate therefore skipped this handler and
+            # left the agent pressing overworld-nav buttons at the party
+            # menu forever (the chronic party-select stall). The FIGHT menu
+            # is already handled above, so reaching here means some other
+            # in-battle screen: A advances battle/faint dialogues, and on
+            # the party list Down moves off the fainted lead (slot 0) to a
+            # healthy member, first A opens "Do what? SEND OUT/SUMMARY/
+            # CANCEL" (cursor defaults to SEND OUT), second A confirms.
+            # Self-syncing send-out cycle robust to whichever sub-screen we
+            # land on: A clears a faint/battle dialogue (-> party list), B
+            # backs out of the "Do what" submenu or a SUMMARY screen (-> back
+            # to the list; on the list itself a forced trainer send-out
+            # ignores it), Down moves off the fainted lead to a healthy
+            # member, then A opens "Do what" (cursor on SEND OUT) and A
+            # confirms. Reaching a healthy slot + A + A always sends out.
+            party_seq = ("A", "B", "Down", "A", "A")
+            return party_seq[battle_turn % len(party_seq)], (
+                "trainer:party_walk"
             )
-            if in_battle_ui:
-                # After a faint mid-trainer-battle, the game opens
-                # "Choose a POKEMON." The fainted lead (slot 0) is under
-                # the cursor; Down moves to a healthy member, the first A
-                # opens "Do what with this PKMN? SEND OUT/SUMMARY/CANCEL"
-                # (cursor defaults to SEND OUT), the second A confirms.
-                # DO NOT press B here — B is CANCEL and backs out of the
-                # SEND OUT, which looped forever (the chronic party-select
-                # stall). If a slot is also fainted, A->A->"no energy!"
-                # dialogue returns to the list and the next Down advances.
-                party_seq = ("Down", "A", "A")
-                return party_seq[battle_turn % len(party_seq)], (
-                    "trainer:party_walk"
-                )
-            # Stale trainer flag in overworld — drop through to nav.
         # SAME GUARD for wild-battle path: gs.in_battle from the stale
         # 0x02022FEC flag stays True after a battle ends. Without this
         # gate the wild_fight_safe / wild_catch_try / wild_run branches
