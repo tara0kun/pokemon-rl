@@ -55,6 +55,20 @@ GRASS_BEHAVIORS = {0x02, 0x03, 0x07, 0x09}
 # Retain old name for compatibility; new code uses behavior path below.
 GRASS_METATILES: set[int] = set()
 
+# Deep-water behaviors (pokeemerald metatile_behaviors.h) that are IMPASSABLE
+# on foot — you need Surf. The overworld collision layer alone marks these
+# tiles "walkable", so without this the BFS routes straight through ponds/sea
+# and the agent walks into water and freezes (chronic Route104 pond stall).
+# 0x16 PUDDLE / 0x17 SHALLOW_WATER / 0x1B SHOAL_EDGE stay walkable (shore).
+WATER_BEHAVIORS = {
+    0x10,  # MB_POND_WATER
+    0x11,  # MB_INTERIOR_DEEP_WATER
+    0x12,  # MB_DEEP_WATER
+    0x13,  # MB_WATERFALL
+    0x14,  # MB_SOOTOPOLIS_DEEP_WATER
+    0x15,  # MB_OCEAN_WATER
+}
+
 # Ledge JUMP behavior IDs from pokeemerald metatile_behaviors.h, mapped
 # to (dx, dy) direction the agent jumps when stepping onto the tile.
 # Ledges are 1-way edges: stepping onto a JUMP tile from the OPPOSITE
@@ -105,6 +119,7 @@ class MapKnowledge:
     width: int = 0
     height: int = 0
     grass_tiles: set[tuple[int, int]] = field(default_factory=set)
+    water_tiles: set[tuple[int, int]] = field(default_factory=set)
     trainer_los: set[tuple[int, int]] = field(default_factory=set)
     tile_elevation: dict[tuple[int, int], int] = field(default_factory=dict)
     # ledge_jumps: {(x,y): (dx,dy)} = JUMP behavior tiles, 1-way edge
@@ -147,6 +162,7 @@ class MapKnowledge:
             "width": self.width,
             "height": self.height,
             "grass_tiles": sorted(list(self.grass_tiles)),
+            "water_tiles": sorted(list(self.water_tiles)),
             "trainer_los": sorted(list(self.trainer_los)),
             "tile_elevation": {
                 f"{x},{y}": e for (x, y), e in self.tile_elevation.items()
@@ -172,6 +188,7 @@ class MapKnowledge:
             height=data.get("height", 0),
         )
         mk.grass_tiles = {tuple(t) for t in data.get("grass_tiles", [])}
+        mk.water_tiles = {tuple(t) for t in data.get("water_tiles", [])}
         mk.trainer_los = {tuple(t) for t in data.get("trainer_los", [])}
         mk.tile_elevation = {
             tuple(map(int, k.split(","))): v
@@ -266,6 +283,21 @@ class MapKnowledgeStore:
                 )[0] & 0xFF
         except OSError:
             pass
+        # Secondary tileset metatiles are indexed 0x200.. (meta - 0x200 into
+        # the secondary attr table). Needed to classify water/grass that the
+        # primary table (0..0x1FF) doesn't cover — e.g. Route104 pond edges.
+        # NOTE: only maps using this secondary tileset are correct; with a
+        # single secondary_*.bin extracted (rustboro cluster) this is fine.
+        try:
+            cache_dir = config.MEMORY_DIR / "map_cache"
+            for sec in sorted(cache_dir.glob("secondary_*_attr.bin")):
+                sd = sec.read_bytes()
+                for i in range(len(sd) // 2):
+                    cache[0x200 + i] = struct.unpack_from(
+                        "<H", sd, i * 2,
+                    )[0] & 0xFF
+        except OSError:
+            pass
         self._beh_cache = cache
         return cache
 
@@ -305,6 +337,8 @@ class MapKnowledgeStore:
                         beh = beh_table.get(meta)
                         if beh in GRASS_BEHAVIORS:
                             mk.grass_tiles.add((x, y))
+                        if beh in WATER_BEHAVIORS:
+                            mk.water_tiles.add((x, y))
                         if beh in LEDGE_JUMP_BEHAVIORS:
                             mk.ledge_jumps[(x, y)] = (
                                 LEDGE_JUMP_BEHAVIORS[beh]

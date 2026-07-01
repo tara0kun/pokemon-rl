@@ -416,6 +416,13 @@ def heuristic_button(
                         knowledge_trainer = set()
                         knowledge_elev = {}
                         knowledge_ledges = {}
+                    # NOTE: water_tiles are detected (map_knowledge) but NOT
+                    # hard-blocked here — on Route104 the map.bin behavior
+                    # layer marks bridge/crossing tiles the same as the pond
+                    # underneath, so blocking all water disconnects the walk-
+                    # able crossings and strands the agent. Water is learned
+                    # empirically instead until bridge/elevation-aware water
+                    # blocking exists.
                     bfs_blocked = (
                         npc_tiles | empirical_blocked
                         | perm_blocked | knowledge_trainer
