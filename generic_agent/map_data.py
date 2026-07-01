@@ -499,14 +499,16 @@ class MapCache:
             return "Left"
         if x >= info.width - 1:
             return "Right"
-        # Interior door warp (e.g. building entrance from city outdoor).
-        # In Pokemon Emerald, buildings are entered by walking Up onto the
-        # door tile. If the current (x,y) is in the warps list, default
-        # to Up — covers Rustboro Gym (27,19), Pokemon Center, Mart, etc.
-        # without each warp being on a map edge.
+        # Interior warp not on a map edge. Two common kinds:
+        #  - building door (Gym/PC/Mart): entered by walking UP onto it, and
+        #    such doors sit in the TOP part of an outdoor map.
+        #  - forest/route south exit (e.g. Petalburg Woods (16,38)): you leave
+        #    by continuing DOWN, and it sits in the BOTTOM part of the map.
+        # Pick the exit direction by whichever of the top/bottom edges the
+        # warp is nearer to (Down if past the vertical midpoint, else Up).
         for w in info.warps:
             if w.get("x") == x and w.get("y") == y:
-                return "Up"
+                return "Down" if y * 2 > info.height else "Up"
         # Approach case: standing directly BELOW a door warp (the walkable
         # tile warp_tiles_for now routes to) — step Up into the door to
         # trigger it.
