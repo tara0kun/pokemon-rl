@@ -41,6 +41,7 @@ from collections import deque
 from pathlib import Path
 
 from . import (
+    battle_moves as battle_moves_mod,
     config,
     curriculum as curr_mod,
     goals as goals_mod,
@@ -559,17 +560,15 @@ def heuristic_button(
             )
             if in_battle_ui:
                 # After a faint mid-trainer-battle, the game opens
-                # "Choose a POKEMON." party menu. battle_menu screen
-                # detection is False there, but `menu` is True. A alone
-                # would confirm the just-fainted slot → "X has no energy
-                # left to battle!" → menu reopens, looping forever.
-                # Interleave Down nudges so the cursor walks toward the
-                # bottom of the party (alive Pokemon are typically the
-                # latest catches), with A presses to confirm SEND OUT
-                # once a healthy slot is reached.
-                party_seq = (
-                    "Down", "A", "A", "B", "Down", "A", "A", "B"
-                )
+                # "Choose a POKEMON." The fainted lead (slot 0) is under
+                # the cursor; Down moves to a healthy member, the first A
+                # opens "Do what with this PKMN? SEND OUT/SUMMARY/CANCEL"
+                # (cursor defaults to SEND OUT), the second A confirms.
+                # DO NOT press B here — B is CANCEL and backs out of the
+                # SEND OUT, which looped forever (the chronic party-select
+                # stall). If a slot is also fainted, A->A->"no energy!"
+                # dialogue returns to the list and the next Down advances.
+                party_seq = ("Down", "A", "A")
                 return party_seq[battle_turn % len(party_seq)], (
                     "trainer:party_walk"
                 )
@@ -889,6 +888,7 @@ def run(
     force_explore_until_turn = 0
     catch_phase_remaining = 0
     catch_seq_queue: list[str] = []
+    battle_move_queue: list[str] = []
     rs = reward_state_mod.RewardState()
     rs.load()
     checkpoint_target: tuple[int, int, int, int] | None = None
@@ -1107,7 +1107,32 @@ def run(
 
         cur_goal = goals_mod.current_goal(gs) if gs.saveblock1_valid else None
 
-        if catch_seq_queue:
+        # Part B — trainer-battle move selection. At the FIGHT menu, read the
+        # party leader's moves (power+type from ROM) and the opponent's types
+        # (from gBattleMons), pick the highest power x effectiveness DAMAGING
+        # move, and queue the cursor navigation to that slot. The button queue
+        # survives sub-screen transitions (FIGHT menu -> move submenu). Wild
+        # battles keep their catch/run logic (this is trainer-only).
+        if (
+            not battle_move_queue
+            and gs.in_battle
+            and gs.is_trainer_battle
+            and screen_signals.get("battle_menu")
+        ):
+            try:
+                best_slot = battle_moves_mod.best_move_index(client)
+            except (OSError, RuntimeError, EmulatorError):
+                best_slot = -1
+            if best_slot >= 0:
+                battle_move_queue = list(
+                    battle_moves_mod.move_select_sequence(best_slot)
+                )
+
+        if battle_move_queue:
+            button = battle_move_queue.pop(0)
+            src = f"battle_move:{button}@rem{len(battle_move_queue)}"
+            decisions["battle_move"] = decisions.get("battle_move", 0) + 1
+        elif catch_seq_queue:
             button = catch_seq_queue.pop(0)
             src = f"catch_seq_followup:{button}@rem{len(catch_seq_queue)}"
             decisions["catch_seq_followup"] = (
