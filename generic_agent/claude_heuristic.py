@@ -412,20 +412,27 @@ def heuristic_button(
                         knowledge_trainer = mk.trainer_los
                         knowledge_elev = mk.tile_elevation
                         knowledge_ledges = mk.ledge_jumps
+                        knowledge_water = mk.water_tiles
                     except Exception:
                         knowledge_trainer = set()
                         knowledge_elev = {}
                         knowledge_ledges = {}
-                    # NOTE: water_tiles are detected (map_knowledge) but NOT
-                    # hard-blocked here — on Route104 the map.bin behavior
-                    # layer marks bridge/crossing tiles the same as the pond
-                    # underneath, so blocking all water disconnects the walk-
-                    # able crossings and strands the agent. Water is learned
-                    # empirically instead until bridge/elevation-aware water
-                    # blocking exists.
+                        knowledge_water = set()
+                    # Deep water is walkable in the raw collision layer but
+                    # impassable on foot (no Surf) — block it so BFS routes
+                    # over the bridges instead of straight through the pond
+                    # (the Route104 stall: BFS said "Down" into the pond,
+                    # the agent couldn't move, and oscillated).
+                    # trainer_los is NOT blocked: post Stone Badge the agent
+                    # WINS trainer battles (Part B), and on Route104 the only
+                    # water-safe path south passes through the Gina/Mia twins'
+                    # line of sight — avoiding it left the Woods unreachable
+                    # (198 tiles, ymax=16). With water blocked and trainer_los
+                    # NOT blocked the Woods warp is reachable (477 tiles,
+                    # ymax=30). So walk into the LOS, fight, and continue.
                     bfs_blocked = (
                         npc_tiles | empirical_blocked
-                        | perm_blocked | knowledge_trainer
+                        | perm_blocked | knowledge_water
                     )
                     bfs_path = mc.bfs_to_tile(
                         gs.map_group, gs.map_num,
