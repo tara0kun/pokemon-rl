@@ -38,6 +38,7 @@ _GOAL_ORDER_WEIGHT = {
     "reach_petalburg": 50,
     "reach_rustboro_gym": 60,
     "enter_rustboro_gym": 65,
+    "rescue_peeko": 64,
     "dewford_to_woods": 66,
     "dewford_woods_south": 67,
     "dewford_to_briney": 68,
@@ -244,6 +245,19 @@ GOAL_TABLE: list[Goal] = [
         target_pos=(2, 11),
         condition="no_badge",
         desc="(deprecated 37 fix) Wingull Lv 21 で grind 不要だが fallback として保持",
+    ),
+    # --- Peeko rescue (unlocks Mr.Briney's sail to Dewford) ---
+    # Mr.Briney is hidden in his house (FLAG_HIDE_BRINEYS_HOUSE_MR_BRINEY)
+    # until you rescue his Wingull "Peeko" from a Team Aqua grunt in Rusturf
+    # Tunnel. Beat the grunt at (14,5) -> Peeko freed -> Briney goes home ->
+    # sail available. Normal visited-map suppression retires this goal once
+    # the agent has been to Rusturf and left, so the Dewford chain resumes.
+    Goal(
+        name="rescue_peeko",
+        target_map=(24, 4),      # RusturfTunnel
+        target_pos=(14, 5),      # Aqua Grunt (Peeko at 14,4) — battle to free
+        condition="badge>=1",
+        desc="Peeko 救出: Rusturf Tunnel の Aqua grunt (14,5) 撃退 -> Mr.Briney 帰宅 -> sail 解禁",
     ),
     # --- Dewford journey (post Stone Badge) ---
     # Route104 north and the Mr.Briney beach (south) are the SAME map but not
