@@ -38,6 +38,8 @@ _GOAL_ORDER_WEIGHT = {
     "reach_petalburg": 50,
     "reach_rustboro_gym": 60,
     "enter_rustboro_gym": 65,
+    "peeko_r104_to_woods": 61,
+    "peeko_woods_north": 62,
     "rescue_peeko": 64,
     "dewford_to_woods": 66,
     "dewford_woods_south": 67,
@@ -56,6 +58,7 @@ _GOAL_BYPASS_VISITED = {
     # the same map id), so visited-map suppression must not disable them.
     "dewford_to_woods", "dewford_woods_south",
     "dewford_to_briney", "dewford_sail",
+    "peeko_r104_to_woods", "peeko_woods_north",
 }
 
 
@@ -172,14 +175,38 @@ class Goal:
         # via Petalburg Woods (24,11). So the goal chain is position-aware:
         # north Route104 -> Woods -> south Route104 -> Briney's house -> sail.
         cur = (gs.map_group, gs.map_num)
+        # Peeko rescue must happen BEFORE the sail is possible. We proxy
+        # "Peeko rescued" by "has visited Rusturf Tunnel (24,4)" — the agent
+        # only goes there to beat the grunt. Before that, the Route104 woods
+        # crossing must run NORTHWARD (beach -> Rustboro, to reach Rusturf);
+        # after it, SOUTHWARD (the Dewford journey). Same disconnect, opposite
+        # direction, so gate the two journeys on peeko_done to avoid conflict.
+        peeko_done = (24, 4) in _load_visited_maps()
+        # Northward crossing (only while Peeko not yet rescued):
+        if c == "peeko_r104_south":
+            return (
+                gs.badge_count >= 1 and cur == (0, 19)
+                and gs.y >= 34 and not peeko_done
+            )
+        if c == "peeko_in_woods":
+            return (
+                gs.badge_count >= 1 and cur == (24, 11) and not peeko_done
+            )
+        # Dewford journey (southward) — only AFTER Peeko rescued:
         if c == "dewford_route104_north":
-            return gs.badge_count >= 1 and cur == (0, 19) and gs.y < 34
+            return (
+                gs.badge_count >= 1 and cur == (0, 19)
+                and gs.y < 34 and peeko_done
+            )
         if c == "dewford_in_woods":
-            return gs.badge_count >= 1 and cur == (24, 11)
+            return gs.badge_count >= 1 and cur == (24, 11) and peeko_done
         if c == "dewford_route104_south":
-            return gs.badge_count >= 1 and cur == (0, 19) and gs.y >= 34
+            return (
+                gs.badge_count >= 1 and cur == (0, 19)
+                and gs.y >= 34 and peeko_done
+            )
         if c == "dewford_in_briney_house":
-            return gs.badge_count >= 1 and cur == (17, 0)
+            return gs.badge_count >= 1 and cur == (17, 0) and peeko_done
         return False
 
 
@@ -247,6 +274,23 @@ GOAL_TABLE: list[Goal] = [
         desc="(deprecated 37 fix) Wingull Lv 21 で grind 不要だが fallback として保持",
     ),
     # --- Peeko rescue (unlocks Mr.Briney's sail to Dewford) ---
+    # Reaching Rusturf Tunnel needs the beach (south Route104) -> Rustboro
+    # (north) crossing, which goes through Petalburg Woods NORTHWARD. These
+    # two goals run only until Peeko is rescued (Rusturf visited), then the
+    # Dewford chain takes over southward.
+    Goal(
+        name="peeko_r104_to_woods",
+        target_map=(24, 11),     # PetalburgWoods (enter from the south)
+        condition="peeko_r104_south",
+        desc="Peeko journey: Route104 南浜 → Petalburg Woods に入り北上",
+    ),
+    Goal(
+        name="peeko_woods_north",
+        target_map=(24, 11),
+        target_pos=(14, 5),      # north exit warp -> Route104 north (Rustboro side)
+        condition="peeko_in_woods",
+        desc="Petalburg Woods を北上し北口 (14,5) から Route104 北へ",
+    ),
     # Mr.Briney is hidden in his house (FLAG_HIDE_BRINEYS_HOUSE_MR_BRINEY)
     # until you rescue his Wingull "Peeko" from a Team Aqua grunt in Rusturf
     # Tunnel. Beat the grunt at (14,5) -> Peeko freed -> Briney goes home ->
