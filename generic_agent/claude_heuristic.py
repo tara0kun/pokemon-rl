@@ -33,6 +33,7 @@ Run:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import random
 import sys
@@ -1212,6 +1213,25 @@ def run(
             catch_phase_remaining = len(catch_seq_queue)
         key = src.split(":")[0]
         decisions[key] = decisions.get(key, 0) + 1
+        # Per-turn decision trace. The 100-turn stdout summary hides WHY the
+        # agent moved (goal/src per step), which made the Route116 turn-around
+        # undiagnosable from logs alone. Grep-able, one JSON object per line.
+        try:
+            with open(
+                config.LOG_DIR / f"decisions_{session_id}.jsonl",
+                "a", encoding="utf-8",
+            ) as _df:
+                _df.write(json.dumps({
+                    "turn": turn,
+                    "map": [gs.map_group, gs.map_num],
+                    "pos": [gs.x, gs.y],
+                    "goal": cur_goal.name if cur_goal else None,
+                    "button": button,
+                    "src": src,
+                    "inb": bool(gs.in_battle),
+                }) + "\n")
+        except OSError:
+            pass
         history_buttons.append(button)
         if len(history_buttons) > 20:
             history_buttons.pop(0)

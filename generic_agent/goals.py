@@ -41,6 +41,7 @@ _GOAL_ORDER_WEIGHT = {
     "peeko_r104_to_woods": 61,
     "peeko_woods_north": 62,
     "rescue_peeko": 64,
+    "peeko_return": 65,
     "dewford_to_woods": 66,
     "dewford_woods_south": 67,
     "dewford_to_briney": 68,
@@ -59,6 +60,9 @@ _GOAL_BYPASS_VISITED = {
     "dewford_to_woods", "dewford_woods_south",
     "dewford_to_briney", "dewford_sail",
     "peeko_r104_to_woods", "peeko_woods_north",
+    # rescue_peeko: the tunnel gets marked visited the moment we enter it,
+    # mid-quest. peeko_return: Route104 is long-visited by definition.
+    "rescue_peeko", "peeko_return",
 }
 
 
@@ -184,6 +188,21 @@ class Goal:
         # the Route104 woods crossing runs NORTHWARD (beach -> Rustboro);
         # after it, SOUTHWARD (the Dewford journey).
         peeko_done = bool(getattr(gs, "flag_devon_goods_recovered", False))
+        # rescue_peeko itself: active until the grunt is actually beaten.
+        # (Was condition="badge>=1", which kept targeting the grunt's tile
+        # forever after the rescue — the goal never released the agent.)
+        if c == "peeko_not_rescued":
+            return gs.badge_count >= 1 and not peeko_done
+        # Return journey after the rescue: tunnel -> Route116 -> Rustboro
+        # -> Route104 north. Without this, reach_dewford_gym (target Dewford
+        # (0,11), unreachable by land) wins on these maps and the planner
+        # has no path — the agent would wander. One goal suffices: the
+        # multi-map planner routes the hops to Route104 (0,19).
+        if c == "peeko_return":
+            return (
+                gs.badge_count >= 1 and peeko_done
+                and cur in {(24, 4), (0, 31), (0, 3)}
+            )
         # Northward crossing (only while Peeko not yet rescued):
         if c == "peeko_r104_south":
             return (
@@ -302,8 +321,14 @@ GOAL_TABLE: list[Goal] = [
         name="rescue_peeko",
         target_map=(24, 4),      # RusturfTunnel
         target_pos=(14, 5),      # Aqua Grunt (Peeko at 14,4) — battle to free
-        condition="badge>=1",
+        condition="peeko_not_rescued",
         desc="Peeko 救出: Rusturf Tunnel の Aqua grunt (14,5) 撃退 -> Mr.Briney 帰宅 -> sail 解禁",
+    ),
+    Goal(
+        name="peeko_return",
+        target_map=(0, 19),      # Route104 north — start of the Dewford chain
+        condition="peeko_return",
+        desc="救出後の帰路: Rusturf/Route116/Rustboro -> Route104 北 (以降 dewford chain)",
     ),
     # --- Dewford journey (post Stone Badge) ---
     # Route104 north and the Mr.Briney beach (south) are the SAME map but not
