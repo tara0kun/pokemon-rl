@@ -175,13 +175,15 @@ class Goal:
         # via Petalburg Woods (24,11). So the goal chain is position-aware:
         # north Route104 -> Woods -> south Route104 -> Briney's house -> sail.
         cur = (gs.map_group, gs.map_num)
-        # Peeko rescue must happen BEFORE the sail is possible. We proxy
-        # "Peeko rescued" by "has visited Rusturf Tunnel (24,4)" — the agent
-        # only goes there to beat the grunt. Before that, the Route104 woods
-        # crossing must run NORTHWARD (beach -> Rustboro, to reach Rusturf);
-        # after it, SOUTHWARD (the Dewford journey). Same disconnect, opposite
-        # direction, so gate the two journeys on peeko_done to avoid conflict.
-        peeko_done = (24, 4) in _load_visited_maps()
+        # Peeko rescue must happen BEFORE the sail is possible. The old
+        # proxy "visited Rusturf Tunnel (24,4)" flipped the journey the
+        # moment the agent ENTERED the tunnel — before the grunt battle —
+        # so it would turn around and leave Peeko behind. Use the real
+        # story gate instead: FLAG_RECOVERED_DEVON_GOODS (0x8F), set by
+        # RusturfTunnel scripts only after the grunt is beaten. Before it,
+        # the Route104 woods crossing runs NORTHWARD (beach -> Rustboro);
+        # after it, SOUTHWARD (the Dewford journey).
+        peeko_done = bool(getattr(gs, "flag_devon_goods_recovered", False))
         # Northward crossing (only while Peeko not yet rescued):
         if c == "peeko_r104_south":
             return (

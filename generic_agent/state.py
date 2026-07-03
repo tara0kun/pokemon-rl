@@ -97,6 +97,10 @@ class GameState:
     party_count: int = 0
     flag_birch_met: bool = False
     flag_starter_received: bool = False
+    # FLAG_RECOVERED_DEVON_GOODS (0x8F): set by RusturfTunnel scripts.inc
+    # after beating the Aqua grunt (Peeko rescued, Devon Goods returned).
+    # This is the story gate for Mr.Briney's sail to Dewford.
+    flag_devon_goods_recovered: bool = False
     bag_pokeball_count: int = 0
     bag_first_item_id: int = 0
     bag_first_item_qty: int = 0
@@ -288,6 +292,7 @@ def read_state(client: MGBAClient) -> GameState:
     party_count = 0
     flag_birch = False
     flag_starter = False
+    flag_devon = False
     pokeballs = 0
     first_item_id = 0
     first_item_qty = 0
@@ -312,6 +317,8 @@ def read_state(client: MGBAClient) -> GameState:
         flag_birch = bool(flag_byte_birch & (1 << (0x52 % 8)))
         flag_byte_starter = client.read8(ptr + SB1_FLAGS_OFFSET + (0x55 // 8))
         flag_starter = bool(flag_byte_starter & (1 << (0x55 % 8)))
+        flag_byte_devon = client.read8(ptr + SB1_FLAGS_OFFSET + (0x8F // 8))
+        flag_devon = bool(flag_byte_devon & (1 << (0x8F % 8)))
         first_item_id = client.read16(ptr + SB1_BAG_ITEMS + 0)
         first_item_qty_enc = client.read16(ptr + SB1_BAG_ITEMS + 2)
         # 35 fix (06-29): Pokemon Emerald bag quantities are XOR-encrypted
@@ -381,6 +388,7 @@ def read_state(client: MGBAClient) -> GameState:
         party_count=party_count,
         flag_birch_met=flag_birch,
         flag_starter_received=flag_starter,
+        flag_devon_goods_recovered=flag_devon,
         bag_pokeball_count=pokeballs,
         bag_first_item_id=first_item_id,
         bag_first_item_qty=first_item_qty,
