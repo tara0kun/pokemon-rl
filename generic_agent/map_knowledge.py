@@ -75,14 +75,14 @@ WATER_BEHAVIORS = {
 # direction lands the agent on (x+dx, y+dy) regardless of the next
 # tile's elevation.
 LEDGE_JUMP_BEHAVIORS = {
-    0x39: (1, 0),    # JUMP_EAST
-    0x3A: (-1, 0),   # JUMP_WEST
-    0x3B: (0, -1),   # JUMP_NORTH
-    0x3C: (0, 1),    # JUMP_SOUTH
-    0x3D: (1, -1),   # JUMP_NORTHEAST
-    0x3E: (-1, -1),  # JUMP_NORTHWEST
-    0x3F: (1, 1),    # JUMP_SOUTHEAST
-    0x40: (-1, 1),   # JUMP_SOUTHWEST
+    0x38: (1, 0),    # JUMP_EAST
+    0x39: (-1, 0),   # JUMP_WEST
+    0x3A: (0, -1),   # JUMP_NORTH
+    0x3B: (0, 1),    # JUMP_SOUTH
+    0x3C: (1, -1),   # JUMP_NORTHEAST
+    0x3D: (-1, -1),  # JUMP_NORTHWEST
+    0x3E: (1, 1),    # JUMP_SOUTHEAST
+    0x3F: (-1, 1),   # JUMP_SOUTHWEST
 }
 
 # LOS direction deltas. trainer_los expansion walks `sight` cells in

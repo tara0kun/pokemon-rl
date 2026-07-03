@@ -266,7 +266,7 @@ def heuristic_button(
     # without this the hijack fires and overrides the now-routable woods path.
     directed_goal = (
         current_goal is not None
-        and current_goal.name.startswith("dewford")
+        and current_goal.name.startswith(("dewford", "peeko", "rescue_peeko"))
     )
     if (
         same_map_streak >= 200
