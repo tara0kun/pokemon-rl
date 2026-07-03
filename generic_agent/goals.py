@@ -27,6 +27,25 @@ from . import config
 
 GOALS_FILE = config.MEMORY_DIR / "goal_notes.jsonl"
 VISITED_MAPS_FILE = config.MEMORY_DIR / "visited_maps.json"
+# Emerald's SaveBlock1 is DMA-relocated every frame; reading a story flag
+# mid-relocation (common during battle) intermittently returns 0. Since
+# FLAG_RECOVERED_DEVON_GOODS never legitimately clears, latch it to disk on
+# first True read so the goal chain can't flicker rescue_peeko <-> peeko_return.
+PEEKO_DONE_MARKER = config.MEMORY_DIR / "peeko_done.marker"
+
+
+def _peeko_done(gs) -> bool:
+    """Monotonic 'Peeko rescued' signal, immune to the SaveBlock1 flag flicker."""
+    if PEEKO_DONE_MARKER.exists():
+        return True
+    if bool(getattr(gs, "flag_devon_goods_recovered", False)):
+        try:
+            PEEKO_DONE_MARKER.parent.mkdir(parents=True, exist_ok=True)
+            PEEKO_DONE_MARKER.write_text("1", encoding="utf-8")
+        except OSError:
+            pass
+        return True
+    return False
 
 
 _GOAL_ORDER_WEIGHT = {
@@ -187,7 +206,7 @@ class Goal:
         # RusturfTunnel scripts only after the grunt is beaten. Before it,
         # the Route104 woods crossing runs NORTHWARD (beach -> Rustboro);
         # after it, SOUTHWARD (the Dewford journey).
-        peeko_done = bool(getattr(gs, "flag_devon_goods_recovered", False))
+        peeko_done = _peeko_done(gs)
         # rescue_peeko itself: active until the grunt is actually beaten.
         # (Was condition="badge>=1", which kept targeting the grunt's tile
         # forever after the rescue — the goal never released the agent.)
