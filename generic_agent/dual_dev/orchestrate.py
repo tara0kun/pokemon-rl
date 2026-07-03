@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import os
 import subprocess
 import sys
 import time
@@ -56,6 +57,94 @@ def _load_state(run_id: str) -> dict[str, Any]:
 
 def _new_run_id() -> str:
     return "run_" + dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def _pid_alive(pid: Any) -> bool:
+    """Best-effort liveness check for an orchestrate process id.
+
+    On Windows, os.kill(pid, 0) routes to TerminateProcess and would KILL the
+    target — never use it here. Query tasklist and confirm the pid is still a
+    python image (guards against pid recycling to an unrelated program). When
+    we genuinely can't tell, return True so a live run is never reaped.
+    """
+    if not pid:
+        return False
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if sys.platform.startswith("win"):
+        # tasklist output is locale-encoded (cp932 on JP Windows) and crashes
+        # subprocess's UTF-8 reader thread; use the Win32 API directly instead.
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            kernel32.OpenProcess.restype = ctypes.c_void_p
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            STILL_ACTIVE = 259
+            handle = kernel32.OpenProcess(
+                PROCESS_QUERY_LIMITED_INFORMATION, False, pid,
+            )
+            if not handle:
+                return False  # no such process
+            try:
+                code = ctypes.c_ulong()
+                if kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                    return code.value == STILL_ACTIVE
+                return True
+            finally:
+                kernel32.CloseHandle(handle)
+        except Exception:
+            return True  # can't tell — assume alive, don't reap
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _reap_stale_runs() -> list[str]:
+    """Abort any run left 'running'/'initialized' whose orchestrate process is
+    gone (e.g. killed by a broad `Stop-Process python` sweep). Without this a
+    dead design phase pins the run-state and the Codex side waits forever."""
+    reaped: list[str] = []
+    for rp in sorted(config.RUN_DIR.glob("run_*.json")):
+        try:
+            st = json.loads(rp.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if st.get("status") not in {"running", "initialized"}:
+            continue
+        if _pid_alive(st.get("pid")):
+            continue
+        st["status"] = "aborted"
+        st["current_phase"] = "idle"
+        st["updated_at"] = _now()
+        st["aborted_reason"] = (
+            "stale run reaped: orchestrate process not alive"
+        )
+        rp.write_text(
+            json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8",
+        )
+        ts = _stamp()
+        cyc = int(st.get("next_cycle", 1))
+        ho = {
+            "task": st.get("task", ""), "cycle": cyc, "timestamp": ts,
+            "run_id": st.get("run_id"), "completed": False,
+            "aborted": "orchestrate process died (reaped at startup)",
+        }
+        try:
+            (config.HANDOFF_DIR / f"{ts}_cycle{cyc}_aborted.json").write_text(
+                json.dumps(ho, ensure_ascii=False, indent=2), encoding="utf-8",
+            )
+        except OSError:
+            pass
+        reaped.append(st.get("run_id", rp.stem))
+    return reaped
 
 
 def _design_prompt(task: str, allowed_paths: list[str]) -> str:
@@ -415,6 +504,9 @@ def _read_task(args: argparse.Namespace) -> str:
 def _init_or_resume_state(args: argparse.Namespace) -> dict[str, Any]:
     if args.resume:
         state = _load_state(args.resume)
+        # Claim the run for THIS process so the stale-run reaper (which checks
+        # pid liveness) doesn't later mistake a live resume for a dead run.
+        state["pid"] = os.getpid()
         print(f"[resume] loaded run {state['run_id']} status={state.get('status')} next_cycle={state.get('next_cycle')}")
         return state
 
@@ -423,6 +515,7 @@ def _init_or_resume_state(args: argparse.Namespace) -> dict[str, Any]:
         "run_id": run_id,
         "created_at": _now(),
         "updated_at": _now(),
+        "pid": os.getpid(),
         "status": "initialized",
         "task": _read_task(args),
         "allowed_paths": list(args.allow_path),
@@ -458,9 +551,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--commit", action="store_true", help="Commit only if gates and review pass")
     parser.add_argument("--no-apply", action="store_true", help="Run Claude design only")
     parser.add_argument("--continue-on-fail", action="store_true", help="Do not stop after a failed gate/review")
+    parser.add_argument("--reap-stale", action="store_true", help="Abort dead 'running' runs and exit (unblocks a stuck Codex)")
     args = parser.parse_args(argv)
 
     config.ensure_dirs()
+    # Always reap first: a run whose orchestrate was killed mid-design leaves
+    # status=running, which the Codex side reads as "Claude still designing".
+    reaped = _reap_stale_runs()
+    if reaped:
+        print(f"[reap] cleared {len(reaped)} stale run(s): {reaped}")
+    if args.reap_stale:
+        return 0
     state = _init_or_resume_state(args)
     task = state["task"]
     allowed_paths = list(state.get("allowed_paths", []))
