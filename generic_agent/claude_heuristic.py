@@ -63,7 +63,13 @@ DIRECTIONS = ("Up", "Right", "Down", "Left")
 NORTH_BIAS_ORDER = ("Up", "Right", "Left", "Down")
 SOUTH_BIAS_ORDER = ("Down", "Left", "Right", "Up")  # indoor maps: exit is south
 INDOOR_TILE_THRESHOLD = 30  # heuristic for "indoor" maps
-RUN_CYCLE = ("A", "A", "Down", "Right", "A", "A", "A")
+# Self-correcting RUN sequence. The old cycle ("A","A",Down,Right,"A"...)
+# had no B: one phase desync (a dialog eating the Down) landed the A's on
+# POKEMON and the agent then navigated the in-battle party list forever
+# (observed 40+ turns at Route116 (30,13)). Leading B backs out of any
+# accidentally-opened submenu (party/bag/summary) and also advances battle
+# text, so wherever the cycle lands it re-converges on the RUN corner.
+RUN_CYCLE = ("B", "A", "Down", "Right", "A", "A")
 
 
 def take_screenshot(client: MGBAClient, session_id: str, turn: int) -> Path:
