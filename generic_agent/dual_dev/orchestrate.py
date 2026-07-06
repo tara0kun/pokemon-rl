@@ -569,6 +569,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--reap-stale", action="store_true", help="Abort dead 'running' runs and exit (unblocks a stuck Codex)")
     parser.add_argument("--enqueue", metavar="TASK", help="Add TASK (with --allow-path) to the backlog and exit")
     parser.add_argument("--from-queue", action="store_true", help="Pull one task per cycle from the backlog instead of --task")
+    parser.add_argument("--generate-tasks", type=int, metavar="N", default=0, help="Auto-generate N backlog tasks via Claude and exit (Codex-free)")
+    parser.add_argument("--auto-refill", type=int, metavar="K", default=0, help="In --from-queue: when pending < K, auto-generate more (keeps 24/7 fed)")
     args = parser.parse_args(argv)
 
     config.ensure_dirs()
@@ -583,6 +585,10 @@ def main(argv: list[str] | None = None) -> int:
         tq = TaskQueue()
         tid = tq.add(args.enqueue, list(args.allow_path), created_at=_now())
         print(f"[queue] added task#{tid}; backlog now {tq.counts()}")
+        return 0
+    if args.generate_tasks > 0:
+        from .task_gen import generate_tasks
+        generate_tasks(args.generate_tasks, now=_now())
         return 0
     state = _init_or_resume_state(args)
     task = state["task"]
@@ -634,6 +640,10 @@ def main(argv: list[str] | None = None) -> int:
 
         cur_task, cur_allowed, queue_tid = task, allowed_paths, None
         if args.from_queue:
+            # Keep 24/7 fed: top up the backlog when it runs low (Codex-free).
+            if args.auto_refill > 0 and tq.counts().get("pending", 0) < args.auto_refill:
+                from .task_gen import generate_tasks
+                generate_tasks(args.auto_refill, now=_now())
             qt = tq.next_pending()
             if qt is None:
                 state["status"] = "completed"
