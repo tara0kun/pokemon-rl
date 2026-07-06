@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import math
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,23 @@ JPEG_QUALITY = 70
 
 # PWhiddy v2 frame stack count
 FRAME_STACK_SIZE = 4
+
+
+def _require_image(arr: Any, name: str) -> None:
+    """Raise ValueError if ``arr`` is not a usable HxW[xC] image array.
+
+    Guards the pure preprocessing functions against empty arrays and
+    wrong-rank inputs, which would otherwise surface as opaque cv2 errors.
+    """
+    if not isinstance(arr, np.ndarray):
+        raise ValueError(f"{name} must be a numpy.ndarray, got {type(arr).__name__}")
+    if arr.size == 0:
+        raise ValueError(f"{name} is an empty array (shape {arr.shape})")
+    if arr.ndim not in (2, 3):
+        raise ValueError(
+            f"{name} must be a 2D or 3D image array, "
+            f"got {arr.ndim}D (shape {arr.shape})"
+        )
 
 
 def stack_screens(paths: list[Path], img_size: int = 80) -> np.ndarray:
@@ -76,7 +94,11 @@ def frame_embedding(arr: np.ndarray, dim: int = 64) -> np.ndarray:
     near-duplicate frames cluster but novel scenes are far apart in L2.
     """
     gray = cv2.cvtColor(arr, cv2.COLOR_BGR2GRAY)
-    side = int(np.sqrt(dim))
+    if not isinstance(dim, int) or dim <= 0:
+        raise ValueError(f"dim must be a positive integer, got {dim!r}")
+    side = math.isqrt(dim)
+    if side * side != dim:
+        raise ValueError(f"dim must be a positive perfect square, got {dim}")
     small = cv2.resize(gray, (side, side), interpolation=cv2.INTER_AREA)
     return small.flatten().astype(np.float32)
 
@@ -90,6 +112,8 @@ def frames_differ(
     """
     if a is None or b is None:
         return True
+    _require_image(a, "a")
+    _require_image(b, "b")
     ga = cv2.cvtColor(cv2.resize(a, (160, 144)), cv2.COLOR_BGR2GRAY)
     gb = cv2.cvtColor(cv2.resize(b, (160, 144)), cv2.COLOR_BGR2GRAY)
     diff = float(np.mean(np.abs(ga.astype(float) - gb.astype(float)))) / 255.0
@@ -102,6 +126,7 @@ def to_jpeg_b64(
     quality: int = JPEG_QUALITY,
 ) -> tuple[str, int]:
     """Return (base64 string, byte size) of JPEG-encoded resized image."""
+    _require_image(arr, "arr")
     img = arr
     h, w = img.shape[:2]
     long_edge = max(h, w)
