@@ -24,7 +24,11 @@ LIMIT_PATTERNS = [
         r"quota exceeded",
         r"exceeded.*quota",
         r"too many requests",
-        r"429",
+        # HTTP 429 only in status context — a bare "429" false-matches diff
+        # line numbers / token counts (it silently paused a healthy cycle,
+        # making SakanaAI look unavailable when it wasn't).
+        r"(?:status|code|error|http)[\s:=]*429\b",
+        r"\b429\b\s*(?:too many|rate|error)",
         r"try again later",
         r"come back later",
         r"daily limit",

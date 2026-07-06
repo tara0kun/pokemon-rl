@@ -15,6 +15,7 @@ from typing import Any
 from . import clients, config, gates
 from .rate_limit import CodexRateLimiter
 from .queue import TaskQueue
+from . import worklog
 
 CONSTRAINTS = """Repository constraints:
 - ROM controls only; no direct RAM writes; no saveStateLoad as progress bypass.
@@ -715,6 +716,13 @@ def main(argv: list[str] | None = None) -> int:
         state["last_handoff"] = str(out)
         _save_state(state)
         print(f"\nhandoff saved: {out}")
+
+        # Claude's record: regenerate the human-readable SakanaAI work-log from
+        # verified outcomes (never Codex's self-report). Best-effort.
+        try:
+            worklog.regenerate()
+        except Exception:
+            pass
 
         # Isolate cycles. Gates diff against state["initial_tree"], so without
         # this every prior cycle's change (committed OR left in the tree) would
