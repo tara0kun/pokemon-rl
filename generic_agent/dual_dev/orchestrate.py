@@ -716,12 +716,18 @@ def main(argv: list[str] | None = None) -> int:
         _save_state(state)
         print(f"\nhandoff saved: {out}")
 
-        # Isolate cycles: a cycle that didn't commit leaves changes in the tree
-        # that would fail every later cycle's cumulative allow-path gate.
+        # Isolate cycles. Gates diff against state["initial_tree"], so without
+        # this every prior cycle's change (committed OR left in the tree) would
+        # trip the next cycle's allow-path gate. Two moves keep each cycle
+        # seeing only its own diff: revert a non-committing cycle's changes,
+        # then re-baseline to the current tree (a commit advances it; a revert
+        # leaves it where it was).
         if not handoff.get("committed"):
             reset = _reset_cycle_changes(state)
             if reset:
                 print(f"[isolate] reverted {len(reset)} uncommitted file(s): {reset}")
+        state["initial_tree"] = gates.snapshot_tree()
+        _save_state(state)
 
         if handoff.get("usage_limited"):
             print(f"[pause] usage limit; resume with --resume {state['run_id']}")
