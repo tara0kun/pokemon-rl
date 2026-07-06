@@ -66,6 +66,7 @@ _GOAL_ORDER_WEIGHT = {
     "dewford_to_briney": 68,
     "dewford_sail": 69,
     "reach_dewford_gym": 70,
+    "dewford_gym_brawly": 71,
 }
 
 
@@ -82,6 +83,9 @@ _GOAL_BYPASS_VISITED = {
     # rescue_peeko: the tunnel gets marked visited the moment we enter it,
     # mid-quest. peeko_return: Route104 is long-visited by definition.
     "rescue_peeko", "peeko_return",
+    # Dewford gym: town + gym get marked visited on first entry, but we must
+    # keep re-targeting the gym door / Brawly until the badge is won.
+    "reach_dewford_gym", "dewford_gym_brawly",
 }
 
 
@@ -247,6 +251,18 @@ class Goal:
             )
         if c == "dewford_in_briney_house":
             return gs.badge_count >= 1 and cur == (17, 0) and peeko_done
+        # Dewford Gym (Brawly / Knuckle Badge). Two position-exclusive legs so
+        # ordering can't route the agent back out of the gym:
+        #  - approach: Stone Badge earned, Knuckle not yet, and NOT inside the
+        #    gym -> head to Dewford Town and its gym door (15,24).
+        #  - brawly: inside DewfordTown_Gym (3,3) -> walk to Brawly (11,10).
+        if c == "dewford_gym_approach":
+            return (
+                gs.badge_count >= 1 and gs.badge_count < 2
+                and cur != (3, 3)
+            )
+        if c == "in_dewford_gym":
+            return cur == (3, 3) and gs.badge_count < 2
         return False
 
 
@@ -382,8 +398,16 @@ GOAL_TABLE: list[Goal] = [
     Goal(
         name="reach_dewford_gym",
         target_map=(0, 11),
-        condition="badge>=1",
-        desc="Stone Badge → Dewford Town (0-11)",
+        target_pos=(15, 24),  # Dewford Town gym door -> warps to gym (3,3)
+        condition="dewford_gym_approach",
+        desc="Dewford Town (0-11) の Gym 入口 (15,24) へ → Gym (3,3) に入場",
+    ),
+    Goal(
+        name="dewford_gym_brawly",
+        target_map=(3, 3),        # DewfordTown_Gym (pitch-black maze)
+        target_pos=(11, 10),      # Brawly — reaching this triggers the battle
+        condition="in_dewford_gym",
+        desc="Dewford Gym: Brawly (11,10) に到達して Knuckle Badge 戦",
     ),
 ]
 
