@@ -391,6 +391,30 @@ def heuristic_button(
                         target_tiles |= mc.warp_tiles_for(
                             gs.map_group, gs.map_num, next_hop_name,
                         )
+                # Mid door-entry: the approach tile fired "Up" and the game
+                # walked us ONTO the non-walkable door warp tile itself (e.g.
+                # Dewford (8,17)). BFS can't start on a non-walkable tile
+                # (returns None) and that tile is never in target_tiles, so
+                # the walkable-gated block below is skipped and the agent
+                # falls through to wander logic — which walks it back off the
+                # door, oscillating. If we're standing ON the very warp tile
+                # that leads to our next hop, one more press finishes it.
+                if target_tiles and not cur_info.walkable(gs.x, gs.y):
+                    hop_key = (next_hop_name or "").replace("_", "").lower()
+                    on_goal_warp = any(
+                        w.get("x") == gs.x and w.get("y") == gs.y
+                        and w.get("dest_map", "").replace("_", "").lower()
+                        == hop_key
+                        for w in getattr(cur_info, "warps", []) or []
+                    )
+                    if on_goal_warp:
+                        step_btn = mc.warp_step_direction(
+                            gs.map_group, gs.map_num, gs.x, gs.y,
+                        )
+                        if step_btn is not None:
+                            return step_btn, (
+                                f"mapbfs_warp_on:{step_btn}->{next_hop_name}"
+                            )
                 if target_tiles and cur_info.walkable(gs.x, gs.y):
                     npc_tiles = {
                         (nx, ny) for (nx, ny, _gid) in gs.npcs_on_map

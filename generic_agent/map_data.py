@@ -500,14 +500,26 @@ class MapCache:
         if x >= info.width - 1:
             return "Right"
         # Interior warp not on a map edge. Two common kinds:
-        #  - building door (Gym/PC/Mart): entered by walking UP onto it, and
-        #    such doors sit in the TOP part of an outdoor map.
+        #  - building door (Gym/PC/Mart): entered by walking UP onto it from
+        #    the walkable tile below (the wall/door tile above is blocked).
         #  - forest/route south exit (e.g. Petalburg Woods (16,38)): you leave
-        #    by continuing DOWN, and it sits in the BOTTOM part of the map.
-        # Pick the exit direction by whichever of the top/bottom edges the
-        # warp is nearer to (Down if past the vertical midpoint, else Up).
+        #    by continuing DOWN from the walkable tile above.
+        # Derive the exit direction from collision, not map position: press
+        # from the walkable approach side toward the blocked door side. The
+        # old "past vertical midpoint -> Down" heuristic misfired for every
+        # building door sitting in the lower half of a map (Dewford Gym
+        # (8,17) among 127 warps audited) — it read the door tile's y, not
+        # which neighbour you actually walk in from.
         for w in info.warps:
             if w.get("x") == x and w.get("y") == y:
+                up_open = info.walkable(x, y - 1)
+                down_open = info.walkable(x, y + 1)
+                if down_open and not up_open:
+                    return "Up"
+                if up_open and not down_open:
+                    return "Down"
+                # Ambiguous (both open: stairs/pads; both blocked: side-entry)
+                # — fall back to the vertical-midpoint guess.
                 return "Down" if y * 2 > info.height else "Up"
         # Approach case: standing directly BELOW a door warp (the walkable
         # tile warp_tiles_for now routes to) — step Up into the door to
