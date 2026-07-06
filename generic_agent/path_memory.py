@@ -32,6 +32,7 @@ as infinite).
 from __future__ import annotations
 
 import json
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -147,11 +148,11 @@ class TransitionMemory:
         if (start_g, start_n) == (target_g, target_n):
             return []
         visited: set[tuple[int, int]] = {(start_g, start_n)}
-        queue: list[tuple[tuple[int, int], list[tuple[int, int]]]] = [
-            ((start_g, start_n), [])
-        ]
+        queue: deque[tuple[tuple[int, int], list[tuple[int, int]]]] = deque(
+            [((start_g, start_n), [])]
+        )
         while queue:
-            (cur_g, cur_n), path = queue.pop(0)
+            (cur_g, cur_n), path = queue.popleft()
             if len(path) >= max_hops:
                 continue
             for nbr in self.neighbors(cur_g, cur_n):
@@ -180,11 +181,11 @@ class TransitionMemory:
         if (start_g, start_n) not in recent_set:
             recent_set.add((start_g, start_n))
         visited: set[tuple[int, int]] = {(start_g, start_n)}
-        queue: list[tuple[tuple[int, int], list[tuple[int, int]]]] = [
-            ((start_g, start_n), [])
-        ]
+        queue: deque[tuple[tuple[int, int], list[tuple[int, int]]]] = deque(
+            [((start_g, start_n), [])]
+        )
         while queue:
-            (cur_g, cur_n), path = queue.pop(0)
+            (cur_g, cur_n), path = queue.popleft()
             if len(path) >= max_hops:
                 continue
             for nbr in self.neighbors(cur_g, cur_n):
