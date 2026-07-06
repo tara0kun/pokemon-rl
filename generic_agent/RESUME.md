@@ -1,7 +1,8 @@
 # 再開ガイド (RESUME) — 中断: 2026-07-06
 
 前回セッションを安全に中断した時点のスナップショットと、スムーズに再開する手順。
-git は `dev` == `origin/dev`(HEAD `f136922f7`)、working tree クリーン。全ループ停止済み。
+git は `dev` == `origin/dev`(HEAD `707d26e58`)、working tree クリーン。全ループ停止済み。
+mGBA は **savestate_dewford.ss1 を復元済み**(クリーン Dewford・健全 Grovyle L24・badge 1)。
 
 ---
 
@@ -11,7 +12,9 @@ git は `dev` == `origin/dev`(HEAD `f136922f7`)、working tree クリーン。�
 - **Dewford Town、Stone Badge (1個) 保持。次の目標 = Brawly (Knuckle Badge, 3個目)**
 - 再開ポイント save state: `generic_agent/memory/savestate_dewford.ss1`(Dewford Town (8,11)、クリーン)
 - Gym の goal / ナビは実装済み: `dewford_gym_brawly` が Dewford→(8,17)warp→Gym(3,3)→Brawly(4,3) へ誘導
-- **直前に直した核心バグ**: 屋内 Gym の暗迷路タイルが water 誤検出され BFS が Brawly に到達不能だった → INDOOR は water-block しない修正 (commit f136922f7)。Gym 内 BFS は復活(38歩)
+- **H1(Dewford Gym ドア前振動)は ✅ 解決済み** (commit 707d26e58)。warp_step_direction を collision 由来に + 非歩行 door タイルで `mapbfs_warp_on` 分岐追加。**live 走行でエージェントが Gym 迷路突破 → Brawly 到達・戦闘起動を確認**。詳細 docs/HYPOTHESES.md H1
+- 前段: 屋内 Gym の暗迷路 water 誤検出も修正済み (f136922f7、38歩)
+- **次の blocker = バトルAI (H6)**: Grovyle L24 で Brawly に入れるが、opening で交代用シーケンス誤発火し Grovyle が反撃前に気絶 → 敗北。**savestate_dewford.ss1 から再開すれば setback なし**(前回の敗戦は破棄済み、ストーリー進行ゼロ)
 
 ### dual_dev (Claude + Codex/SakanaAI 二体制)
 - run id: **`run_20260706_112639`**(--resume で継続)
@@ -52,13 +55,23 @@ poke-rl/Scripts/python.exe -m generic_agent.dual_dev.orchestrate `
 ---
 
 ## 未解決 / 次にやること
-1. **Dewford Gym 入口ナビの詰まり**: agent が Dewford Town (6-7,18-19) で Gym door 手前を振動し
-   warp (8,17) に乗れないことがある(mapbfs dist が 2→4 と増える)。Gym 内 BFS は直したが、
-   Dewford Town 側で door approach (8,18) → door (8,17) への最終ステップを要確認
-2. **in-battle flicker 実機確認**(未消化): 次の野生/trainer 戦で devon flag が安定か 20回サンプル
-3. **dual_dev の生産性**: 最近の自動生成タスクは Codex 実装がゲートに落ちがち。commit が伸びる
-   ようタスク粒度 or ゲート方針の調整余地あり
+1. **★最重要 = バトルAI H6**(docs/HYPOTHESES.md H6 に詳細)。Brawly 戦で勝てるはずが落ちる:
+   - **H6a**: opening で `party_seq=("A","B","Down","A","A")`(交代画面用)が戦闘メニューに誤発火し
+     Grovyle が反撃前に一方的に殴られ気絶。→ trainer 戦で FIGHT メニュー(疑い含む)なら best_move を
+     party_seq より優先。party_seq は「lead 0HP かつ交代画面」に限定。
+   - **H6b**: 控えが L3-L7 と低レベルで Grovyle 依存。H6a を直せば L24 単騎で Brawly 突破可能。
+   - 検証: savestate_dewford.ss1 から再走行し、Machop の HP が opening から単調減少するか
+     (decisions ログ + battle_moves.enemy_hp)。**走行中は socket 直読み禁止**(下記メモ参照)。
+2. **in-battle flicker 実機確認**(未消化): H6 の Brawly 戦で devon flag が安定か 20回サンプル
+3. **dual_dev の生産性**: 自動生成タスクが Codex 実装でゲートに落ちがち。粒度/ゲート調整余地
 4. Brawly 撃破後 (badge 2) は journey goal が自動引退。以降 Slateport 方面へ(goal 未実装)
+
+### 運用メモ(重要・今セッションの教訓)
+- **走行中の mGBA socket は 1 接続前提**。ループ稼働中に診断で別 `read_state` を張ると読みが衝突し
+  corrupt read((0,0)/species 誤り)を誘発する。監視は `logs/decisions_*.jsonl`(ファイル)で行い、
+  socket 直読み・screenshot はループ停止後に。
+- claude_heuristic は venv ランチャの都合で python.exe が **親+子の 2 プロセス**に見えるが正常
+  (socket 競合ではない)。kill は `commandline -match 'claude_heuristic'` で両方まとめて。
 
 ## 停止コマンド (ループだけ止める、mGBA は残す)
 ```
