@@ -454,9 +454,26 @@ def heuristic_button(
                     # (198 tiles, ymax=16). With water blocked and trainer_los
                     # NOT blocked the Woods warp is reachable (477 tiles,
                     # ymax=30). So walk into the LOS, fight, and continue.
+                    # Block warp tiles that aren't our destination: a straight
+                    # BFS path may cross another door and warp us off-map into a
+                    # loop (Dewford gym door (15,24) shares the x=15 column with
+                    # House2's door (15,15) — the agent kept warping into the
+                    # house). Warps in map_data are in agent coords. Protect the
+                    # goal's own target tile(s) so we can still step onto it.
+                    protected_warps = set(target_tiles)
+                    if current_goal is not None and getattr(
+                        current_goal, "target_pos", None
+                    ) is not None:
+                        protected_warps.add(current_goal.target_pos)
+                    other_warps = {
+                        (w["x"], w["y"])
+                        for w in getattr(cur_info, "warps", []) or []
+                        if "x" in w and "y" in w
+                        and (w["x"], w["y"]) not in protected_warps
+                    }
                     bfs_blocked = (
                         npc_tiles | empirical_blocked
-                        | perm_blocked | knowledge_water
+                        | perm_blocked | knowledge_water | other_warps
                     )
                     bfs_path = mc.bfs_to_tile(
                         gs.map_group, gs.map_num,

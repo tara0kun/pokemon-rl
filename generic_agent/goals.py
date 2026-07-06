@@ -257,12 +257,20 @@ class Goal:
         #    gym -> head to Dewford Town and its gym door (15,24).
         #  - brawly: inside DewfordTown_Gym (3,3) -> walk to Brawly (11,10).
         if c == "dewford_gym_approach":
+            # Get TO Dewford Town from elsewhere. On (0,11) itself this goal has
+            # no target_pos so current_goal auto-skips it and seek_brawly wins.
             return (
                 gs.badge_count >= 1 and gs.badge_count < 2
                 and cur != (3, 3)
             )
-        if c == "in_dewford_gym":
-            return cur == (3, 3) and gs.badge_count < 2
+        if c == "seek_brawly":
+            # Fires on Dewford Town (planner routes through the gym warp) and
+            # inside the gym (walk to Brawly). Coords are map_data/canon, the
+            # same frame as gs.x/gs.y — NOT the memory's stale "+7" values.
+            return (
+                gs.badge_count >= 1 and gs.badge_count < 2
+                and cur in {(0, 11), (3, 3)}
+            )
         return False
 
 
@@ -398,16 +406,15 @@ GOAL_TABLE: list[Goal] = [
     Goal(
         name="reach_dewford_gym",
         target_map=(0, 11),
-        target_pos=(15, 24),  # Dewford Town gym door -> warps to gym (3,3)
         condition="dewford_gym_approach",
-        desc="Dewford Town (0-11) の Gym 入口 (15,24) へ → Gym (3,3) に入場",
+        desc="Dewford Town (0-11) に到達 (以降 seek_brawly が Gym へ誘導)",
     ),
     Goal(
         name="dewford_gym_brawly",
-        target_map=(3, 3),        # DewfordTown_Gym (pitch-black maze)
-        target_pos=(11, 10),      # Brawly — reaching this triggers the battle
-        condition="in_dewford_gym",
-        desc="Dewford Gym: Brawly (11,10) に到達して Knuckle Badge 戦",
+        target_map=(3, 3),        # DewfordTownGym (pitch-black maze, door=Dewford (8,17))
+        target_pos=(4, 3),        # Brawly (map_data/canon coords) — reaching triggers battle
+        condition="seek_brawly",
+        desc="Dewford Town/Gym → Brawly (4,3) に到達して Knuckle Badge 戦",
     ),
 ]
 
