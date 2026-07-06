@@ -186,9 +186,12 @@ def detect_all(img: np.ndarray, facing: str | None = None) -> dict:
 def detect_from_path(path: str | Path, facing: str | None = None) -> dict:
     img = _load_img(path)
     if img is None:
-        return {
+        # Keep fallback shape aligned with detect_all() so missing facing omits front_blocked consistently.
+        out = {
             "dialog": False, "menu": False, "letter_entry": False,
             "battle_menu": False, "victory_or_levelup": False,
-            "front_blocked": False,
         }
+        if facing is not None:
+            out["front_blocked"] = False
+        return out
     return detect_all(img, facing=facing)
