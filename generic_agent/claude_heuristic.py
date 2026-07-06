@@ -131,6 +131,21 @@ def heuristic_button(
     except Exception:
         pass
     if screen_signals.get("battle_menu"):
+        # Low-HP safety guard: in a WILD battle at critical HP (<=25%),
+        # another FIGHT or catch turn risks a whiteout (whole party faints
+        # -> forced warp to the last Center + money loss), which throws away
+        # far more progress than fleeing. Pre-empt both catch and the FIGHT
+        # cursor-reset below: route to RUN (bottom-right of the 2x2 command
+        # menu = Right+Down+A), reusing the same proven sequence as the
+        # over-leveling run guard. Trainer battles are excluded - you cannot
+        # run from a trainer, and forcing RUN there loops the "No running
+        # from a TRAINER battle!" dialog forever. (Pokemon Center routing is
+        # intentionally out of scope here; this only prevents the whiteout.)
+        if not gs.is_trainer_battle and gs.party0_critical:
+            run_seq = ("Right", "Down", "A", "A")
+            return run_seq[battle_turn % len(run_seq)], (
+                f"wild_run_lowhp@hp{gs.party0_hp}/{gs.party0_max_hp}"
+            )
         # Pre-empt: when we have balls AND a mono party AND aren't a
         # trainer battle (you can't catch trainers' Pokemon), try to throw.
         # gs.in_battle is unreliable (RAM false negative), but battle_menu
