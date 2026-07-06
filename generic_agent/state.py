@@ -81,6 +81,20 @@ CB2_OVERWORLD_SET = frozenset({0x08085E5D})
 BATTLE_TYPE_TRAINER = 0x0008
 
 
+def _read_saveblock1_ptr(client: MGBAClient, tries: int = 4) -> int | None:
+    """Return a stable SaveBlock1 pointer, ignoring DMA relocation transients."""
+    prev = None
+    for _ in range(tries):
+        try:
+            ptr = client.read32(SAVEBLOCK1_PTR_ADDR)
+        except EmulatorError:
+            return None
+        if 0x02000000 <= ptr < 0x02040000 and ptr == prev:
+            return ptr
+        prev = ptr
+    return None
+
+
 @dataclass
 class GameState:
     map_group: int
@@ -224,17 +238,8 @@ def _read_battle_flags(client: MGBAClient) -> tuple[bool, int]:
 def read_state(client: MGBAClient) -> GameState:
     in_battle, flags = _read_battle_flags(client)
 
-    try:
-        ptr = client.read32(SAVEBLOCK1_PTR_ADDR)
-    except EmulatorError:
-        return GameState(
-            0, 0, 0, 0,
-            saveblock1_valid=False,
-            in_battle=in_battle,
-            battle_flags=flags,
-        )
-
-    if ptr < 0x02000000 or ptr >= 0x02040000:
+    ptr = _read_saveblock1_ptr(client)
+    if ptr is None:
         return GameState(
             0, 0, 0, 0,
             saveblock1_valid=False,
