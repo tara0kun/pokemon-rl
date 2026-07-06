@@ -1,7 +1,7 @@
 # 再開ガイド (RESUME) — 中断: 2026-07-06
 
 前回セッションを安全に中断した時点のスナップショットと、スムーズに再開する手順。
-git は `dev` == `origin/dev`(HEAD `707d26e58`)、working tree クリーン。全ループ停止済み。
+git は `dev` == `origin/dev`(HEAD `dbb0a7328`)、working tree クリーン。全ループ停止済み。
 mGBA は **savestate_dewford.ss1 を復元済み**(クリーン Dewford・健全 Grovyle L24・badge 1)。
 
 ---
@@ -12,9 +12,13 @@ mGBA は **savestate_dewford.ss1 を復元済み**(クリーン Dewford・健全
 - **Dewford Town、Stone Badge (1個) 保持。次の目標 = Brawly (Knuckle Badge, 3個目)**
 - 再開ポイント save state: `generic_agent/memory/savestate_dewford.ss1`(Dewford Town (8,11)、クリーン)
 - Gym の goal / ナビは実装済み: `dewford_gym_brawly` が Dewford→(8,17)warp→Gym(3,3)→Brawly(4,3) へ誘導
-- **H1(Dewford Gym ドア前振動)は ✅ 解決済み** (commit 707d26e58)。warp_step_direction を collision 由来に + 非歩行 door タイルで `mapbfs_warp_on` 分岐追加。**live 走行でエージェントが Gym 迷路突破 → Brawly 到達・戦闘起動を確認**。詳細 docs/HYPOTHESES.md H1
-- 前段: 屋内 Gym の暗迷路 water 誤検出も修正済み (f136922f7、38歩)
-- **次の blocker = バトルAI (H6)**: Grovyle L24 で Brawly に入れるが、opening で交代用シーケンス誤発火し Grovyle が反撃前に気絶 → 敗北。**savestate_dewford.ss1 から再開すれば setback なし**(前回の敗戦は破棄済み、ストーリー進行ゼロ)
+- **H1(door振動)/ nav(gym leader 到達)/ H6a(バトル opening)は ✅ 全て解決** (commit 707d26e58, dbb0a7328)。
+  live で **Dewford→ドア→迷路→Brawly 到達→戦闘起動→Grovyle が Machop + Meditite 2体撃破** を確認。詳細 docs/HYPOTHESES.md H1/H6
+- **次の blocker = H6b(team強度、grind 必要)**: Brawly は3体(Machop L16 + Meditite L16 + **Makuhita L19 Bulk Up**)。
+  Grovyle L24 単騎は2体倒すが消耗して Makuhita に届かず気絶、控え L3-L7 で詰み → whiteout。
+  **これは code バグでなく game 進行の問題**。対処 = Grovyle を L27-28 まで軽く grind(または2体目育成 / 戦闘中 Potion)。
+  再開は savestate_dewford.ss1 から(setback なし、ストーリー進行ゼロ)。
+- **バトルAIの実測**(gBattleMons 固定アドレス)は走行中でも競合に比較的強いが transient 値あり。最終判定はループ停止後 or screenshot で。
 
 ### dual_dev (Claude + Codex/SakanaAI 二体制)
 - run id: **`run_20260706_112639`**(--resume で継続)
