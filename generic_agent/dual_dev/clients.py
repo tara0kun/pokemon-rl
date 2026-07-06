@@ -2,12 +2,18 @@
 from __future__ import annotations
 
 import re
+import os
 import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
 from . import config
+
+ANTHROPIC_API_ENV_KEYS = (
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+)
 
 LIMIT_PATTERNS = [
     re.compile(pattern, re.IGNORECASE)
@@ -85,6 +91,9 @@ def run_claude(prompt: str, *, system: str | None = None) -> CliResult:
     if system:
         args += ["--append-system-prompt", system]
     start = time.monotonic()
+    env = dict(os.environ)
+    for key in ANTHROPIC_API_ENV_KEYS:
+        env.pop(key, None)
     try:
         proc = subprocess.run(
             args,
@@ -93,6 +102,7 @@ def run_claude(prompt: str, *, system: str | None = None) -> CliResult:
             text=True,
             encoding="utf-8",
             errors="replace",
+            env=env,
             timeout=config.CLAUDE_TIMEOUT_S,
         )
     except subprocess.TimeoutExpired as exc:

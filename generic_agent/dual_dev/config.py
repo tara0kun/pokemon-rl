@@ -48,6 +48,16 @@ def codex_exe() -> str:
     if override:
         return override
     on_path = shutil.which("codex")
+    if on_path and "WindowsApps" not in on_path:
+        return on_path
+    ext_dir = Path(os.environ["USERPROFILE"]) / ".vscode" / "extensions"
+    candidates = sorted(
+        ext_dir.glob("openai.chatgpt-*/bin/windows-x86_64/codex.exe"),
+        key=lambda path: path.parent.parent.parent.name,
+        reverse=True,
+    )
+    if candidates:
+        return str(candidates[0])
     if on_path:
         return on_path
     raise FileNotFoundError("codex.exe not found. Set DUAL_DEV_CODEX_EXE.")

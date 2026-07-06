@@ -7,6 +7,11 @@ CLIs against the same repository:
 - **Codex CLI** (`codex exec`) acts as implementer.
 - **Deterministic gates** decide pass/fail before any optional commit.
 
+Claude is invoked through the local Claude Code CLI, not the Anthropic
+`messages` API. `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` are stripped from
+the Claude subprocess environment so this loop uses the Claude Code login path
+instead of accidentally consuming API credits.
+
 Default mode is **dry-run**. It never commits unless `--commit` is passed and
 both deterministic gates and Claude review pass.
 
