@@ -70,6 +70,12 @@ INDOOR_TILE_THRESHOLD = 30  # heuristic for "indoor" maps
 # accidentally-opened submenu (party/bag/summary) and also advances battle
 # text, so wherever the cycle lands it re-converges on the RUN corner.
 RUN_CYCLE = ("B", "A", "Down", "Right", "A", "A")
+# Send-out navigation for after the lead faints (trainer battle). A clears
+# the faint dialogue -> party list; B backs out of a "Do what"/SUMMARY
+# submenu; Down moves off the fainted slot-0 to a healthy member; A opens
+# "Do what" (cursor on SEND OUT); A confirms. Used ONLY when the active
+# battler's HP is 0 — never at the FIGHT menu (that thrash was H6a).
+SEND_OUT_SEQ = ("A", "B", "Down", "A", "A")
 
 
 def take_screenshot(client: MGBAClient, session_id: str, turn: int) -> Path:
@@ -364,23 +370,28 @@ def heuristic_button(
                         (nx, ny) for (nx, ny, _g) in gs.npcs_on_map
                         if (nx, ny) != (gs.x, gs.y)
                     }
-                    # A target tile occupied by an NPC (e.g. a gym leader
-                    # like Roxanne standing on (5,2)) or marked unwalkable
-                    # can never be a BFS destination — BFS returns None and
-                    # the agent wanders near it forever. Route instead to a
-                    # walkable, unoccupied neighbour and interact (face + A)
-                    # to talk / trigger the battle.
+                    # A goal target_pos is a tile to REACH AND ACT ON: a gym
+                    # leader / NPC you talk to (Brawly at (4,3)) or a grass
+                    # tile you step onto. Always route to the target's
+                    # walkable neighbours AND set interact_target, so on
+                    # arrival we face+A (talk / trigger battle) or step on.
+                    # Walking straight onto a leader never starts the battle
+                    # (you bump), and a gym leader may sit outside NPC read
+                    # range so `tpos not in npc_now` wrongly reads True — the
+                    # old walk-onto branch then made BFS aim at the leader's
+                    # own tile, the agent bumped it forever, and every bump
+                    # registered the approach tile as "blocked" in tile_map,
+                    # poisoning empirical_blocked so the leader became
+                    # unreachable on the NEXT run (the Dewford (4,4)/(3,3)
+                    # stall). Neighbours + interact + the approach-zone
+                    # exemption below fix both.
+                    interact_target = tpos
                     if cur_info.walkable(*tpos) and tpos not in npc_now:
                         target_tiles.add(tpos)
-                    else:
-                        interact_target = tpos
-                        for dx, dy in ((0, 1), (0, -1), (1, 0), (-1, 0)):
-                            nb = (tpos[0] + dx, tpos[1] + dy)
-                            if (
-                                cur_info.walkable(*nb)
-                                and nb not in npc_now
-                            ):
-                                target_tiles.add(nb)
+                    for dx, dy in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+                        nb = (tpos[0] + dx, tpos[1] + dy)
+                        if cur_info.walkable(*nb) and nb not in npc_now:
+                            target_tiles.add(nb)
                 else:
                     for direction, conn in cur_info.connections.items():
                         if conn["map_name"] == next_hop_name:
@@ -499,6 +510,20 @@ def heuristic_button(
                         npc_tiles | empirical_blocked
                         | perm_blocked | knowledge_water | other_warps
                     )
+                    # Never treat the interaction target or its approach
+                    # tiles as blocked: face+A bumps against a leader/NPC (or
+                    # stepping onto its own tile) register those tiles as
+                    # "blocked" in tile_map, which otherwise walls off the
+                    # only approach and makes the target unreachable (the
+                    # Dewford Brawly (4,4)/(3,3) poisoning). target_tiles are
+                    # exactly where we want BFS to end.
+                    if interact_target is not None:
+                        approach_zone = {interact_target} | {
+                            (interact_target[0] + dx, interact_target[1] + dy)
+                            for dx, dy in ((0, 1), (0, -1), (1, 0), (-1, 0))
+                        }
+                        bfs_blocked -= approach_zone
+                    bfs_blocked -= target_tiles
                     bfs_path = mc.bfs_to_tile(
                         gs.map_group, gs.map_num,
                         (gs.x, gs.y), target_tiles,
@@ -557,7 +582,10 @@ def heuristic_button(
                             f"(dist={len(bfs_path)})"
                         )
                     if bfs_path == [] and (gs.x, gs.y) in target_tiles:
-                        if interact_target is not None:
+                        if (
+                            interact_target is not None
+                            and interact_target != (gs.x, gs.y)
+                        ):
                             ix, iy = interact_target
                             if iy < gs.y:
                                 face = "Up"
@@ -660,8 +688,12 @@ def heuristic_button(
             # ignores it), Down moves off the fainted lead to a healthy
             # member, then A opens "Do what" (cursor on SEND OUT) and A
             # confirms. Reaching a healthy slot + A + A always sends out.
-            party_seq = ("A", "B", "Down", "A", "A")
-            return party_seq[battle_turn % len(party_seq)], (
+            # Reached here only as a fallback: the main loop's RAM-based
+            # Part B normally fills the queue (best move when it's our turn,
+            # SEND_OUT_SEQ when the lead fainted). This runs when the active
+            # battler's HP was unreadable — SEND_OUT_SEQ is the safe cycle
+            # (self-syncs whichever sub-screen we land on).
+            return SEND_OUT_SEQ[battle_turn % len(SEND_OUT_SEQ)], (
                 "trainer:party_walk"
             )
         # SAME GUARD for wild-battle path: gs.in_battle from the stale
@@ -1198,26 +1230,75 @@ def run(
 
         cur_goal = goals_mod.current_goal(gs) if gs.saveblock1_valid else None
 
-        # Part B — trainer-battle move selection. At the FIGHT menu, read the
-        # party leader's moves (power+type from ROM) and the opponent's types
-        # (from gBattleMons), pick the highest power x effectiveness DAMAGING
-        # move, and queue the cursor navigation to that slot. The button queue
-        # survives sub-screen transitions (FIGHT menu -> move submenu). Wild
-        # battles keep their catch/run logic (this is trainer-only).
-        if (
-            not battle_move_queue
-            and gs.in_battle
-            and gs.is_trainer_battle
-            and screen_signals.get("battle_menu")
-        ):
+        # Part B — trainer-battle decision, driven by RAM not vision.
+        # H6a root cause: the refill used to be gated on the flaky
+        # screen_signals["battle_menu"] vision flag. When it missed the FIGHT
+        # menu the queue stayed empty and control fell to the party_seq
+        # (send-out) cycle, whose B/Down thrash the FIGHT menu — so the lead
+        # (Grovyle L24) never attacked in the opening and got worn down and
+        # fainted vs Brawly's Machop. Fix: tell "our turn to pick a move"
+        # from "lead fainted, choose a replacement" via the active battler's
+        # HP (gBattleMons[0]) — reliable RAM — and always queue a productive
+        # sequence, never the FIGHT-menu thrash.
+        # Flush any leftover battle queue once the battle ends: a full
+        # move_select_sequence queued during the win/faint dialogue (in_battle
+        # still True) would otherwise leak its remaining direction+A presses
+        # into the overworld (Fable review F2/F5).
+        if not gs.in_battle and (battle_move_queue or llm_buttons_queue):
+            battle_move_queue = []
+            llm_buttons_queue = []
+        if not battle_move_queue and gs.in_battle and gs.is_trainer_battle:
             try:
-                best_slot = battle_moves_mod.best_move_index(client)
+                active_hp = battle_moves_mod.active_hp(client)
             except (OSError, RuntimeError, EmulatorError):
-                best_slot = -1
-            if best_slot >= 0:
-                battle_move_queue = list(
-                    battle_moves_mod.move_select_sequence(best_slot)
-                )
+                active_hp = -1
+            if active_hp == 0:
+                # Lead fainted -> navigate the party list and send out.
+                battle_move_queue = list(SEND_OUT_SEQ)
+            elif active_hp > 0:
+                # Is it the OPPONENT that just fainted? In SHIFT battle style
+                # the game then asks "<Leader> is about to send out X. Will
+                # you switch?" (YES/NO) — and a move_select_sequence fired
+                # here presses A on YES, opening the party menu with no B to
+                # back out (the Machop->Makuhita stall). When the enemy HP is
+                # 0 we press B until the next mon is in and enemy HP > 0
+                # again, then best-move resumes.
+                at_fight_menu = bool(screen_signals.get("battle_menu"))
+                try:
+                    enemy_cur_hp = battle_moves_mod.enemy_hp(client)[0]
+                except (OSError, RuntimeError, EmulatorError):
+                    enemy_cur_hp = -1
+                if enemy_cur_hp == 0 and not at_fight_menu:
+                    # Opponent fainted and we are NOT choosing a move (a switch
+                    # prompt / victory text is up): B advances the faint/send-
+                    # out text AND answers the switch prompt NO / backs out one
+                    # nested party-menu level. A here would confirm YES and
+                    # open the party menu with no way back. Gated on NOT the
+                    # FIGHT menu so a transient enemy-HP=0 read never skips our
+                    # attack while it is genuinely our turn (Fable F4).
+                    battle_move_queue = ["B"]
+                else:
+                    # Our turn — pick the best damaging move from RAM (no
+                    # vision needed to READ moves). move_select_sequence(0) has
+                    # no Right/Down nav, so it is safe to queue even mid-
+                    # dialogue; only slots 1-3 (which press Right/Down and
+                    # could land on BAG/POKEMON — Fable F1) require a confirmed
+                    # FIGHT menu. If the best slot is 1-3 but vision hasn't
+                    # confirmed yet, press "A" (advance text / open FIGHT +
+                    # pick the highlighted move) — always progress, never the
+                    # party_seq thrash (H6a).
+                    try:
+                        best_slot = battle_moves_mod.best_move_index(client)
+                    except (OSError, RuntimeError, EmulatorError):
+                        best_slot = -1
+                    if best_slot == 0 or (best_slot >= 1 and at_fight_menu):
+                        battle_move_queue = list(
+                            battle_moves_mod.move_select_sequence(best_slot)
+                        )
+                    else:
+                        battle_move_queue = ["A"]
+            # active_hp == -1 (unreadable): leave queue empty -> heuristic
+            # SEND_OUT_SEQ fallback, harmless and self-corrects next turn.
 
         if battle_move_queue:
             button = battle_move_queue.pop(0)

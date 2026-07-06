@@ -81,6 +81,16 @@ def enemy_hp(client: MGBAClient) -> tuple[int, int]:
     return client.read16(a + BATTLEMON_HP), client.read16(a + BATTLEMON_MAXHP)
 
 
+def active_hp(client: MGBAClient) -> int:
+    """Current HP of the player's ACTIVE battler (gBattleMons[0]).
+
+    0 => the lead fainted and the game is on the 'choose a POKEMON' send-out
+    screen; >0 => it is our turn to pick a move. Used to tell those two
+    battle sub-states apart from reliable RAM instead of the flaky
+    battle_menu vision signal (the H6a opening-thrash root cause)."""
+    return client.read16(GBATTLEMONS + BATTLEMON_HP)
+
+
 def active_move_ids(client: MGBAClient) -> list[int]:
     """The four move IDs of the player's ACTIVE battler (gBattleMons[0]).
 

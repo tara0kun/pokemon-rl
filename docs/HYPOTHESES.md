@@ -15,29 +15,19 @@
 
 > **Fable との比較(user 依頼)**: Opus の診断を伏せて Fable に独立診断させ 2 バグとも完全収束。Fable の全マップ監査提案(当初 62 flip)を Opus が独立再現し 127 flip に拡大確認。collision 由来ルールへの一般化は Fable 案採用。
 
-## H6. バトルAIが勝てる gym 戦を落とす(2026-07-06 新規・H1 の live 走行で表面化)
+## H6. バトルAIが勝てる gym 戦を落とす(2026-07-06 表面化 / 07-07 大幅改善)
 
-**症状**: Grovyle L24 で Brawly に挑むも Machop L16(26/50 まで削っただけ)に Grovyle が気絶。控えが L3-L7 と低レベルで詰み、L3(Tackle のみ)vs Machop で 100+ turn 膠着。逃走不可 → whiteout 不可避。
+**当初症状**: Grovyle L24 で Brawly に挑むも Machop 1体倒す前に気絶、控え L3-L7 で詰み。
 
-- **H6a: opening で交代用シーケンスが戦闘メニューに誤発火**
-  `battle_move_queue` の補充は `screen_signals.get("battle_menu")` True 時のみ。未検出ターンは `party_seq=("A","B","Down","A","A")`(本来 lead 気絶後の交代画面用)に落ち、戦闘開始直後の menu で空打ち → Grovyle が反撃前に一方的に殴られる。decisions 実測: opening turns 8-16 が全て `[trainer]` party_seq、move-select は Grovyle 気絶後に本格化。
-  対処案: trainer 戦で in_battle かつ FIGHT メニュー(疑い含む)なら **best_move を party_seq より優先**。party_seq は「lead が 0HP かつ交代画面」条件に限定。
-- **H6b: 控えが低レベルで Grovyle 依存**。catch ロジックが弱個体を溜め込む副作用。H6a を直せば L24 単騎で Brawly 突破可能(fighting は grass 等倍、L24>>L16-18)。
-  検証: H6a 修正後 savestate_dewford.ss1 から再走行し、Machop の HP が opening から単調減少するか(decisions + enemy_hp)。
-
-- **H1a: tile_map の経験的封鎖が approach 経路を汚染している**
-  検証: `python -c` で tile_map.json の map "0-11" の (6-8,17-19) のレコードを dump。blocked/tried≥200 のエッジがあれば、過去の失敗(water 誤検出時代のものを含む)の残骸。
-  反証: 封鎖レコードが空なら棄却。
-  対処案: 該当タイルの blocked をクリアして再走行(cleanup は 4 方向封鎖しか自動解除しない)。
-- **H1b: NPC が (8,18) 近傍に立って BFS 目的地を奪っている**
-  検証: 振動発生時の decisions.jsonl で src を確認。`npc_avoid` が出ていれば NPC 干渉。state.read_npcs_on_map の値を同時に dump。
-  反証: NPC が近傍にいなければ棄却。
-- **H1c: warp_tiles_for が (8,17) を「エッジ warp」と誤分類し approach 変換していない**
-  検証: `map_data.get_cache().warp_tiles_for(0,11,"DewfordTownGym")` の返値を確認。(8,18) でなく (8,17) が返るなら、(8,17) は on_edge 判定か walkable 判定に落ちている(map_data.py:441-462)。
-  反証: (8,18) が返れば棄却。
-- **H1d: mapbfs_perp の stuck 回避(same_pos_streak≥20 で垂直方向)が振動を作っている**
-  検証: decisions.jsonl で `mapbfs_perp` の頻度。dist 2→4 は「1歩ずれて遠回り再計算」の症状と整合。
-  対処案: door approach タイルへの最終 2 歩は perp 回避を無効化する(goal-directed 最終接近の特例)。
+- **H6a: opening で交代用シーケンスが戦闘メニューに誤発火 — ✅ FIXED (07-07)**
+  `battle_move_queue` の補充が `screen_signals["battle_menu"]` vision 依存で、未検出時に `party_seq`(交代画面用の A/B/Down)に落ち、開幕の FIGHT メニューで空打ち → Grovyle が反撃前に削られ気絶。
+  **修正 (claude_heuristic.py Part B, "driven by RAM not vision")**: active battler HP(`battle_moves.active_hp`, gBattleMons[0])で「自分の番」と「lead 気絶→交代」を判別。自分の番は best_move を選択(vision 不要で RAM から技を読む)。**`move_select_sequence(0)` は Right/Down nav が無く安全なので vision 無しでも発火**、slot 1-3 のみ vision 確認時に限定(Fable review F1)。敵気絶遷移は enemy_hp==0 かつ FIGHT メニュー非表示時に `B`(SHIFT の「交代する?」を NO、勝利/送り出しテキスト送り、ネスト party メニューを1段戻す)。非 in_battle で queue を flush(F2)。
+  **検証 (07-07 live)**: 改善前は Machop 1体で気絶 → 改善後は **Machop + Meditite の2体を撃破**(Grovyle 66→37、敵 HP 単調減少を enemy_hp で確認)。
+- **付随: gym leader nav — ✅ FIXED (07-07)**。goal target_pos(Brawly (4,3))を常に interact_target 化し歩行可能な隣接タイルへ誘導 + 接近ゾーンを empirical_blocked から免除(face+A の bump が tile_map を汚染し (4,4)/(3,3) が壁化 → 次 run で Brawly 到達不能になっていた)。live で迷路突破 → Brawly 到達 → face+A で戦闘起動を確認。
+- **H6b: Grovyle 単騎では Brawly の3体を sweep できない — ⚠️ CONFIRMED (07-07、残 blocker)**
+  Brawly = Machop L16 + Meditite L16 + **Makuhita L19(Bulk Up + Vital Throw 70)**。Grovyle L24 は最初の2体を倒せるが、消耗した状態で Makuhita L19 に力尽きる(neutral 相性同士の attrition)。控えは L3-L7 で詰み → whiteout。
+  対処案: (a) Grovyle を L27-28 まで grind(HP+攻撃で Makuhita を先に落とせる)、(b) 2体目の主力を育成、(c) 戦闘中の Potion 使用ロジック追加。**最短は (a) の軽い grind**。fighting は grass 等倍なので相性で押せない=レベル差で押す。
+  検証: grind 後 savestate から再走行し Grovyle が3体連続で HP を保てるか。
 
 ## H2. 徘徊 Briney への確実な話しかけ(帰路の渡し船で再発する)
 
