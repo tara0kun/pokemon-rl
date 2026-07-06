@@ -302,6 +302,43 @@ def _current_cumulative_diff(state: dict[str, Any]) -> tuple[str, list[str]]:
     return diff, changed_files
 
 
+def _reset_cycle_changes(state: dict[str, Any]) -> list[str]:
+    """Discard a non-committing cycle's working-tree changes so the next cycle
+    is isolated. Gates diff against the RUN baseline, so an uncommitted change
+    (dry-run always, or --commit on failure) would otherwise be flagged as an
+    out-of-scope violation in every later cycle. Files already dirty BEFORE the
+    run started are never touched."""
+    base_dirty = set(state.get("initial_dirty", []))
+    try:
+        out = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=str(config.ROOT), capture_output=True, text=True,
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    reset: list[str] = []
+    for line in out.splitlines():
+        if len(line) < 4:
+            continue
+        code, path = line[:2], line[3:].strip().strip('"')
+        if not path or any(
+            gates._path_touches_dirty(path, d) for d in base_dirty
+        ):
+            continue  # leave pre-existing dirty work alone
+        if code == "??":
+            try:
+                (config.ROOT / path).unlink()
+            except OSError:
+                pass
+        else:
+            subprocess.run(
+                ["git", "checkout", "HEAD", "--", path],
+                cwd=str(config.ROOT), capture_output=True,
+            )
+        reset.append(path)
+    return reset
+
+
 def _write_text_artifact(prefix: str, text: str) -> str:
     path = config.LOG_DIR / f"{_stamp()}_{prefix}.txt"
     path.write_text(text, encoding="utf-8")
@@ -678,6 +715,13 @@ def main(argv: list[str] | None = None) -> int:
         state["last_handoff"] = str(out)
         _save_state(state)
         print(f"\nhandoff saved: {out}")
+
+        # Isolate cycles: a cycle that didn't commit leaves changes in the tree
+        # that would fail every later cycle's cumulative allow-path gate.
+        if not handoff.get("committed"):
+            reset = _reset_cycle_changes(state)
+            if reset:
+                print(f"[isolate] reverted {len(reset)} uncommitted file(s): {reset}")
 
         if handoff.get("usage_limited"):
             print(f"[pause] usage limit; resume with --resume {state['run_id']}")
