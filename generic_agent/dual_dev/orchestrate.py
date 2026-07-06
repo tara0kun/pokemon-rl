@@ -14,6 +14,7 @@ from typing import Any
 
 from . import clients, config, gates
 from .rate_limit import CodexRateLimiter
+from .queue import TaskQueue
 
 CONSTRAINTS = """Repository constraints:
 - ROM controls only; no direct RAM writes; no saveStateLoad as progress bypass.
@@ -505,7 +506,9 @@ def _read_task(args: argparse.Namespace) -> str:
         return args.task
     if args.task_file is not None:
         return Path(args.task_file).read_text(encoding="utf-8")
-    raise SystemExit("--task or --task-file is required unless --resume is used")
+    if getattr(args, "from_queue", False):
+        return "(tasks pulled from backlog queue)"
+    raise SystemExit("--task or --task-file is required unless --resume/--from-queue is used")
 
 
 def _init_or_resume_state(args: argparse.Namespace) -> dict[str, Any]:
@@ -564,6 +567,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-apply", action="store_true", help="Run Claude design only")
     parser.add_argument("--continue-on-fail", action="store_true", help="Do not stop after a failed gate/review")
     parser.add_argument("--reap-stale", action="store_true", help="Abort dead 'running' runs and exit (unblocks a stuck Codex)")
+    parser.add_argument("--enqueue", metavar="TASK", help="Add TASK (with --allow-path) to the backlog and exit")
+    parser.add_argument("--from-queue", action="store_true", help="Pull one task per cycle from the backlog instead of --task")
     args = parser.parse_args(argv)
 
     config.ensure_dirs()
@@ -574,11 +579,25 @@ def main(argv: list[str] | None = None) -> int:
         print(f"[reap] cleared {len(reaped)} stale run(s): {reaped}")
     if args.reap_stale:
         return 0
+    if args.enqueue:
+        tq = TaskQueue()
+        tid = tq.add(args.enqueue, list(args.allow_path), created_at=_now())
+        print(f"[queue] added task#{tid}; backlog now {tq.counts()}")
+        return 0
     state = _init_or_resume_state(args)
     task = state["task"]
     allowed_paths = list(state.get("allowed_paths", []))
     commit = bool(state.get("commit", False))
     apply = bool(state.get("apply", True))
+
+    tq = TaskQueue()
+    if args.from_queue:
+        # A task left "running" means a prior cycle was killed mid-flight; no
+        # cycle is active at startup, so return it to the backlog.
+        for t in tq._load():
+            if t.get("status") == "running":
+                tq.mark(t["id"], "pending")
+        print(f"[queue] backlog at start: {tq.counts()}")
 
     pending_handoff = complete_pending_review(state)
     if pending_handoff is not None:
@@ -613,14 +632,36 @@ def main(argv: list[str] | None = None) -> int:
             print("[stop] wall-clock limit reached before next cycle.")
             break
 
+        cur_task, cur_allowed, queue_tid = task, allowed_paths, None
+        if args.from_queue:
+            qt = tq.next_pending()
+            if qt is None:
+                state["status"] = "completed"
+                state["next_cycle"] = cycle_idx
+                _save_state(state)
+                print("[queue] backlog drained; stopping loop.")
+                break
+            cur_task = qt["task"]
+            cur_allowed = list(qt.get("allow_paths", []))
+            queue_tid = qt["id"]
+            tq.mark(queue_tid, "running")
+            print(f"[queue] cycle {cycle_idx}: task#{queue_tid}: {cur_task[:70]}")
+
         handoff = run_cycle(
-            task,
+            cur_task,
             cycle_idx,
             commit=commit,
             apply=apply,
-            allowed_paths=allowed_paths,
+            allowed_paths=cur_allowed,
             state=state,
         )
+        if args.from_queue and queue_tid is not None:
+            outcome = "failed" if _handoff_failed(handoff) else "done"
+            tq.mark(queue_tid, outcome, result={
+                "verdict": handoff.get("review", {}).get("verdict"),
+                "committed": handoff.get("committed"),
+                "aborted": handoff.get("aborted"),
+            })
         out = config.HANDOFF_DIR / f"{handoff['timestamp']}_cycle{cycle_idx}.json"
         handoff["handoff_file"] = str(out)
         out.write_text(json.dumps(handoff, ensure_ascii=False, indent=2), encoding="utf-8")
