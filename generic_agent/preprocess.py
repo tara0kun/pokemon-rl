@@ -83,6 +83,7 @@ def load_png_as_array(path: Path) -> np.ndarray:
 
 def frame_hash(arr: np.ndarray) -> str:
     """64x64 downsampled MD5 — robust to tiny pixel noise."""
+    _require_image(arr, "arr")
     small = cv2.resize(arr, (64, 64), interpolation=cv2.INTER_AREA)
     return hashlib.md5(small.tobytes()).hexdigest()
 
@@ -93,12 +94,13 @@ def frame_embedding(arr: np.ndarray, dim: int = 64) -> np.ndarray:
     8x8 downsampled grayscale = 64-d uint8 vec. Coarse enough that
     near-duplicate frames cluster but novel scenes are far apart in L2.
     """
-    gray = cv2.cvtColor(arr, cv2.COLOR_BGR2GRAY)
+    _require_image(arr, "arr")
     if not isinstance(dim, int) or dim <= 0:
         raise ValueError(f"dim must be a positive integer, got {dim!r}")
     side = math.isqrt(dim)
     if side * side != dim:
         raise ValueError(f"dim must be a positive perfect square, got {dim}")
+    gray = cv2.cvtColor(arr, cv2.COLOR_BGR2GRAY)
     small = cv2.resize(gray, (side, side), interpolation=cv2.INTER_AREA)
     return small.flatten().astype(np.float32)
 
