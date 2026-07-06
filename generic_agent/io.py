@@ -131,10 +131,30 @@ class MGBAClient:
         )
 
     def read_range(self, addr: int, length: int) -> bytes:
+        """Read `length` bytes from `addr` via mGBA's core:readRange.
+
+        The lua server replies with comma-separated hex tokens
+        (e.g. "0a,ff,00"). Each token is parsed as base-16. A malformed
+        token (non-hex, empty, or out of the 0-255 byte range) is wrapped
+        in EmulatorError naming the offending token plus addr/length,
+        instead of surfacing an opaque ValueError — so RAM-bridge failures
+        point straight at the bad reply.
+
+        Returns the parsed bytes (empty bytes on an empty reply).
+        """
         text = self._send(f"core.readRange,{addr},{length}").text
         if not text:
             return b""
-        return bytes(int(b, 16) for b in text.split(","))
+        out = bytearray()
+        for tok in text.split(","):
+            try:
+                out.append(int(tok, 16))
+            except ValueError as exc:
+                raise EmulatorError(
+                    f"readRange({addr:#x}, len={length}) bad hex token "
+                    f"{tok!r}: {exc}"
+                ) from exc
+        return bytes(out)
 
     def screenshot(self, path: Path | str) -> None:
         p = Path(path).resolve()
