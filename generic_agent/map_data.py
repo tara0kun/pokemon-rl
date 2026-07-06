@@ -206,17 +206,6 @@ class MapCache:
                     "offset": int(c.get("offset", 0)),
                 }
         warps_raw = map_json.get("warp_events") or []
-        def _norm(s: str) -> str:
-            parts = s.replace("MAP_", "").split("_")
-            out: list[str] = []
-            for p in parts:
-                if not p:
-                    continue
-                if p[0].isalpha():
-                    out.append(p[0].upper() + p[1:].lower())
-                else:
-                    out.append(p)
-            return "".join(out)
         def _safe_int(v) -> int:
             try:
                 return int(v)
