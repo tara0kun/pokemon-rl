@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from . import clients, config, gates
+from .rate_limit import CodexRateLimiter
 
 CONSTRAINTS = """Repository constraints:
 - ROM controls only; no direct RAM writes; no saveStateLoad as progress bypass.
@@ -353,8 +354,14 @@ def run_cycle(
     _save_state(state)
 
     print(f"\n=== cycle {cycle_idx}: implementation (Codex) ===")
+    # Throttle the ONLY quota-consuming call. Reserve happens before the call
+    # (crash-safe: can't burst on the next run), interval persists across runs.
+    min_interval = float(state.get("codex_min_interval_s", 0.0))
+    limiter = CodexRateLimiter(min_interval)
+    limiter.wait_and_reserve(log_fn=print)
     last_msg = config.LOG_DIR / f"{ts}_cycle{cycle_idx}_codex_last.txt"
     impl = clients.run_codex(_impl_prompt(task, design.text, allowed_paths, state), last_message_file=last_msg)
+    limiter.note_last_result(usage_limited=bool(impl.usage_limited))
     handoff["implementation"] = _result_dict(impl)
     print(impl.text[:1500] if impl.text else f"[codex] rc={impl.returncode}")
 
@@ -507,6 +514,9 @@ def _init_or_resume_state(args: argparse.Namespace) -> dict[str, Any]:
         # Claim the run for THIS process so the stale-run reaper (which checks
         # pid liveness) doesn't later mistake a live resume for a dead run.
         state["pid"] = os.getpid()
+        # Keep the persisted throttle unless this invocation overrides it (>0).
+        if float(args.codex_min_interval) > 0:
+            state["codex_min_interval_s"] = float(args.codex_min_interval)
         print(f"[resume] loaded run {state['run_id']} status={state.get('status')} next_cycle={state.get('next_cycle')}")
         return state
 
@@ -521,6 +531,7 @@ def _init_or_resume_state(args: argparse.Namespace) -> dict[str, Any]:
         "allowed_paths": list(args.allow_path),
         "commit": bool(args.commit),
         "apply": not args.no_apply,
+        "codex_min_interval_s": float(args.codex_min_interval),
         "initial_tree": gates.snapshot_tree(),
         "initial_dirty": sorted(gates.dirty_files()),
         "next_cycle": 1,
@@ -547,6 +558,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cycles", type=int, default=1, help="Maximum cycles for this invocation")
     parser.add_argument("--hours", type=float, default=0.0, help="Optional wall-clock limit for this invocation")
     parser.add_argument("--sleep-seconds", type=float, default=0.0, help="Sleep between cycles")
+    parser.add_argument("--codex-min-interval", type=float, default=0.0, help="Min seconds between Codex calls, persisted across runs (0=off). e.g. 1800=48/day")
     parser.add_argument("--allow-path", action="append", default=[], help="Allowed write path; repeatable")
     parser.add_argument("--commit", action="store_true", help="Commit only if gates and review pass")
     parser.add_argument("--no-apply", action="store_true", help="Run Claude design only")
