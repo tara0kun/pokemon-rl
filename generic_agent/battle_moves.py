@@ -64,6 +64,15 @@ _CHART: dict[int, dict[int, float]] = {
 
 
 def effectiveness(atk_type: int, def_t1: int, def_t2: int) -> float:
+    """Type-chart damage multiplier of an attacking type vs a (possibly
+    dual-type) defender.
+
+    Why: in gen 3 both of the defender's types apply multiplicatively, so we
+    take the attacker's row in _CHART (default 1.0 for unlisted pairings) and
+    multiply the def_t1 and def_t2 lookups, skipping the second when the mon
+    is single-typed (def_t2 == def_t1) so a 0.5x/2x isn't squared. Returns 0.0
+    for an immunity, up to 4.0 for a double super-effective hit.
+    """
     row = _CHART.get(atk_type, {})
     mult = row.get(def_t1, 1.0)
     if def_t2 != def_t1:
@@ -72,11 +81,20 @@ def effectiveness(atk_type: int, def_t1: int, def_t2: int) -> float:
 
 
 def enemy_types(client: MGBAClient) -> tuple[int, int]:
+    """(type1, type2) of the opponent's active battler, feeding effectiveness().
+
+    Why gBattleMons[1]: slot 0 is the player's active mon and slot 1 is the
+    opponent's, so we offset one BATTLEMON_SIZE before reading the type bytes.
+    """
     a = GBATTLEMONS + BATTLEMON_SIZE  # gBattleMons[1] = opponent
     return client.read8(a + BATTLEMON_TYPE1), client.read8(a + BATTLEMON_TYPE2)
 
 
 def enemy_hp(client: MGBAClient) -> tuple[int, int]:
+    """(current_hp, max_hp) of the opponent's active battler, read as u16s.
+
+    Uses the same gBattleMons[1] offset as enemy_types() (slot 1 = opponent).
+    """
     a = GBATTLEMONS + BATTLEMON_SIZE
     return client.read16(a + BATTLEMON_HP), client.read16(a + BATTLEMON_MAXHP)
 
