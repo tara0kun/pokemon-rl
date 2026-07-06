@@ -311,6 +311,19 @@ class MapKnowledgeStore:
         mk.name = info.name
         mk.width = info.width
         mk.height = info.height
+        # Water-blocking is for OUTDOOR surfable water. Indoor maps have none;
+        # their pitch-black-maze tilesets misclassify walkable floor as water
+        # (Dewford Gym: 47 walkable maze tiles flagged water -> BFS to Brawly
+        # returned NONE and the agent could never reach the leader). Skip water
+        # seeding for indoor maps.
+        block_water = True
+        try:
+            _jp = config.MEMORY_DIR / "map_cache" / f"{info.name}.map.json"
+            if _jp.exists():
+                _mt = json.loads(_jp.read_text(encoding="utf-8")).get("map_type")
+                block_water = _mt != "MAP_TYPE_INDOOR"
+        except (OSError, json.JSONDecodeError):
+            pass
         mk.warps = {
             (w["x"], w["y"]): {
                 "dest_map_g": w.get("dest_map_g"),
@@ -337,7 +350,7 @@ class MapKnowledgeStore:
                         beh = beh_table.get(meta)
                         if beh in GRASS_BEHAVIORS:
                             mk.grass_tiles.add((x, y))
-                        if beh in WATER_BEHAVIORS:
+                        if block_water and beh in WATER_BEHAVIORS:
                             mk.water_tiles.add((x, y))
                         if beh in LEDGE_JUMP_BEHAVIORS:
                             mk.ledge_jumps[(x, y)] = (
