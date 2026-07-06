@@ -29,7 +29,8 @@ def append_note(note: str, turn: int) -> None:
 
 def recent_notes(limit: int = 8) -> list[str]:
     """Return up to `limit` most recent notes, oldest-to-newest; [] if none."""
-    if limit < 0:
+    # limit == 0 must short-circuit: lines[-0:] == lines[0:] would return ALL notes.
+    if limit <= 0:
         return []
     if not NOTES_FILE.exists():
         return []
