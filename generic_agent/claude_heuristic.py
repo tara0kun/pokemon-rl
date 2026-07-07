@@ -1308,6 +1308,30 @@ def run(
                         battle_move_queue = ["A"]
             # active_hp == -1 (unreadable): leave queue empty -> heuristic
             # SEND_OUT_SEQ fallback, harmless and self-corrects next turn.
+        elif (
+            not battle_move_queue and gs.in_battle
+            and not gs.is_trainer_battle
+            and gs.party0_hp_frac >= 0.4
+            and gs.bag_pokeball_count == 0
+        ):
+            # Wild fight — pick a move with PP from RAM instead of decide()'s
+            # blind "A" on the highlighted (often depleted) first move. Once
+            # grinding ground Pound to 0 PP, "A" only popped "There's no PP
+            # left!" and the turn never resolved, so Grovyle never took damage,
+            # never dropped below 40% to heal, and PP never refreshed — the
+            # Granite Cave grind froze at L26. Below 40% HP or holding Poke
+            # Balls, decide() keeps its run / catch behaviour.
+            at_fight_menu = bool(screen_signals.get("battle_menu"))
+            try:
+                best_slot = battle_moves_mod.best_move_index(client)
+            except (OSError, RuntimeError, EmulatorError):
+                best_slot = -1
+            if best_slot == 0 or (best_slot >= 1 and at_fight_menu):
+                battle_move_queue = list(
+                    battle_moves_mod.move_select_sequence(best_slot)
+                )
+            elif best_slot < 0:
+                battle_move_queue = ["A"]  # all PP gone -> A selects Struggle
 
         if battle_move_queue:
             button = battle_move_queue.pop(0)
