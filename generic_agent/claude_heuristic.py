@@ -1287,20 +1287,18 @@ def run(
                     # attack while it is genuinely our turn (Fable F4).
                     battle_move_queue = ["B"]
                 else:
-                    # Our turn — pick the best damaging move from RAM (no
-                    # vision needed to READ moves). move_select_sequence(0) has
-                    # no Right/Down nav, so it is safe to queue even mid-
-                    # dialogue; only slots 1-3 (which press Right/Down and
-                    # could land on BAG/POKEMON — Fable F1) require a confirmed
-                    # FIGHT menu. If the best slot is 1-3 but vision hasn't
-                    # confirmed yet, press "A" (advance text / open FIGHT +
-                    # pick the highlighted move) — always progress, never the
-                    # party_seq thrash (H6a).
+                    # Our turn — pick the best damaging move from RAM. The
+                    # sequence now self-corrects (leading B,B backs out of any
+                    # menu it might mis-open), so fire it for ANY slot without
+                    # a vision confirm — otherwise a best move in a bottom slot
+                    # (Pursuit/Quick Attack once Pound is out of PP) never gets
+                    # picked on a vision miss and the blind "A" stalls on the
+                    # depleted move. -1 (all PP gone) -> A selects Struggle.
                     try:
                         best_slot = battle_moves_mod.best_move_index(client)
                     except (OSError, RuntimeError, EmulatorError):
                         best_slot = -1
-                    if best_slot == 0 or (best_slot >= 1 and at_fight_menu):
+                    if best_slot >= 0:
                         battle_move_queue = list(
                             battle_moves_mod.move_select_sequence(best_slot)
                         )

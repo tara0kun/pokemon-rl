@@ -182,11 +182,17 @@ _SLOT_NAV = {0: (), 1: ("Right",), 2: ("Down",), 3: ("Down", "Right")}
 
 
 def move_select_sequence(best_slot: int) -> tuple[str, ...]:
-    """Button sequence to select a specific move slot from the FIGHT menu.
+    """Self-correcting button sequence to select a move slot from ANY screen.
 
-    Resets the battle menu cursor to FIGHT (Up,Up,Left), A opens the move
-    submenu, Up+Left forces the submenu cursor to slot 0 (robust to the game
-    remembering the last-used move), then navigates to the target slot and A.
+    Leading B,B first backs out of whatever wrong sub-screen we might be on —
+    a SUMMARY page, the POKEMON list, or the BAG that the slot-2/3 Down/Right
+    nav can accidentally open when fired a frame off the FIGHT menu (two levels
+    deep needs two B's; harmless at the top battle menu / in dialogue). Then
+    Up,Up,Left puts the cursor on FIGHT, A opens the move submenu, Up+Left
+    forces its cursor to slot 0 (robust to the game remembering the last move),
+    then the per-slot nav and A. Being self-correcting lets it fire without a
+    vision confirm, so a best move in a bottom slot (e.g. Pursuit once Pound is
+    out of PP) still gets picked instead of stalling.
     """
     nav = _SLOT_NAV.get(best_slot, ())
-    return ("Up", "Up", "Left", "A", "Up", "Left") + nav + ("A",)
+    return ("B", "B", "Up", "Up", "Left", "A", "Up", "Left") + nav + ("A",)

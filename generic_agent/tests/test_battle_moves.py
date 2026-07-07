@@ -50,14 +50,15 @@ class MoveSelectSequenceTest(unittest.TestCase):
         for slot in range(4):
             seq = bm.move_select_sequence(slot)
             self.assertEqual(seq[-1], "A", f"slot {slot} must end with A")
-            # always resets cursor to FIGHT then move slot 0 first
-            self.assertEqual(seq[:6], ("Up", "Up", "Left", "A", "Up", "Left"))
+            # leading B,B escapes any wrong submenu, then resets to FIGHT/slot0
+            self.assertEqual(
+                seq[:8], ("B", "B", "Up", "Up", "Left", "A", "Up", "Left"))
 
     def test_slot_navigation(self):
-        self.assertEqual(bm.move_select_sequence(0)[6:], ("A",))
-        self.assertEqual(bm.move_select_sequence(1)[6:], ("Right", "A"))
-        self.assertEqual(bm.move_select_sequence(2)[6:], ("Down", "A"))
-        self.assertEqual(bm.move_select_sequence(3)[6:], ("Down", "Right", "A"))
+        self.assertEqual(bm.move_select_sequence(0)[8:], ("A",))
+        self.assertEqual(bm.move_select_sequence(1)[8:], ("Right", "A"))
+        self.assertEqual(bm.move_select_sequence(2)[8:], ("Down", "A"))
+        self.assertEqual(bm.move_select_sequence(3)[8:], ("Down", "Right", "A"))
 
 
 class ActiveHpTest(unittest.TestCase):
