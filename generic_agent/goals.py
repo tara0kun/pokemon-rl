@@ -470,6 +470,9 @@ def append_note(note: str) -> None:
 
 
 def read_notes(limit: int = 20) -> list[str]:
+    # limit <= 0 must short-circuit: lines[-0:] == lines[0:] would return ALL notes.
+    if limit <= 0:
+        return []
     if not GOALS_FILE.exists():
         return []
     try:
