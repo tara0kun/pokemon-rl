@@ -1321,16 +1321,20 @@ def run(
             # never dropped below 40% to heal, and PP never refreshed — the
             # Granite Cave grind froze at L26. Below 40% HP or holding Poke
             # Balls, decide() keeps its run / catch behaviour.
-            at_fight_menu = bool(screen_signals.get("battle_menu"))
             try:
                 best_slot = battle_moves_mod.best_move_index(client)
             except (OSError, RuntimeError, EmulatorError):
                 best_slot = -1
-            if best_slot == 0 or (best_slot >= 1 and at_fight_menu):
+            # Unlike trainer battles (Fable F1), a wild battle has no items to
+            # waste and we can always flee, so fire the full cursor sequence
+            # for ANY slot without waiting for a vision confirm — otherwise a
+            # best move in slot 1-3 (Pursuit/Quick Attack once Pound is out of
+            # PP) never gets selected and it stalls again.
+            if best_slot >= 0:
                 battle_move_queue = list(
                     battle_moves_mod.move_select_sequence(best_slot)
                 )
-            elif best_slot < 0:
+            else:
                 battle_move_queue = ["A"]  # all PP gone -> A selects Struggle
 
         if battle_move_queue:
