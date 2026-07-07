@@ -29,7 +29,8 @@ class LocalDecision:
     frames: int = 15
     source: str = ""
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, object]:
+        """Return this decision as a plain serializable dict."""
         return {
             "button": self.button,
             "frames": self.frames,
@@ -54,9 +55,11 @@ class FrameCache:
         self._load()
 
     def _key(self, fhash: str, map_group: int, map_num: int) -> str:
+        """Build the cache key `{map_group}-{map_num}-{fhash}`."""
         return f"{map_group}-{map_num}-{fhash}"
 
     def _load(self) -> None:
+        """Load persisted cache entries from disk (silent on missing/corrupt)."""
         if not self.path.exists():
             return
         try:
@@ -72,6 +75,7 @@ class FrameCache:
             )
 
     def save(self) -> None:
+        """Persist all cache entries to disk as JSON."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         out = {
             k: {
@@ -87,6 +91,7 @@ class FrameCache:
     def lookup(
         self, fhash: str, map_group: int, map_num: int
     ) -> CacheEntry | None:
+        """Return the entry for this frame/map, bumping hit_count and last_used_at."""
         entry = self._store.get(self._key(fhash, map_group, map_num))
         if entry is not None:
             entry.hit_count += 1
@@ -114,6 +119,7 @@ class FrameCache:
         button: str,
         frames: int = 15,
     ) -> None:
+        """Store (or overwrite) the cached action for this frame/map."""
         self._store[self._key(fhash, map_group, map_num)] = CacheEntry(
             button=button,
             frames=frames,
@@ -122,9 +128,11 @@ class FrameCache:
         )
 
     def forget(self, fhash: str, map_group: int, map_num: int) -> None:
+        """Remove the cached entry for this frame/map if present."""
         self._store.pop(self._key(fhash, map_group, map_num), None)
 
     def __len__(self) -> int:
+        """Return the number of cached entries."""
         return len(self._store)
 
 
