@@ -28,6 +28,7 @@ BATTLEMON_TYPE1 = 0x21         # u8
 BATTLEMON_TYPE2 = 0x22         # u8
 BATTLEMON_HP = 0x28            # u16 current HP
 BATTLEMON_MAXHP = 0x2C         # u16 max HP
+BATTLEMON_PP = 0x24            # 4 x u8 current PP of the active battler's moves
 GBATTLEMOVES = 0x0831C898      # BattleMove[], 12 bytes each: power@+1, type@+2
 
 # Substruct permutation order (personality % 24); moves live in the 'A'
@@ -119,6 +120,17 @@ def active_move_ids(client: MGBAClient) -> list[int]:
     return [client.read16(a + BATTLEMON_MOVES + i * 2) for i in range(4)]
 
 
+def active_pp(client: MGBAClient) -> list[int]:
+    """Current PP of the player's ACTIVE battler's four move slots.
+
+    best_move_index skips 0-PP moves: selecting a depleted move only pops
+    'There's no PP left for this move!' and the turn never resolves, stalling
+    the whole battle (grinding one move down to 0 PP on Route106 was exactly
+    the Brawly-vs-Meditite stall)."""
+    a = GBATTLEMONS
+    return [client.read8(a + BATTLEMON_PP + i) for i in range(4)]
+
+
 def party0_move_ids(client: MGBAClient) -> list[int]:
     """Decrypt gPlayerParty[0]'s four move IDs from the Attacks substruct.
     (Kept for reference; best_move_index uses active_move_ids instead.)"""
@@ -143,12 +155,15 @@ def best_move_index(client: MGBAClient) -> int:
     move of the party leader vs the current opponent, or -1 if none / unread."""
     try:
         moves = active_move_ids(client)
+        pp = active_pp(client)
         et1, et2 = enemy_types(client)
     except EmulatorError:
         return -1
     best_i, best_score = -1, 0.0
     for i, mid in enumerate(moves):
         if mid == 0:
+            continue
+        if pp[i] == 0:  # depleted — selecting it stalls on "no PP left"
             continue
         try:
             power, mtype = move_power_type(client, mid)

@@ -78,12 +78,16 @@ class ActiveHpTest(unittest.TestCase):
 
 
 class BestMoveIndexTest(unittest.TestCase):
-    def _client(self, move_ids, enemy_types, move_table):
-        """move_table: {move_id: (power, type)}."""
+    def _client(self, move_ids, enemy_types, move_table, pp=None):
+        """move_table: {move_id: (power, type)}. pp: per-slot PP (default 30)."""
         mem8, mem16 = {}, {}
         # active battler moves (read16)
         for i, mid in enumerate(move_ids):
             mem16[bm.GBATTLEMONS + bm.BATTLEMON_MOVES + i * 2] = mid
+        # active battler PP (read8), default full so moves aren't skipped
+        pp = pp or [30, 30, 30, 30]
+        for i, p in enumerate(pp):
+            mem8[bm.GBATTLEMONS + bm.BATTLEMON_PP + i] = p
         # enemy types (read8) at gBattleMons[1]
         a = bm.GBATTLEMONS + bm.BATTLEMON_SIZE
         mem8[a + bm.BATTLEMON_TYPE1] = enemy_types[0]
@@ -94,6 +98,17 @@ class BestMoveIndexTest(unittest.TestCase):
             mem8[base + 1] = power
             mem8[base + 2] = mtype
         return FakeBattleClient(mem8=mem8, mem16=mem16)
+
+    def test_skips_depleted_pp_move(self) -> None:
+        # slot0 = Pound (best score) but 0 PP -> must fall to slot3 Quick Attack
+        # (this was the Brawly stall: best_move kept picking the 0-PP move).
+        c = self._client(
+            move_ids=[1, 43, 228, 98],
+            enemy_types=(1, 1),  # Fighting
+            move_table={1: (40, 0), 43: (0, 0), 228: (40, 17), 98: (40, 0)},
+            pp=[0, 29, 18, 26],
+        )
+        self.assertEqual(bm.best_move_index(c), 3)
 
     def test_picks_highest_power_times_effectiveness(self):
         # slot0 = weak grass (Absorb 20) vs water enemy -> 40; slot1 = Tackle

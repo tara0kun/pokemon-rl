@@ -264,26 +264,27 @@ class Goal:
         if c == "dewford_gym_approach":
             # Get TO Dewford Town from elsewhere. On (0,11) itself this goal has
             # no target_pos so current_goal auto-skips it and seek_brawly wins.
-            # LEVEL GATE (H6b): under L26 the grind goal owns navigation, so
-            # this must NOT match — otherwise it routes the agent out of
-            # Granite Cave back to Dewford every step and grinding never runs.
+            # LEVEL GATE (H6b): under L30 the grind goal owns navigation, so
+            # this must NOT match — otherwise it routes the agent out of the
+            # grind area back to Dewford every step and grinding never runs.
             return (
                 gs.badge_count >= 1 and gs.badge_count < 2
-                and gs.party0_level >= 26
+                and gs.party0_level >= 30
                 and cur != (3, 3)
             )
         if c == "seek_brawly":
             # Fires on Dewford Town (planner routes through the gym warp) and
             # inside the gym (walk to Brawly). Coords are map_data/canon, the
             # same frame as gs.x/gs.y — NOT the memory's stale "+7" values.
-            # LEVEL GATE (H6b): only challenge Brawly once the lead is L26+.
-            # Grovyle learns Leaf Blade (70 STAB) at L26 — below that its moves
-            # cap at 40 power (neutral vs Fighting) and it loses to Brawly's
-            # 3rd mon (Bulk Up Makuhita L19) by attrition. Under L26 the grind
-            # goal below wins instead.
+            # LEVEL GATE (H6b): only challenge Brawly once the lead is L30+.
+            # Grovyle's moves cap at 40 power (neutral vs Fighting) — it does
+            # NOT learn Leaf Blade by the mid-20s (checked live at L26). So it
+            # needs a raw stat lead (HP+Atk) to out-tempo Brawly's Bulk Up
+            # Makuhita L19; L26 still lost at 25 HP, L30 (11 levels up) is the
+            # safe margin. Under L30 the grind goal below wins instead.
             return (
                 gs.badge_count >= 1 and gs.badge_count < 2
-                and gs.party0_level >= 26
+                and gs.party0_level >= 30
                 and cur in {(0, 11), (3, 3)}
             )
         if c == "heal_low_hp_dewford":
@@ -298,12 +299,12 @@ class Goal:
                 and cur in {(0, 11), (3, 1), (0, 21), (24, 7)}
             )
         if c == "grind_pre_brawly":
-            # Lead below L26 (no Leaf Blade yet) → grind wild battles in
-            # Granite Cave (reachable from Dewford via Route106) until strong
-            # enough, then seek_brawly takes over.
+            # Lead below L30 → grind wild battles on Route106 / Granite Cave
+            # (reachable from Dewford) until it has the stat lead to sweep
+            # Brawly, then seek_brawly takes over.
             return (
                 1 <= gs.badge_count < 2
-                and gs.party0_level < 26
+                and gs.party0_level < 30
                 and cur in {(0, 11), (3, 1), (0, 21), (24, 7)}
             )
         return False
@@ -454,7 +455,7 @@ GOAL_TABLE: list[Goal] = [
         name="grind_granite_cave",
         target_map=(24, 7),         # GraniteCave_1F (wild: Zubat/Makuhita/Aron)
         condition="grind_pre_brawly",
-        desc="Grovyle < L26 → Granite Cave で野生戦 grind → L26 で Leaf Blade → Brawly",
+        desc="Grovyle < L30 → Route106/Granite Cave で野生戦 grind → ステータス優位で Brawly",
     ),
     Goal(
         name="reach_dewford_gym",
