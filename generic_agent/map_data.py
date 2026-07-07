@@ -400,19 +400,49 @@ class MapCache:
         info = self.get(map_g, map_n)
         if info is None or direction not in info.connections:
             return set()
-        if direction == "up":
-            y = 0
-        elif direction == "down":
-            y = info.height - 1
-        elif direction == "left":
-            x_edge = 0
-            return {(x_edge, y) for y in range(info.height) if info.walkable(x_edge, y)}
-        elif direction == "right":
-            x_edge = info.width - 1
-            return {(x_edge, y) for y in range(info.height) if info.walkable(x_edge, y)}
-        else:
-            return set()
-        return {(x, y) for x in range(info.width) if info.walkable(x, y)}
+        conn = info.connections[direction]
+        offset = int(conn.get("offset", 0))
+        # Only the stretch of the edge that actually overlaps the destination
+        # map warps across — a connection with a large offset (e.g. Route106
+        # down->DewfordTown offset 60) leaves the rest of the edge as a dead
+        # wall. Walking off-overlap does NOT cross, so returning the whole
+        # edge made the planner route to a non-warping tile and stall. Clamp
+        # to [offset, offset+dest_span-1] along the shared axis; if the dest
+        # dims are unknown, fall back to the whole edge (old behavior).
+        dest = self._dims_of(conn.get("map_name", ""))
+        if direction in ("up", "down"):
+            y = 0 if direction == "up" else info.height - 1
+            lo, hi = 0, info.width - 1
+            if dest is not None:
+                lo = max(0, offset)
+                hi = min(info.width - 1, offset + dest[0] - 1)
+            return {
+                (x, y) for x in range(info.width)
+                if lo <= x <= hi and info.walkable(x, y)
+            }
+        # left / right
+        x_edge = 0 if direction == "left" else info.width - 1
+        lo, hi = 0, info.height - 1
+        if dest is not None:
+            lo = max(0, offset)
+            hi = min(info.height - 1, offset + dest[1] - 1)
+        return {
+            (x_edge, y) for y in range(info.height)
+            if lo <= y <= hi and info.walkable(x_edge, y)
+        }
+
+    def _dims_of(self, map_name: str) -> tuple[int, int] | None:
+        """(width, height) of a map looked up by canonical name, or None if
+        it can't be resolved offline."""
+        if not map_name or not self._ensure_index():
+            return None
+        target = map_name.replace("_", "").lower()
+        for g, grp in enumerate(self._map_groups):
+            for n, nm in enumerate(grp):
+                if nm.replace("_", "").lower() == target:
+                    mi = self.get(g, n)
+                    return (mi.width, mi.height) if mi else None
+        return None
 
     def warp_tiles_for(
         self, map_g: int, map_n: int, dest_name: str,
