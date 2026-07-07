@@ -26,8 +26,15 @@
 - **付随: gym leader nav — ✅ FIXED (07-07)**。goal target_pos(Brawly (4,3))を常に interact_target 化し歩行可能な隣接タイルへ誘導 + 接近ゾーンを empirical_blocked から免除(face+A の bump が tile_map を汚染し (4,4)/(3,3) が壁化 → 次 run で Brawly 到達不能になっていた)。live で迷路突破 → Brawly 到達 → face+A で戦闘起動を確認。
 - **H6b: Grovyle 単騎では Brawly の3体を sweep できない — ⚠️ CONFIRMED (07-07、残 blocker)**
   Brawly = Machop L16 + Meditite L16 + **Makuhita L19(Bulk Up + Vital Throw 70)**。Grovyle L24 は最初の2体を倒せるが、消耗した状態で Makuhita L19 に力尽きる(neutral 相性同士の attrition)。控えは L3-L7 で詰み → whiteout。
-  対処案: (a) Grovyle を L27-28 まで grind(HP+攻撃で Makuhita を先に落とせる)、(b) 2体目の主力を育成、(c) 戦闘中の Potion 使用ロジック追加。**最短は (a) の軽い grind**。fighting は grass 等倍なので相性で押せない=レベル差で押す。
-  検証: grind 後 savestate から再走行し Grovyle が3体連続で HP を保てるか。
+  **07-07 追加調査で quick win を全て潰した**:
+  - bag に回復アイテム **ゼロ**(唯一の item id=183 は非回復)→ 戦闘中 Potion 案 (c) は不可。
+  - `screen_features.battle_menu_open()` は実 FIGHT メニュー(brawly_battle/post_brawly のスクショ)を**正しく検出**、`A@rem0` は dialogue 中の正常なテキスト送り → **vision も battle ロジックも妥当**。play の粗さでなく火力不足が真因。
+  - Grovyle L24 の技は [Pound40, Leer0, Pursuit40, QuickAttack98=40] で全て ≤40・格闘に等倍。**Grovyle は L26 で Leaf Blade(70威力 STAB)を習得** → Makuhita を約2撃で落とせる。**grind 目標 = L26(Leaf Blade 獲得)** が明確な payoff。
+  - 自律 heal 機構は **未実装**(`record_healing` は HP 上昇の記録のみ、PC で nurse に話す heal アクションは無い)。
+  **次セッションの実装計画(focused)**:
+  1. **heal-loop**: party0_hp_frac < ~0.4 で最寄り PC(Dewford は (2,10)→DewfordTownPokemonCenter1F)へ route → 内部で nurse(PC 上部)へ walk → 顔向け+A → dialogue を A で確定 → 退出。一般に有用(grind 以外でも whiteout 回避)。
+  2. **grind gate**: `dewford_gym_brawly` を `party0_level >= 26` で gate。未満は探索(reward_pick)で野生戦 → leveling。低レベル野生は XP 効率悪いので Granite Cave 等の grind area を明示 target にするとより速い。
+  3. 検証: savestate_dewford から走行 → Grovyle L26(Leaf Blade)→ Brawly 3体連続撃破 → Knuckle Badge。
 
 ## H2. 徘徊 Briney への確実な話しかけ(帰路の渡し船で再発する)
 
