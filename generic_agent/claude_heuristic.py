@@ -739,7 +739,15 @@ def heuristic_button(
                     catch_seq[battle_turn % len(catch_seq)],
                     "wild_catch_try",
                 )
-            if gs.party0_max_hp > 0 and gs.party0_hp_frac >= 0.7:
+            # Fight down to 40% HP (was 70%): the old threshold left a 40-70%
+            # dead band where the agent neither fought (ran instead) nor
+            # healed (heal goal fires <40%) — so grinding in Granite Cave,
+            # where wild mons hit back, stalled the lead at L26 for thousands
+            # of turns. At <40% it runs to end the battle, then the heal goal
+            # routes to the PC (restoring HP AND move PP), then it fights
+            # again. The <26% party0_critical whiteout guard above still flees
+            # genuinely dangerous fights.
+            if gs.party0_max_hp > 0 and gs.party0_hp_frac >= 0.4:
                 return "A", "wild_fight_safe"
             return (
                 RUN_CYCLE[battle_turn % len(RUN_CYCLE)],
