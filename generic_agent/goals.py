@@ -66,7 +66,7 @@ _GOAL_ORDER_WEIGHT = {
     "dewford_to_briney": 68,
     "dewford_sail": 69,
     "heal_at_dewford_pc": 73,
-    "grind_granite_cave": 72,
+    "grind_route106": 72,
     "reach_dewford_gym": 70,
     "dewford_gym_brawly": 71,
 }
@@ -90,7 +90,7 @@ _GOAL_BYPASS_VISITED = {
     "reach_dewford_gym", "dewford_gym_brawly",
     # Grind loop: the cave and PC get marked visited immediately but must stay
     # re-targetable every heal/grind cycle until the lead reaches L26.
-    "grind_granite_cave", "heal_at_dewford_pc",
+    "grind_route106", "heal_at_dewford_pc",
 }
 
 
@@ -452,8 +452,8 @@ GOAL_TABLE: list[Goal] = [
         desc="低HP → Dewford PC の nurse で回復 (grind 継続用)",
     ),
     Goal(
-        name="grind_granite_cave",
-        target_map=(24, 7),         # GraniteCave_1F (wild: Zubat/Makuhita/Aron)
+        name="grind_route106",
+        target_map=(0, 21),         # Route106 (bright; Grovyle one-shots wild Wingull)
         condition="grind_pre_brawly",
         desc="Grovyle < L30 → Route106/Granite Cave で野生戦 grind → ステータス優位で Brawly",
     ),

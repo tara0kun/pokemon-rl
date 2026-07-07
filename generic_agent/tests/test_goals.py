@@ -108,10 +108,10 @@ class TestDewfordChain(GoalsTestBase):
         # H6b: below L30 the grind goal owns nav, NOT Brawly —
         # else Grovyle throws itself at Brawly's Bulk Up Makuhita and loses.
         at_town = make_gs(map_group=0, map_num=11, badge_count=1, party0_level=24)
-        self.assertEqual(goals_mod.current_goal(at_town).name, "grind_granite_cave")
+        self.assertEqual(goals_mod.current_goal(at_town).name, "grind_route106")
         # inside the cave it must STAY (explore/grind), not route back out.
         in_cave = make_gs(map_group=24, map_num=7, badge_count=1, party0_level=24)
-        self.assertEqual(goals_mod.current_goal(in_cave).name, "grind_granite_cave")
+        self.assertEqual(goals_mod.current_goal(in_cave).name, "grind_route106")
 
     def test_low_hp_routes_to_pc_nurse(self) -> None:
         # A hurt lead heals at the Dewford PC before resuming the grind.
