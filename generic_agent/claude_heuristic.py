@@ -1311,6 +1311,15 @@ def run(
             and not gs.is_trainer_battle
             and gs.party0_hp_frac >= 0.4
             and gs.bag_pokeball_count == 0
+            # gs.in_battle (0x02022FEC) STAYS True in the overworld after a
+            # battle; without a live battle-UI vision signal this branch fired
+            # move_select in the dark Granite Cave overworld and froze there.
+            # Require the same battle UI decide()'s wild handler gates on.
+            and (
+                screen_signals.get("battle_menu")
+                or screen_signals.get("dialog")
+                or screen_signals.get("menu")
+            )
         ):
             # Wild fight — pick a move with PP from RAM instead of decide()'s
             # blind "A" on the highlighted (often depleted) first move. Once
