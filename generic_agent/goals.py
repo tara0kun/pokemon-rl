@@ -65,6 +65,8 @@ _GOAL_ORDER_WEIGHT = {
     "dewford_woods_south": 67,
     "dewford_to_briney": 68,
     "dewford_sail": 69,
+    "heal_at_dewford_pc": 73,
+    "grind_granite_cave": 72,
     "reach_dewford_gym": 70,
     "dewford_gym_brawly": 71,
 }
@@ -86,6 +88,9 @@ _GOAL_BYPASS_VISITED = {
     # Dewford gym: town + gym get marked visited on first entry, but we must
     # keep re-targeting the gym door / Brawly until the badge is won.
     "reach_dewford_gym", "dewford_gym_brawly",
+    # Grind loop: the cave and PC get marked visited immediately but must stay
+    # re-targetable every heal/grind cycle until the lead reaches L26.
+    "grind_granite_cave", "heal_at_dewford_pc",
 }
 
 
@@ -259,17 +264,47 @@ class Goal:
         if c == "dewford_gym_approach":
             # Get TO Dewford Town from elsewhere. On (0,11) itself this goal has
             # no target_pos so current_goal auto-skips it and seek_brawly wins.
+            # LEVEL GATE (H6b): under L26 the grind goal owns navigation, so
+            # this must NOT match — otherwise it routes the agent out of
+            # Granite Cave back to Dewford every step and grinding never runs.
             return (
                 gs.badge_count >= 1 and gs.badge_count < 2
+                and gs.party0_level >= 26
                 and cur != (3, 3)
             )
         if c == "seek_brawly":
             # Fires on Dewford Town (planner routes through the gym warp) and
             # inside the gym (walk to Brawly). Coords are map_data/canon, the
             # same frame as gs.x/gs.y — NOT the memory's stale "+7" values.
+            # LEVEL GATE (H6b): only challenge Brawly once the lead is L26+.
+            # Grovyle learns Leaf Blade (70 STAB) at L26 — below that its moves
+            # cap at 40 power (neutral vs Fighting) and it loses to Brawly's
+            # 3rd mon (Bulk Up Makuhita L19) by attrition. Under L26 the grind
+            # goal below wins instead.
             return (
                 gs.badge_count >= 1 and gs.badge_count < 2
+                and gs.party0_level >= 26
                 and cur in {(0, 11), (3, 3)}
+            )
+        if c == "heal_low_hp_dewford":
+            # Lead hurt (<40% HP) in the Dewford grind loop → route to the
+            # Dewford PC nurse so grinding continues instead of stalling once
+            # the low-HP whiteout guard starts fleeing every wild battle.
+            return (
+                1 <= gs.badge_count < 2
+                and gs.party0_max_hp > 0
+                and gs.party0_hp_frac < 0.4
+                and not gs.in_battle
+                and cur in {(0, 11), (3, 1), (0, 21), (24, 7)}
+            )
+        if c == "grind_pre_brawly":
+            # Lead below L26 (no Leaf Blade yet) → grind wild battles in
+            # Granite Cave (reachable from Dewford via Route106) until strong
+            # enough, then seek_brawly takes over.
+            return (
+                1 <= gs.badge_count < 2
+                and gs.party0_level < 26
+                and cur in {(0, 11), (3, 1), (0, 21), (24, 7)}
             )
         return False
 
@@ -402,6 +437,24 @@ GOAL_TABLE: list[Goal] = [
         target_pos=(5, 3),  # Mr.Briney NPC — talk to sail to Dewford
         condition="dewford_in_briney_house",
         desc="Mr.Briney (5,3) に話しかけて Dewford へ航海",
+    ),
+    # Grind loop for Brawly (H6b), placed BEFORE the gym goals so it wins
+    # while the lead is under-levelled. heal_at_dewford_pc is first so a hurt
+    # lead heals before returning to grind.
+    Goal(
+        name="heal_at_dewford_pc",
+        target_map=(3, 1),          # DewfordTown_PokemonCenter_1F
+        target_pos=(7, 3),          # counter below the nurse (map_data 3-1 nurse=(7,2));
+        # interact machinery routes to (7,4) and presses Up+A, which the PC
+        # counter metatile forwards to the nurse → full heal.
+        condition="heal_low_hp_dewford",
+        desc="低HP → Dewford PC の nurse で回復 (grind 継続用)",
+    ),
+    Goal(
+        name="grind_granite_cave",
+        target_map=(24, 7),         # GraniteCave_1F (wild: Zubat/Makuhita/Aron)
+        condition="grind_pre_brawly",
+        desc="Grovyle < L26 → Granite Cave で野生戦 grind → L26 で Leaf Blade → Brawly",
     ),
     Goal(
         name="reach_dewford_gym",

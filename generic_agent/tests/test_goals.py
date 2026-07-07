@@ -85,13 +85,14 @@ class TestDewfordChain(GoalsTestBase):
         goals_mod.PEEKO_DONE_MARKER.write_text("1", encoding="utf-8")
 
     def test_in_dewford_town_targets_brawly_gym(self) -> None:
-        gs = make_gs(map_group=0, map_num=11, badge_count=1)
+        # L26+ (Leaf Blade) precondition: only then is Brawly the goal.
+        gs = make_gs(map_group=0, map_num=11, badge_count=1, party0_level=26)
         g = goals_mod.current_goal(gs)
         self.assertEqual(g.name, "dewford_gym_brawly")
         self.assertEqual(g.target_map, (3, 3))
 
     def test_inside_gym_targets_brawly_tile(self) -> None:
-        gs = make_gs(map_group=3, map_num=3, badge_count=1)
+        gs = make_gs(map_group=3, map_num=3, badge_count=1, party0_level=26)
         g = goals_mod.current_goal(gs)
         self.assertEqual(g.name, "dewford_gym_brawly")
         self.assertEqual(g.target_pos, (4, 3))
@@ -99,9 +100,28 @@ class TestDewfordChain(GoalsTestBase):
     def test_gym_goal_survives_visited_suppression(self) -> None:
         # gym map を一度訪問しても badge を取るまで goal は生き続ける
         goals_mod.record_map_visit(3, 3)
-        gs = make_gs(map_group=0, map_num=11, badge_count=1)
+        gs = make_gs(map_group=0, map_num=11, badge_count=1, party0_level=26)
         g = goals_mod.current_goal(gs)
         self.assertEqual(g.name, "dewford_gym_brawly")
+
+    def test_under_l26_grinds_instead_of_brawly(self) -> None:
+        # H6b: below L26 (no Leaf Blade) the grind goal owns nav, NOT Brawly —
+        # else Grovyle throws itself at Brawly's Bulk Up Makuhita and loses.
+        at_town = make_gs(map_group=0, map_num=11, badge_count=1, party0_level=24)
+        self.assertEqual(goals_mod.current_goal(at_town).name, "grind_granite_cave")
+        # inside the cave it must STAY (explore/grind), not route back out.
+        in_cave = make_gs(map_group=24, map_num=7, badge_count=1, party0_level=24)
+        self.assertEqual(goals_mod.current_goal(in_cave).name, "grind_granite_cave")
+
+    def test_low_hp_routes_to_pc_nurse(self) -> None:
+        # A hurt lead heals at the Dewford PC before resuming the grind.
+        gs = make_gs(
+            map_group=24, map_num=7, badge_count=1, party0_level=24,
+            party0_hp=10, party0_max_hp=66,
+        )
+        g = goals_mod.current_goal(gs)
+        self.assertEqual(g.name, "heal_at_dewford_pc")
+        self.assertEqual(g.target_map, (3, 1))
 
     def test_badge2_retires_dewford_chain(self) -> None:
         # Brawly 撃破後は dewford 系 goal が全て非マッチ (HYPOTHESES H4:

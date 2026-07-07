@@ -295,7 +295,8 @@ def heuristic_button(
     directed_goal = (
         current_goal is not None
         and current_goal.name.startswith(
-            ("dewford", "peeko", "rescue_peeko", "reach_dewford")
+            ("dewford", "peeko", "rescue_peeko", "reach_dewford",
+             "grind", "heal")
         )
     )
     if (
