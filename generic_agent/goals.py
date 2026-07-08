@@ -66,7 +66,7 @@ _GOAL_ORDER_WEIGHT = {
     "dewford_to_briney": 68,
     "dewford_sail": 69,
     "heal_at_dewford_pc": 73,
-    "grind_route106": 72,
+    "grind_granite_cave": 72,
     "reach_dewford_gym": 70,
     "dewford_gym_brawly": 71,
 }
@@ -89,8 +89,8 @@ _GOAL_BYPASS_VISITED = {
     # keep re-targeting the gym door / Brawly until the badge is won.
     "reach_dewford_gym", "dewford_gym_brawly",
     # Grind loop: the cave and PC get marked visited immediately but must stay
-    # re-targetable every heal/grind cycle until the lead reaches L26.
-    "grind_route106", "heal_at_dewford_pc",
+    # re-targetable every heal/grind cycle until the lead reaches L30.
+    "grind_granite_cave", "heal_at_dewford_pc",
 }
 
 
@@ -296,16 +296,19 @@ class Goal:
                 and gs.party0_max_hp > 0
                 and gs.party0_hp_frac < 0.4
                 and not gs.in_battle
-                and cur in {(0, 11), (3, 1), (0, 21), (24, 7)}
+                and cur in {(0, 11), (3, 1), (0, 21), (24, 7), (24, 8)}
             )
         if c == "grind_pre_brawly":
-            # Lead below L30 → grind wild battles on Route106 / Granite Cave
-            # (reachable from Dewford) until it has the stat lead to sweep
-            # Brawly, then seek_brawly takes over.
+            # Lead below L30 → grind wild battles in Granite Cave 1F (reachable
+            # from Dewford via Route106) until it has the stat lead + Leaf Blade
+            # (learnt at L29) to sweep Brawly, then seek_brawly takes over. B1F
+            # (24,8) is included so a fall down the ladder keeps the grind goal
+            # matching and routes the lead back up to 1F instead of wandering
+            # the dark (requires_flash) sublevel goal-less.
             return (
                 1 <= gs.badge_count < 2
                 and gs.party0_level < 30
-                and cur in {(0, 11), (3, 1), (0, 21), (24, 7)}
+                and cur in {(0, 11), (3, 1), (0, 21), (24, 7), (24, 8)}
             )
         return False
 
@@ -452,10 +455,16 @@ GOAL_TABLE: list[Goal] = [
         desc="低HP → Dewford PC の nurse で回復 (grind 継続用)",
     ),
     Goal(
-        name="grind_route106",
-        target_map=(0, 21),         # Route106 (bright; Grovyle one-shots wild Wingull)
+        name="grind_granite_cave",
+        target_map=(24, 7),         # GraniteCave_1F (bright: requires_flash=False)
+        target_pos=(27, 7),         # open interior tile, 12 tiles from every warp/
+        # ladder. Caves roll a wild encounter on EVERY floor step, so pinning the
+        # lead here (interact-oscillation paces it on this tile) fights wild
+        # Makuhita/Zubat/Geodude for XP. Route106 has NO land encounters (canon
+        # wild_encounters.json is water/fishing only — verified grass_tiles=[]),
+        # so the earlier Route106 pin never triggered a single wild battle.
         condition="grind_pre_brawly",
-        desc="Grovyle < L30 → Route106/Granite Cave で野生戦 grind → ステータス優位で Brawly",
+        desc="Grovyle < L30 → Granite Cave 1F (27,7) で野生戦 grind → ステータス優位で Brawly",
     ),
     Goal(
         name="reach_dewford_gym",

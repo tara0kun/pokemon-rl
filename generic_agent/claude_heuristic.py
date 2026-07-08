@@ -1309,8 +1309,6 @@ def run(
         elif (
             not battle_move_queue and gs.in_battle
             and not gs.is_trainer_battle
-            and gs.party0_hp_frac >= 0.4
-            and gs.bag_pokeball_count == 0
             # gs.in_battle (0x02022FEC) STAYS True in the overworld after a
             # battle; without a live battle-UI vision signal this branch fired
             # move_select in the dark Granite Cave overworld and froze there.
@@ -1321,28 +1319,45 @@ def run(
                 or screen_signals.get("menu")
             )
         ):
-            # Wild fight — pick a move with PP from RAM instead of decide()'s
-            # blind "A" on the highlighted (often depleted) first move. Once
-            # grinding ground Pound to 0 PP, "A" only popped "There's no PP
-            # left!" and the turn never resolved, so Grovyle never took damage,
-            # never dropped below 40% to heal, and PP never refreshed — the
-            # Granite Cave grind froze at L26. Below 40% HP or holding Poke
-            # Balls, decide() keeps its run / catch behaviour.
             try:
-                best_slot = battle_moves_mod.best_move_index(client)
+                enemy_cur_hp = battle_moves_mod.enemy_hp(client)[0]
             except (OSError, RuntimeError, EmulatorError):
-                best_slot = -1
-            # Unlike trainer battles (Fable F1), a wild battle has no items to
-            # waste and we can always flee, so fire the full cursor sequence
-            # for ANY slot without waiting for a vision confirm — otherwise a
-            # best move in slot 1-3 (Pursuit/Quick Attack once Pound is out of
-            # PP) never gets selected and it stalls again.
-            if best_slot >= 0:
-                battle_move_queue = list(
-                    battle_moves_mod.move_select_sequence(best_slot)
-                )
-            else:
-                battle_move_queue = ["A"]  # all PP gone -> A selects Struggle
+                enemy_cur_hp = -1
+            if enemy_cur_hp == 0:
+                # Wild enemy fainted -> the battle is ending and post-KO text
+                # plays: XP, and at L29 "Grovyle wants to learn LEAF BLADE /
+                # delete a move?". Mash A: it advances the text AND answers the
+                # move-learn prompt toward YES (forget the top move, learn Leaf
+                # Blade). A move_select_sequence here would fire its leading B,B
+                # and CANCEL the learn — and the Move Relearner is at Fallarbor
+                # (unreachable), so Leaf Blade (the move that lets L29+ sweep
+                # Brawly) would be lost permanently. A wild battle has no SHIFT
+                # prompt so A never mis-opens a menu. Runs at ANY HP/ball state
+                # (a low-HP KO hits the same learn prompt, and decide()'s run
+                # sequence would navigate the YES/NO cursor the wrong way).
+                battle_move_queue = ["A"]
+            elif gs.party0_hp_frac >= 0.4 and gs.bag_pokeball_count == 0:
+                # Wild fight — pick a move with PP from RAM instead of decide()'s
+                # blind "A" on the highlighted (often depleted) first move. Once
+                # grinding ground Pound to 0 PP, "A" only popped "There's no PP
+                # left!" and the turn never resolved, so Grovyle never took
+                # damage, never dropped below 40% to heal, and PP never
+                # refreshed — the Granite Cave grind froze at L26. Below 40% HP
+                # or holding Poke Balls, decide() keeps its run / catch flow.
+                try:
+                    best_slot = battle_moves_mod.best_move_index(client)
+                except (OSError, RuntimeError, EmulatorError):
+                    best_slot = -1
+                # A wild battle has no items to waste and we can always flee, so
+                # fire the full cursor sequence for ANY slot without a vision
+                # confirm — otherwise a best move in slot 1-3 (Pursuit/Quick
+                # Attack once Pound is out of PP) never gets selected.
+                if best_slot >= 0:
+                    battle_move_queue = list(
+                        battle_moves_mod.move_select_sequence(best_slot)
+                    )
+                else:
+                    battle_move_queue = ["A"]  # all PP gone -> A selects Struggle
 
         if battle_move_queue:
             button = battle_move_queue.pop(0)

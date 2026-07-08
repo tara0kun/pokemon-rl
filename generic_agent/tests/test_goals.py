@@ -108,10 +108,26 @@ class TestDewfordChain(GoalsTestBase):
         # H6b: below L30 the grind goal owns nav, NOT Brawly —
         # else Grovyle throws itself at Brawly's Bulk Up Makuhita and loses.
         at_town = make_gs(map_group=0, map_num=11, badge_count=1, party0_level=24)
-        self.assertEqual(goals_mod.current_goal(at_town).name, "grind_route106")
-        # inside the cave it must STAY (explore/grind), not route back out.
+        g_town = goals_mod.current_goal(at_town)
+        self.assertEqual(g_town.name, "grind_granite_cave")
+        # grind pins to Granite Cave 1F, NOT Route106: Route106 has no land
+        # encounters (water-only), so its grass pin never triggered a battle.
+        self.assertEqual(g_town.target_map, (24, 7))
+        # inside the cave it must STAY and pace on the encounter tile (target_pos
+        # on the current map), not route back out.
         in_cave = make_gs(map_group=24, map_num=7, badge_count=1, party0_level=24)
-        self.assertEqual(goals_mod.current_goal(in_cave).name, "grind_route106")
+        g_cave = goals_mod.current_goal(in_cave)
+        self.assertEqual(g_cave.name, "grind_granite_cave")
+        self.assertEqual(g_cave.target_pos, (27, 7))
+
+    def test_fall_to_b1f_routes_back_up_to_grind(self) -> None:
+        # A fall down the ladder to the dark B1F (24,8) must keep the grind goal
+        # matching so mapbfs routes the lead back up to 1F, instead of leaving
+        # it goal-less and wandering the requires_flash sublevel.
+        in_b1f = make_gs(map_group=24, map_num=8, badge_count=1, party0_level=24)
+        g = goals_mod.current_goal(in_b1f)
+        self.assertEqual(g.name, "grind_granite_cave")
+        self.assertEqual(g.target_map, (24, 7))
 
     def test_low_hp_routes_to_pc_nurse(self) -> None:
         # A hurt lead heals at the Dewford PC before resuming the grind.
