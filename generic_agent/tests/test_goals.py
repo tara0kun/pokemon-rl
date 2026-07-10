@@ -148,7 +148,7 @@ class TestDewfordChain(GoalsTestBase):
         g = goals_mod.current_goal(gs)
         self.assertEqual(g.name, "deliver_steven_letter")
         self.assertEqual(g.target_map, (24, 10))
-        self.assertEqual(g.target_pos, (7, 9))
+        self.assertEqual(g.target_pos, (7, 8))  # Steven's NPC tile (interact + face)
 
     def test_badge2_letter_delivered_retires_chain(self) -> None:
         # Once the Letter flag is set the letter goal deactivates; the sail /

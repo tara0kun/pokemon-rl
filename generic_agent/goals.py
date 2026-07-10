@@ -506,7 +506,11 @@ GOAL_TABLE: list[Goal] = [
     Goal(
         name="deliver_steven_letter",
         target_map=(24, 10),      # GraniteCave_StevensRoom (bright; via 1F warp (5,10))
-        target_pos=(7, 9),        # tile below Steven (7,8); face Up + A hands the Letter
+        target_pos=(7, 8),        # Steven's NPC tile — interact machinery routes to a
+        # walkable neighbour and faces+A (same pattern as Brawly (4,3)). The room
+        # entrance (7,3) is ABOVE Steven, so the agent arrives at (7,7) and must
+        # talk facing Down; an earlier (7,9) below-Steven target was unreachable
+        # (Steven blocks the path) and left the agent npc_avoid-ing him forever.
         condition="deliver_steven_letter",
         desc="Badge2後: Steven (GraniteCave StevensRoom) に Letter 配達 → TM47 + 渡し船 gate 解除",
     ),
