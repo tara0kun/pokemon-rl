@@ -1391,8 +1391,8 @@ def run(
                 # Quick Attack is immune vs a Ghost Sableye and the battle never
                 # ends). So during traversal, flee every wild battle.
                 is_grind = (
-                    current_goal is not None
-                    and current_goal.name.startswith("grind")
+                    cur_goal is not None
+                    and cur_goal.name.startswith("grind")
                 )
                 if not is_grind:
                     battle_move_queue = list(FLEE_SEQ)
