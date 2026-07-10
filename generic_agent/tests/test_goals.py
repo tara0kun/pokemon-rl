@@ -32,16 +32,22 @@ class GoalsTestBase(unittest.TestCase):
             goals_mod.GOALS_FILE,
             goals_mod.VISITED_MAPS_FILE,
             goals_mod.PEEKO_DONE_MARKER,
+            goals_mod.LETTER_DONE_MARKER,
+            goals_mod.DEVON_DELIVERED_MARKER,
         )
         goals_mod.GOALS_FILE = tmp / "goal_notes.jsonl"
         goals_mod.VISITED_MAPS_FILE = tmp / "visited_maps.json"
         goals_mod.PEEKO_DONE_MARKER = tmp / "peeko_done.marker"
+        goals_mod.LETTER_DONE_MARKER = tmp / "steven_letter_done.marker"
+        goals_mod.DEVON_DELIVERED_MARKER = tmp / "devon_delivered.marker"
 
     def tearDown(self) -> None:
         (
             goals_mod.GOALS_FILE,
             goals_mod.VISITED_MAPS_FILE,
             goals_mod.PEEKO_DONE_MARKER,
+            goals_mod.LETTER_DONE_MARKER,
+            goals_mod.DEVON_DELIVERED_MARKER,
         ) = self._orig
         self._tmp.cleanup()
 

@@ -48,6 +48,36 @@ def _peeko_done(gs) -> bool:
     return False
 
 
+LETTER_DONE_MARKER = config.MEMORY_DIR / "steven_letter_done.marker"
+DEVON_DELIVERED_MARKER = config.MEMORY_DIR / "devon_delivered.marker"
+
+
+def _latched(gs, attr: str, marker) -> bool:
+    """Monotonic story-flag latch, immune to the SaveBlock1 DMA flicker. Once
+    the flag has been observed True, a disk marker keeps it True forever — the
+    flag reading False for a single frame otherwise flips the goal (e.g. the
+    Steven-letter flag flicker flipped the goal between the Dewford sail and the
+    deep-cave letter, churning the agent in place). Mirrors _peeko_done."""
+    if marker.exists():
+        return True
+    if bool(getattr(gs, attr, False)):
+        try:
+            marker.parent.mkdir(parents=True, exist_ok=True)
+            marker.write_text("1", encoding="utf-8")
+        except OSError:
+            pass
+        return True
+    return False
+
+
+def _letter_done(gs) -> bool:
+    return _latched(gs, "flag_steven_letter_delivered", LETTER_DONE_MARKER)
+
+
+def _devon_delivered(gs) -> bool:
+    return _latched(gs, "flag_devon_goods_delivered", DEVON_DELIVERED_MARKER)
+
+
 _GOAL_ORDER_WEIGHT = {
     "get_starter_via_lab": 0,
     "return_to_lab_for_pokedex": 10,
@@ -333,7 +363,7 @@ class Goal:
             # the flag flips (delivery also grants TM47 Steel Wing).
             return (
                 gs.badge_count >= 2
-                and not gs.flag_steven_letter_delivered
+                and not _letter_done(gs)
             )
         if c == "sail_to_slateport":
             # Post-letter (H4b): the letter flag is set, so Mr.Briney at Dewford
@@ -344,8 +374,8 @@ class Goal:
             # Devon Goods are delivered in Slateport.
             return (
                 gs.badge_count >= 2
-                and gs.flag_steven_letter_delivered
-                and not gs.flag_devon_goods_delivered
+                and _letter_done(gs)
+                and not _devon_delivered(gs)
                 and cur in {(0, 11), (0, 21), (24, 7), (24, 8),
                             (24, 9), (24, 10)}
             )
@@ -353,8 +383,8 @@ class Goal:
             # The sail lands on Route109 (0,24); walk north into Slateport City.
             return (
                 gs.badge_count >= 2
-                and gs.flag_steven_letter_delivered
-                and not gs.flag_devon_goods_delivered
+                and _letter_done(gs)
+                and not _devon_delivered(gs)
                 and cur in {(0, 24), (0, 1)}
             )
         return False
