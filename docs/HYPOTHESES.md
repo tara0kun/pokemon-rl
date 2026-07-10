@@ -69,8 +69,16 @@ Emerald ストーリーゲート(pokeemerald decomp 検証済み):
 **修正案**: nav を **region-aware** 化 — ノードを (map, connected-component) にし、warp を「どの領域からどの領域へ」で張った graph を map_path の代わりに使う。mapbfs 自体は canon collision + RAM 駆動で vision 非依存なので、正しい map-level waypoint 列を与えれば暗い B1F も通れる(暗所 thrash は goal 無し wander 時のみ)。要 architect 設計 + verifier 検証。
 - 反証/検証: region graph で (1F,入口領域)→StevensRoom の経路が出るか。B1F の warp 着地タイル(dest_warp_id→着地 warp index)を map_data で解決し、(17,11) 着地と (35,3) 着地が同一 B1F 領域かを確認。
 
-### H4b: Briney sail multichoice
-face+A の interact では Petalburg default を選ぶ危険。sail goal は multichoice 検出 → Slateport(case1)へ Down+A する処理が要る。誤ると Petalburg へ飛び progress 巻き戻し。letter(H4a)解決後に着手。
+### H4b: Briney sail multichoice — ✅ 実質解決(2026-07-10)
+face+A の interact では Petalburg default を選ぶ危険があり、sail goal に multichoice 検出→Slateport(case1)へ Down+A する `briney_sail` ハンドラ(screen_signals["menu"] gate)を追加。だが **live では menu 信号が出ず briney_sail は未発火**、代わりに npc_interact/dialog_visible/hidden_battle_probe の **A 連打が結果的に Slateport を通し、Route109 に上陸**(sail 成功)。⚠ A連打で通ったのは運の面もあるので、menu 検出の信頼性向上は残タスク(次に Petalburg へ誤航海したらここを直す)。sail 成立までに cave 脱出で 12+ の真因(region nav / water UNDERGROUND / tile_map 汚染 / Sableye 逃走 / traverse-flee / letter latch / NameError / directed_goal(sail) / badge-flicker(gym再発火を letter gate) / sail-gate(PC) / devon false-latch→raw flag)を要した。
+
+### H4c: Slateport Devon Goods 配達 chain(2026-07-10 canon 調査済み・未実装)
+Route109 上陸 → SlateportCity (0,1) 北上 → Devon Goods を Capt.Stern に配達 → `FLAG_DELIVERED_DEVON_GOODS`(0x95)+ `FLAG_HIDE_ROUTE_110_TEAM_AQUA` で Route110→Mauville 解除。canon(map_data 確認済み):
+- **SlateportCity (0,1)**: warp (26,38)→SternsShipyard1F、(30,26)/(31,26)→OceanicMuseum1F、PC (19,19)
+- **SternsShipyard_1F (9,0)**: **Dock (5,5)** — 先に talk(「Stern が居ない、探して」FLAG_DOCK_REJECTED_DEVON_GOODS)。要否は decomp 要確認だが順序上まず訪問
+- **OceanicMuseum_1F (9,7)**: **EntranceAttendant (7,7)/(12,7)** で $50 入場(多分 A 確定 or yes/no)→ 2F warp (6,1)
+- **OceanicMuseum_2F (9,8)**: **CaptStern (13,6)** に face+A で配達。手前で Aqua grunt 2体(トレーナー戦、best_move)→ Stern → Archie カットシーン
+実装計画: goals に (a) reach_slateport(済) → (b) `slateport_dock`(Shipyard Dock 5,5)→ (c) `deliver_devon_goods`(Museum2F Stern 13,6、$50 fee と grunt 戦は heuristic の interact/trainer-battle が処理)。全て `not gs.flag_devon_goods_delivered`(raw flag、H4a の false-latch 教訓)で gate。flag 0x95 は state.py で読取済み。
 
 ## H5. dual_dev の生産性(タスクがゲートに落ちがち)
 
