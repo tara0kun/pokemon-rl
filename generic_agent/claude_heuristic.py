@@ -76,6 +76,11 @@ RUN_CYCLE = ("B", "A", "Down", "Right", "A", "A")
 # "Do what" (cursor on SEND OUT); A confirms. Used ONLY when the active
 # battler's HP is 0 — never at the FIGHT menu (that thrash was H6a).
 SEND_OUT_SEQ = ("A", "B", "Down", "A", "A")
+# Flee a wild battle: B,B backs out of any submenu, Up,Up,Left resets the cursor
+# to FIGHT (top-left), then Right,Down -> RUN (bottom-right), A selects it. Used
+# to leave any wild battle we don't want to fight (traversal, or no damaging
+# move left). A wild battle can always be run from.
+FLEE_SEQ = ("B", "B", "Up", "Up", "Left", "Right", "Down", "A")
 
 
 def take_screenshot(client: MGBAClient, session_id: str, turn: int) -> Path:
@@ -1379,38 +1384,36 @@ def run(
                 # sequence would navigate the YES/NO cursor the wrong way).
                 battle_move_queue = ["A"]
             elif gs.party0_hp_frac >= 0.4 and gs.bag_pokeball_count == 0:
-                # Wild fight — pick a move with PP from RAM instead of decide()'s
-                # blind "A" on the highlighted (often depleted) first move. Once
-                # grinding ground Pound to 0 PP, "A" only popped "There's no PP
-                # left!" and the turn never resolved, so Grovyle never took
-                # damage, never dropped below 40% to heal, and PP never
-                # refreshed — the Granite Cave grind froze at L26. Below 40% HP
-                # or holding Poke Balls, decide() keeps its run / catch flow.
-                try:
-                    best_slot = battle_moves_mod.best_move_index(client)
-                except (OSError, RuntimeError, EmulatorError):
-                    best_slot = -1
-                # A wild battle has no items to waste and we can always flee, so
-                # fire the full cursor sequence for ANY slot without a vision
-                # confirm — otherwise a best move in slot 1-3 (Pursuit/Quick
-                # Attack once Pound is out of PP) never gets selected.
-                if best_slot >= 0:
-                    battle_move_queue = list(
-                        battle_moves_mod.move_select_sequence(best_slot)
-                    )
+                # Only the grind goal wants wild XP. For every other goal we are
+                # just crossing an encounter zone (the Granite Cave letter/sail
+                # trek, later routes), where fighting each wild mon is slow and
+                # invites PP-starvation stalls (Leaf Blade/Pursuit run dry, then
+                # Quick Attack is immune vs a Ghost Sableye and the battle never
+                # ends). So during traversal, flee every wild battle.
+                is_grind = (
+                    current_goal is not None
+                    and current_goal.name.startswith("grind")
+                )
+                if not is_grind:
+                    battle_move_queue = list(FLEE_SEQ)
                 else:
-                    # No damaging move available: every move that still has PP
-                    # does 0 damage to this enemy (Grovyle's Quick Attack is
-                    # Normal = immune vs a Ghost Sableye once Leaf Blade/Pursuit
-                    # PP are spent) or all damaging moves are out of PP. Pressing
-                    # A just re-picks a 0-damage move and the wild battle never
-                    # ends — a 300-turn Granite-Cave-exit stall vs a 1-HP Sableye
-                    # was exactly this. A wild battle can always be run from, so
-                    # FLEE: B,B backs out of any submenu, Up,Up,Left resets the
-                    # cursor to FIGHT, then Right,Down -> RUN (bottom-right), A.
-                    battle_move_queue = [
-                        "B", "B", "Up", "Up", "Left", "Right", "Down", "A",
-                    ]
+                    # Grind: pick a move with PP from RAM instead of decide()'s
+                    # blind "A" on the highlighted (often depleted) first move —
+                    # a depleted "A" only pops "There's no PP left!" and the turn
+                    # never resolves (the old Route106 grind froze at L26). Fire
+                    # the full self-correcting cursor sequence for ANY slot.
+                    try:
+                        best_slot = battle_moves_mod.best_move_index(client)
+                    except (OSError, RuntimeError, EmulatorError):
+                        best_slot = -1
+                    if best_slot >= 0:
+                        battle_move_queue = list(
+                            battle_moves_mod.move_select_sequence(best_slot)
+                        )
+                    else:
+                        # Even while grinding, no damaging move -> flee rather
+                        # than loop a 0-damage move forever.
+                        battle_move_queue = list(FLEE_SEQ)
 
         if battle_move_queue:
             button = battle_move_queue.pop(0)
