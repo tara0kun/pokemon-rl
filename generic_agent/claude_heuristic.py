@@ -300,8 +300,8 @@ def heuristic_button(
     directed_goal = (
         current_goal is not None
         and current_goal.name.startswith(
-            ("dewford", "peeko", "rescue_peeko", "reach_dewford",
-             "grind", "heal", "deliver")
+            ("dewford", "peeko", "rescue_peeko", "reach",
+             "grind", "heal", "deliver", "sail")
         )
     )
     # H4b: Mr.Briney's Dewford->Slateport sail multichoice (Petalburg=case 0 /
