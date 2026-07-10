@@ -70,6 +70,8 @@ _GOAL_ORDER_WEIGHT = {
     "reach_dewford_gym": 70,
     "dewford_gym_brawly": 71,
     "deliver_steven_letter": 80,
+    "sail_to_slateport": 81,
+    "reach_slateport": 82,
 }
 
 
@@ -95,6 +97,8 @@ _GOAL_BYPASS_VISITED = {
     # Post-Brawly: StevensRoom/cave get marked visited during the grind, but the
     # letter goal must stay re-targetable until the delivery flag flips.
     "deliver_steven_letter",
+    # Slateport chain: Dewford (Briney) is long-visited; Slateport is the target.
+    "sail_to_slateport", "reach_slateport",
 }
 
 
@@ -331,6 +335,28 @@ class Goal:
                 gs.badge_count >= 2
                 and not gs.flag_steven_letter_delivered
             )
+        if c == "sail_to_slateport":
+            # Post-letter (H4b): the letter flag is set, so Mr.Briney at Dewford
+            # (12,9) now offers the Slateport sail (a Petalburg/Slateport
+            # multichoice — the heuristic picks Slateport). Gated to the
+            # Dewford-side maps so once the sail lands the agent on Route109 this
+            # goal goes silent (no back-routing to Dewford). Ends after the
+            # Devon Goods are delivered in Slateport.
+            return (
+                gs.badge_count >= 2
+                and gs.flag_steven_letter_delivered
+                and not gs.flag_devon_goods_delivered
+                and cur in {(0, 11), (0, 21), (24, 7), (24, 8),
+                            (24, 9), (24, 10)}
+            )
+        if c == "reach_slateport":
+            # The sail lands on Route109 (0,24); walk north into Slateport City.
+            return (
+                gs.badge_count >= 2
+                and gs.flag_steven_letter_delivered
+                and not gs.flag_devon_goods_delivered
+                and cur in {(0, 24), (0, 1)}
+            )
         return False
 
 
@@ -513,6 +539,19 @@ GOAL_TABLE: list[Goal] = [
         # (Steven blocks the path) and left the agent npc_avoid-ing him forever.
         condition="deliver_steven_letter",
         desc="Badge2後: Steven (GraniteCave StevensRoom) に Letter 配達 → TM47 + 渡し船 gate 解除",
+    ),
+    Goal(
+        name="sail_to_slateport",
+        target_map=(0, 11),       # DewfordTown
+        target_pos=(12, 9),       # Mr.Briney NPC — talk, then pick Slateport (H4b)
+        condition="sail_to_slateport",
+        desc="Letter配達済 → Dewford の Briney (12,9) に話し Slateport 航海 (multichoice)",
+    ),
+    Goal(
+        name="reach_slateport",
+        target_map=(0, 1),        # SlateportCity (sail lands on Route109, walk north)
+        condition="reach_slateport",
+        desc="Route109 上陸 → 北上して Slateport City 到達",
     ),
 ]
 

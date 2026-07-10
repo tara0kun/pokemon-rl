@@ -299,6 +299,24 @@ def heuristic_button(
              "grind", "heal", "deliver")
         )
     )
+    # H4b: Mr.Briney's Dewford->Slateport sail multichoice (Petalburg=case 0 /
+    # Slateport=case 1). The interact face+A opens Briney's dialog and the
+    # greeting advances by A, but the choice box that follows would confirm the
+    # default top option (Petalburg) on a plain A and sail us backwards. When the
+    # sail goal is active on Dewford and a SELECTION menu is on screen, move the
+    # cursor down to Slateport, then confirm. Stateless via last_action: press
+    # Down first, and A only once the cursor has already moved down — so A always
+    # lands on Slateport (case 1), never the Petalburg default.
+    if (
+        current_goal is not None
+        and current_goal.name == "sail_to_slateport"
+        and (gs.map_group, gs.map_num) == (0, 11)
+        and not gs.in_battle
+        and screen_signals.get("menu")
+    ):
+        if last_action == "Down":
+            return "A", "briney_sail:confirm_slateport"
+        return "Down", "briney_sail:cursor_to_slateport"
     if (
         same_map_streak >= 200
         and not gs.in_battle

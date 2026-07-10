@@ -150,11 +150,33 @@ class TestDewfordChain(GoalsTestBase):
         self.assertEqual(g.target_map, (24, 10))
         self.assertEqual(g.target_pos, (7, 8))  # Steven's NPC tile (interact + face)
 
-    def test_badge2_letter_delivered_retires_chain(self) -> None:
-        # Once the Letter flag is set the letter goal deactivates; the sail /
-        # Slateport goals are the next increment, so for now the chain is blank.
+    def test_letter_delivered_sails_to_slateport(self) -> None:
+        # Letter delivered (Slateport gate open) but Devon Goods not yet handed
+        # over -> talk to Mr.Briney at Dewford (12,9) for the Slateport sail.
         gs = make_gs(map_group=0, map_num=11, badge_count=2,
-                     flag_steven_letter_delivered=True)
+                     flag_steven_letter_delivered=True,
+                     flag_devon_goods_delivered=False)
+        g = goals_mod.current_goal(gs)
+        self.assertEqual(g.name, "sail_to_slateport")
+        self.assertEqual(g.target_map, (0, 11))
+        self.assertEqual(g.target_pos, (12, 9))
+
+    def test_route109_landing_reaches_slateport(self) -> None:
+        # The sail lands on Route109 (0,24); the sail goal is gated to the
+        # Dewford side so it goes silent and reach_slateport takes over north.
+        gs = make_gs(map_group=0, map_num=24, badge_count=2,
+                     flag_steven_letter_delivered=True,
+                     flag_devon_goods_delivered=False)
+        g = goals_mod.current_goal(gs)
+        self.assertEqual(g.name, "reach_slateport")
+        self.assertEqual(g.target_map, (0, 1))
+
+    def test_devon_goods_delivered_retires_slateport_chain(self) -> None:
+        # After the Devon Goods are delivered in Slateport the sail/reach goals
+        # deactivate (Mauville chain is the next unimplemented increment -> None).
+        gs = make_gs(map_group=0, map_num=1, badge_count=2,
+                     flag_steven_letter_delivered=True,
+                     flag_devon_goods_delivered=True)
         self.assertIsNone(goals_mod.current_goal(gs))
 
     def test_badge2_low_hp_heals_before_cave_trek(self) -> None:
