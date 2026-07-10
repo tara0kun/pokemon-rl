@@ -68,6 +68,13 @@ class MapCache:
         self._layouts: dict[str, tuple[int, int]] = {}  # layout_id -> (W,H)
         self._map_groups: list[list[str]] = []           # [group][num] -> name
         self._loaded_index = False
+        # Region-aware routing (H4a): connected-component decomposition of each
+        # map's walkable tiles + a lazily-built (map, component) warp graph, for
+        # interiors whose warps sit in components unreachable from each other on
+        # foot (Granite Cave 1F: the Steven warp is walled off from the entrance
+        # and only reachable via the dark B1F/B2F). Both memoized per map.
+        self._components_cache: dict[tuple[int, int], tuple[dict, list]] = {}
+        self._multicomp_cache: dict[tuple[int, int], bool] = {}
 
     def _ensure_index(self) -> bool:
         if self._loaded_index:
@@ -447,6 +454,171 @@ class MapCache:
             for n, nm in enumerate(grp):
                 if nm.replace("_", "").lower() == target:
                     return self.get(g, n)
+        return None
+
+    # --- Region-aware routing (H4a) ------------------------------------------
+    def _components(
+        self, map_g: int, map_n: int,
+    ) -> tuple[dict[tuple[int, int], int], list[set[tuple[int, int]]]]:
+        """4-neighbour connected components of walkable tiles, memoized.
+
+        Returns (tile->component_id, [component tile-set]). Used to tell apart
+        the disconnected walkable blobs of a single map (a cave floor split by
+        walls into an entrance region and a deeper region reached only via
+        another floor)."""
+        key = (map_g, map_n)
+        cached = self._components_cache.get(key)
+        if cached is not None:
+            return cached
+        info = self.get(map_g, map_n)
+        tile2cid: dict[tuple[int, int], int] = {}
+        comps: list[set[tuple[int, int]]] = []
+        if info is not None:
+            for y in range(info.height):
+                for x in range(info.width):
+                    if (x, y) in tile2cid or not info.walkable(x, y):
+                        continue
+                    cid = len(comps)
+                    comp: set[tuple[int, int]] = set()
+                    stack = [(x, y)]
+                    tile2cid[(x, y)] = cid
+                    while stack:
+                        cx, cy = stack.pop()
+                        comp.add((cx, cy))
+                        for dx, dy in ((0, 1), (0, -1), (1, 0), (-1, 0)):
+                            nb = (cx + dx, cy + dy)
+                            if nb not in tile2cid and info.walkable(*nb):
+                                tile2cid[nb] = cid
+                                stack.append(nb)
+                    comps.append(comp)
+        result = (tile2cid, comps)
+        self._components_cache[key] = result
+        return result
+
+    def _warp_landing(
+        self, warp: dict,
+    ) -> tuple[int, int, int] | None:
+        """(dest_g, dest_n, dest_component_id) that a warp deposits the player
+        in, or None if it can't be resolved offline (skip the edge → the caller
+        falls back to legacy routing). Guards the _safe_int(0) coercion of
+        dynamic/secret-base warp ids that would otherwise alias to warp[0]."""
+        dest = self._info_of(warp.get("dest_map", ""))
+        if dest is None:
+            return None
+        wid = warp.get("dest_warp_id", 0)
+        if not isinstance(wid, int) or wid < 0 or wid >= len(dest.warps):
+            return None
+        dw = dest.warps[wid]
+        lx, ly = dw["x"], dw["y"]
+        tile2cid, _ = self._components(dest.map_g, dest.map_n)
+        # The player arrives ON the dest warp tile; a door warp tile is
+        # non-walkable and the game steps you one tile south, so try the tile
+        # itself, then its walkable neighbours (south first).
+        for cand in ((lx, ly), (lx, ly + 1), (lx, ly - 1),
+                     (lx - 1, ly), (lx + 1, ly)):
+            cid = tile2cid.get(cand)
+            if cid is not None:
+                return (dest.map_g, dest.map_n, cid)
+        return None
+
+    def has_multiple_warp_components(self, map_g: int, map_n: int) -> bool:
+        """True iff this map's warps live in ≥2 distinct walkable components —
+        the only case where region routing can differ from legacy routing.
+        Single-component maps (≈99%) return False and take the legacy path
+        verbatim."""
+        key = (map_g, map_n)
+        cached = self._multicomp_cache.get(key)
+        if cached is not None:
+            return cached
+        info = self.get(map_g, map_n)
+        tile2cid, _ = self._components(map_g, map_n)
+        cids: set[int] = set()
+        if info is not None:
+            for w in info.warps:
+                c = tile2cid.get((w["x"], w["y"]))
+                if c is not None:
+                    cids.add(c)
+        result = len(cids) >= 2
+        self._multicomp_cache[key] = result
+        return result
+
+    def _warps_in_component(
+        self, map_g: int, map_n: int, cid: int,
+    ) -> list[dict]:
+        info = self.get(map_g, map_n)
+        if info is None:
+            return []
+        tile2cid, _ = self._components(map_g, map_n)
+        return [
+            w for w in info.warps
+            if tile2cid.get((w["x"], w["y"])) == cid
+        ]
+
+    def region_route_targets(
+        self, map_g: int, map_n: int, pos: tuple[int, int],
+        goal_map: tuple[int, int], mh_chain: list[tuple[int, int]] | None,
+    ) -> tuple[set[tuple[int, int]], str | None]:
+        """First-hop warp tile(s) on the CURRENT map, and that warp's dest map
+        name, to reach `goal_map` when the current map is split into components.
+
+        BFS over the (map, component) warp graph from the player's component.
+        primary target = the final goal_map (NOT mh_chain's next hop: following
+        the map-level next hop re-enters the entrance component and ping-pongs).
+        secondary = mh_chain's next hop (keeps cross-map exits like the heal PC
+        routable). Returns (set(), None) when no warp-graph route exists so the
+        caller uses legacy connection/warp routing unchanged."""
+        info = self.get(map_g, map_n)
+        if info is None:
+            return set(), None
+        tile2cid, _ = self._components(map_g, map_n)
+        start_cid = tile2cid.get((pos[0], pos[1]))
+        if start_cid is None:
+            return set(), None
+        next_hop = mh_chain[0] if mh_chain else None
+        for target in (goal_map, next_hop):
+            if target is None:
+                continue
+            res = self._region_bfs(map_g, map_n, start_cid, tuple(target))
+            if res is not None:
+                return res
+        return set(), None
+
+    def _region_bfs(
+        self, map_g: int, map_n: int, start_cid: int,
+        target_map: tuple[int, int],
+    ) -> tuple[set[tuple[int, int]], str] | None:
+        """Shortest region path from (map_g,map_n,start_cid) to any component of
+        target_map; returns (first-hop warp tiles on the start map, first-hop
+        dest map name) or None. Warps are iterated in canonical order so the
+        result is deterministic."""
+        start = (map_g, map_n, start_cid)
+        visited: set[tuple[int, int, int]] = {start}
+        queue: deque[tuple[tuple[int, int, int], set[tuple[int, int]], str]] = (
+            deque()
+        )
+        # Seed with the start component's warps, remembering the first hop.
+        for w in self._warps_in_component(map_g, map_n, start_cid):
+            land = self._warp_landing(w)
+            if land is None:
+                continue
+            first_tiles = {(w["x"], w["y"])}
+            first_dest = w["dest_map"]
+            if (land[0], land[1]) == target_map:
+                return first_tiles, first_dest
+            if land not in visited:
+                visited.add(land)
+                queue.append((land, first_tiles, first_dest))
+        while queue:
+            (ng, nn, ncid), first_tiles, first_dest = queue.popleft()
+            for w in self._warps_in_component(ng, nn, ncid):
+                land = self._warp_landing(w)
+                if land is None:
+                    continue
+                if (land[0], land[1]) == target_map:
+                    return set(first_tiles), first_dest
+                if land not in visited:
+                    visited.add(land)
+                    queue.append((land, first_tiles, first_dest))
         return None
 
     def warp_tiles_for(

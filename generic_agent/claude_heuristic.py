@@ -296,7 +296,7 @@ def heuristic_button(
         current_goal is not None
         and current_goal.name.startswith(
             ("dewford", "peeko", "rescue_peeko", "reach_dewford",
-             "grind", "heal")
+             "grind", "heal", "deliver")
         )
     )
     if (
@@ -394,15 +394,39 @@ def heuristic_button(
                         if cur_info.walkable(*nb) and nb not in npc_now:
                             target_tiles.add(nb)
                 else:
-                    for direction, conn in cur_info.connections.items():
-                        if conn["map_name"] == next_hop_name:
-                            target_tiles |= mc.exit_tiles_toward(
-                                gs.map_group, gs.map_num, direction,
-                            )
-                    if not target_tiles:
-                        target_tiles |= mc.warp_tiles_for(
-                            gs.map_group, gs.map_num, next_hop_name,
+                    # Region-aware routing (H4a): on a map split into
+                    # disconnected walkable components (Granite Cave floors),
+                    # the warp to the next hop may sit in a component the player
+                    # can't reach on foot — map_path collapses the map to one
+                    # node and targets an unreachable warp, so BFS fails and the
+                    # agent wanders. When the map is multi-component, route to
+                    # the first-hop warp of the (map,component) warp graph toward
+                    # the final goal instead. Single-component maps (≈99%) skip
+                    # this entirely and take the legacy path byte-for-byte.
+                    region_tiles: set[tuple[int, int]] = set()
+                    region_hop: str | None = None
+                    if mc.has_multiple_warp_components(
+                        gs.map_group, gs.map_num
+                    ):
+                        region_tiles, region_hop = mc.region_route_targets(
+                            gs.map_group, gs.map_num, (gs.x, gs.y),
+                            effective_goal_map, mh_chain,
                         )
+                    if region_tiles:
+                        target_tiles |= region_tiles
+                        # region_hop is the first warp's dest map; drives the
+                        # on_goal_warp check + reason string below.
+                        next_hop_name = region_hop or next_hop_name
+                    else:
+                        for direction, conn in cur_info.connections.items():
+                            if conn["map_name"] == next_hop_name:
+                                target_tiles |= mc.exit_tiles_toward(
+                                    gs.map_group, gs.map_num, direction,
+                                )
+                        if not target_tiles:
+                            target_tiles |= mc.warp_tiles_for(
+                                gs.map_group, gs.map_num, next_hop_name,
+                            )
                 # Mid door-entry: the approach tile fired "Up" and the game
                 # walked us ONTO the non-walkable door warp tile itself (e.g.
                 # Dewford (8,17)). BFS can't start on a non-walkable tile
