@@ -374,10 +374,15 @@ class Goal:
             # Dewford-side maps so once the sail lands the agent on Route109 this
             # goal goes silent (no back-routing to Dewford). Ends after the
             # Devon Goods are delivered in Slateport.
+            # devon-delivered uses the RAW flag, not a latch: it is a FUTURE
+            # event here, so a monotonic latch permanently disabled the sail on a
+            # single DMA-flicker True read (it did). The raw flag only drops the
+            # goal for that one flicker frame (self-corrects next frame), and
+            # once the goods are genuinely delivered it retires the chain.
             return (
                 gs.badge_count >= 2
                 and _letter_done(gs)
-                and not _devon_delivered(gs)
+                and not gs.flag_devon_goods_delivered
                 and cur in {(0, 11), (3, 1), (3, 3), (0, 21), (24, 7),
                             (24, 8), (24, 9), (24, 10)}
             )
@@ -386,7 +391,7 @@ class Goal:
             return (
                 gs.badge_count >= 2
                 and _letter_done(gs)
-                and not _devon_delivered(gs)
+                and not gs.flag_devon_goods_delivered
                 and cur in {(0, 24), (0, 1)}
             )
         return False
