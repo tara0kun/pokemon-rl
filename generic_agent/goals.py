@@ -307,6 +307,7 @@ class Goal:
             # grind area back to Dewford every step and grinding never runs.
             return (
                 gs.badge_count >= 1 and gs.badge_count < 2
+                and not _letter_done(gs)
                 and gs.party0_level >= 30
                 and cur != (3, 3)
             )
@@ -322,6 +323,7 @@ class Goal:
             # safe margin. Under L30 the grind goal below wins instead.
             return (
                 gs.badge_count >= 1 and gs.badge_count < 2
+                and not _letter_done(gs)
                 and gs.party0_level >= 30
                 and cur in {(0, 11), (3, 3)}
             )
