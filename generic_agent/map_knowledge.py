@@ -311,17 +311,25 @@ class MapKnowledgeStore:
         mk.name = info.name
         mk.width = info.width
         mk.height = info.height
-        # Water-blocking is for OUTDOOR surfable water. Indoor maps have none;
-        # their pitch-black-maze tilesets misclassify walkable floor as water
-        # (Dewford Gym: 47 walkable maze tiles flagged water -> BFS to Brawly
-        # returned NONE and the agent could never reach the leader). Skip water
-        # seeding for indoor maps.
+        # Water-blocking is for OUTDOOR surfable water. Indoor AND underground
+        # (cave) tilesets reuse the water behavior byte for walkable floor, so
+        # blocking it there carves real floor into unreachable islands:
+        #  - Dewford Gym (INDOOR): 47 maze-floor tiles flagged water -> BFS to
+        #    Brawly returned NONE.
+        #  - Granite Cave (UNDERGROUND): the 1F entrance floor was split from the
+        #    (17,11) B1F ladder by ~misclassified water, so the Steven-letter
+        #    trek (entrance -> B1F -> ... -> StevensRoom) was unreachable. Surf
+        #    is not obtainable until well after Granite Cave, so any "water" the
+        #    story requires crossing here is necessarily walkable floor (H4a).
+        # Only OUTDOOR maps keep water blocking (genuine surfable ponds/sea).
         block_water = True
         try:
             _jp = config.MEMORY_DIR / "map_cache" / f"{info.name}.map.json"
             if _jp.exists():
                 _mt = json.loads(_jp.read_text(encoding="utf-8")).get("map_type")
-                block_water = _mt != "MAP_TYPE_INDOOR"
+                block_water = _mt not in (
+                    "MAP_TYPE_INDOOR", "MAP_TYPE_UNDERGROUND",
+                )
         except (OSError, json.JSONDecodeError):
             pass
         mk.warps = {

@@ -26,7 +26,7 @@
 
 ## C. ナビゲーション不変条件
 
-13. **canon 衝突レイヤは「歩ける」の上界でしかない**。深い水(WATER_BEHAVIORS)は collision=walkable だが徒歩不可(map_knowledge.py:58-70)。**ただし INDOOR map では水封鎖をしない** — 暗迷路タイルセットが床を水と誤分類し、Dewford Gym で BFS が Brawly に到達不能になった(map_knowledge.py:317-326, commit f136922f7)
+13. **canon 衝突レイヤは「歩ける」の上界でしかない**。深い水(WATER_BEHAVIORS)は collision=walkable だが徒歩不可(map_knowledge.py:58-70)。**ただし INDOOR / UNDERGROUND(洞窟)map では水封鎖をしない** — これらのタイルセットは床を水の behavior byte で誤分類し、Dewford Gym(INDOOR)で BFS が Brawly に到達不能、Granite Cave(UNDERGROUND)で 1F 入口が B1F ラダー(17,11)から分断され Steven letter trek が不能になった。Surf は Granite Cave より遥か後なので、この段階で story が渡らせる「水」は必ず歩ける床(H4a, map_knowledge.py block_water は OUTDOOR のみ True)。**region-aware 経路(H4a、map_data.py `_components`/`region_route_targets`)は raw canon collision で component 分解するので、bfs_to_tile 側の水封鎖と一致していないと「region graph は連結と判断→bfs は水で不達→徘徊」になる。両者の walkability モデルは一致させること。**
 14. **BFS の blocked 合成順**(claude_heuristic.py:394-477): NPC タイル + 経験的封鎖(3方向 blocked のタイル / 200回試行失敗の方向エッジ)+ permanent + 水 + **目的地以外の warp タイル**。最後のは「BFS 経路が他人の家のドアを踏んで別 map に飛ぶ」事故の防止(Dewford で実害: gym door と民家 door が同じ x 列)
 15. **interior door warp は non-walkable タイルに乗っている**。BFS の目的地はドアの1つ下の approach タイルにし、到着後 `warp_step_direction()` が Up を返す(map_data.py:441-463, 481-518)。ドアタイル自体を target にすると BFS が None を返し徘徊する(旧 Rustboro 東縁振動の真因)
 16. **tile_map の封鎖は 3 回失敗で確定、ただし 4 方向封鎖は記録バグ**(そのタイルに立てた以上、最低1方向は通れる)— 起動時 `cleanup_phantom_walls()` で自動解除(tile_map.py:126-135, 159-171)。dialog/battle 中の方向キーは `overworld=False` で記録スキップ(tile_map.py:104-124)— これを怠ると封鎖リストが汚染される
