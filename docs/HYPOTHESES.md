@@ -48,10 +48,29 @@
 _read_saveblock1_ptr の二重読み修正(9998ad652)が**戦闘中でも**有効かは未確認(航海に野生戦がなく未消化; daily 07-06)。
 検証: 次の野生戦で FLAG_RECOVERED_DEVON_GOODS を 20 回サンプル。1 回でも False → ptr 修正では不十分で、flag 読み自体の二重読み化が必要。
 
-## H4. Brawly 撃破後の goal 空白(事前に埋められる)
+## H4. Brawly 撃破後の Slateport chain(2026-07-10 研究確定 + nav blocker 発見)
 
-badge_count>=2 になると dewford 系 goal が全て非マッチになり、**次の goal が存在しない**(RESUME.md 未解決#4)。Slateport 方面(帰りの渡し船 → Route109 → Slateport)の chain が必要。
-対処案: goals.py に `dewford_gym_brawly` の後続として (a) Dewford 桟橋の Briney に話す(= H2 と同じ徘徊 NPC 問題、桟橋は canon 固定位置なので H2 より簡単な可能性)、(b) Route109 上陸、(c) Slateport 到達、を `badge>=2` 条件で追加。**着手前に canon の warp/NPC を map_data で確認してから座標を書く**(ハードコード禁止ルールに従い canon 参照で)。
+Emerald ストーリーゲート(pokeemerald decomp 検証済み):
+1. ✅ Brawly 撃破(badge=2)
+2. **Steven に Letter 配達**(GraniteCave_StevensRoom (24,10)、Steven NPC (7,8))→ `FLAG_DELIVERED_STEVEN_LETTER`(0xBD)。**Dewford→Slateport 渡し船の hard gate**(`DewfordTown/scripts.inc` goto_if_unset)。TM47 入手。
+3. Briney (Dewford (12,9)) に話す → **multichoice** Petalburg(case0)/Slateport(case1)。**face+A だけだと default=Petalburg を選び誤航海する危険** — Down+A で Slateport 選択が要る(未実装)。
+4. 渡し船は **Route109 (0,24) に上陸**(Slateport 直行でない)→ 北上して SlateportCity (0,1)。
+5-6. Dock (SternsShipyard_1F) → Oceanic Museum 2F で Devon Goods 配達 → `FLAG_DELIVERED_DEVON_GOODS`(0x95)+ `FLAG_HIDE_ROUTE_110_TEAM_AQUA`(**Route110 の hard gate**)。
+7-8. Route110 (0,25) → MauvilleCity → Wattson(Dynamo Badge)。
+
+実装済み: state.py が 0xBD/0x95 を読取、goals.py に `deliver_steven_letter`(target StevensRoom (24,10) pos (7,9))+ heal を badge>=2 拡張。85→93 tests。
+
+### ⚠ H4a: letter 配達が region-aware nav で block(2026-07-10、live で発覚)
+`map_path(24,7→24,10)` は 1F を1ノード扱いで「1F→StevensRoom 直通」と返すが、**タイルレベルでは (5,10) warp は 1F 入口から到達不能**。canon collision で Granite Cave 1F は 3 つの非連結領域:
+- size 85(入口): (37,12)→Route106、(17,11)→B1F
+- size 117(Steven側): (35,3)→B1F、**(5,10)→StevensRoom**
+- 入口→Steven warp は **1F入口 →(17,11)→ B1F(dark, requires_flash)→(35,3)→ 1F-Steven領域 →(5,10)→ StevensRoom** と B1F 経由必須。
+現 nav は到達不能な (5,10) を BFS→None→reward_pick で徘徊(live 実測: 428 turn 入口領域を出られず)。
+**修正案**: nav を **region-aware** 化 — ノードを (map, connected-component) にし、warp を「どの領域からどの領域へ」で張った graph を map_path の代わりに使う。mapbfs 自体は canon collision + RAM 駆動で vision 非依存なので、正しい map-level waypoint 列を与えれば暗い B1F も通れる(暗所 thrash は goal 無し wander 時のみ)。要 architect 設計 + verifier 検証。
+- 反証/検証: region graph で (1F,入口領域)→StevensRoom の経路が出るか。B1F の warp 着地タイル(dest_warp_id→着地 warp index)を map_data で解決し、(17,11) 着地と (35,3) 着地が同一 B1F 領域かを確認。
+
+### H4b: Briney sail multichoice
+face+A の interact では Petalburg default を選ぶ危険。sail goal は multichoice 検出 → Slateport(case1)へ Down+A する処理が要る。誤ると Petalburg へ飛び progress 巻き戻し。letter(H4a)解決後に着手。
 
 ## H5. dual_dev の生産性(タスクがゲートに落ちがち)
 
