@@ -1303,7 +1303,19 @@ def run(
         if not gs.in_battle and (battle_move_queue or llm_buttons_queue):
             battle_move_queue = []
             llm_buttons_queue = []
-        if not battle_move_queue and gs.in_battle and gs.is_trainer_battle:
+        # Double battle (BATTLE_TYPE_DOUBLE = battle_flags & 0x1; e.g. the Route
+        # 109 Tuber twins): the single-battle move_select_sequence loops forever
+        # — after it picks the lead's move the game asks for the SECOND mon's
+        # move and the sequence's leading B,B backs that out, so no turn ever
+        # commits (a 3784-turn Route109 stall vs a full-HP Wingull was exactly
+        # this). Just mash A: it takes FIGHT -> a move -> the default target for
+        # BOTH mons, advancing the turn; the L32 lead overpowers the L13 doubles.
+        elif (
+            not battle_move_queue and gs.in_battle
+            and (getattr(gs, "battle_flags", 0) & 0x1)
+        ):
+            battle_move_queue = ["A"]
+        elif not battle_move_queue and gs.in_battle and gs.is_trainer_battle:
             try:
                 active_hp = battle_moves_mod.active_hp(client)
             except (OSError, RuntimeError, EmulatorError):
