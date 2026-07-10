@@ -378,8 +378,8 @@ class Goal:
                 gs.badge_count >= 2
                 and _letter_done(gs)
                 and not _devon_delivered(gs)
-                and cur in {(0, 11), (0, 21), (24, 7), (24, 8),
-                            (24, 9), (24, 10)}
+                and cur in {(0, 11), (3, 1), (3, 3), (0, 21), (24, 7),
+                            (24, 8), (24, 9), (24, 10)}
             )
         if c == "reach_slateport":
             # The sail lands on Route109 (0,24); walk north into Slateport City.
