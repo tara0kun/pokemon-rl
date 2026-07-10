@@ -1399,7 +1399,18 @@ def run(
                         battle_moves_mod.move_select_sequence(best_slot)
                     )
                 else:
-                    battle_move_queue = ["A"]  # all PP gone -> A selects Struggle
+                    # No damaging move available: every move that still has PP
+                    # does 0 damage to this enemy (Grovyle's Quick Attack is
+                    # Normal = immune vs a Ghost Sableye once Leaf Blade/Pursuit
+                    # PP are spent) or all damaging moves are out of PP. Pressing
+                    # A just re-picks a 0-damage move and the wild battle never
+                    # ends — a 300-turn Granite-Cave-exit stall vs a 1-HP Sableye
+                    # was exactly this. A wild battle can always be run from, so
+                    # FLEE: B,B backs out of any submenu, Up,Up,Left resets the
+                    # cursor to FIGHT, then Right,Down -> RUN (bottom-right), A.
+                    battle_move_queue = [
+                        "B", "B", "Up", "Up", "Left", "Right", "Down", "A",
+                    ]
 
         if battle_move_queue:
             button = battle_move_queue.pop(0)
