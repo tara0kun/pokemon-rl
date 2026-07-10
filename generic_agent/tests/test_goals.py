@@ -139,12 +139,32 @@ class TestDewfordChain(GoalsTestBase):
         self.assertEqual(g.name, "heal_at_dewford_pc")
         self.assertEqual(g.target_map, (3, 1))
 
-    def test_badge2_retires_dewford_chain(self) -> None:
-        # Brawly 撃破後は dewford 系 goal が全て非マッチ (HYPOTHESES H4:
-        # 後続 goal 未実装なので None になる — Slateport chain 追加時に更新)
-        gs = make_gs(map_group=0, map_num=11, badge_count=2)
+    def test_badge2_delivers_steven_letter(self) -> None:
+        # Post-Brawly (H4): with the Letter undelivered, the goal is to bring it
+        # to Steven in GraniteCave_StevensRoom (24,10) — the hard gate for the
+        # Slateport sail. Reached directly from cave 1F, both bright maps.
+        gs = make_gs(map_group=0, map_num=11, badge_count=2,
+                     flag_steven_letter_delivered=False)
         g = goals_mod.current_goal(gs)
-        self.assertIsNone(g)
+        self.assertEqual(g.name, "deliver_steven_letter")
+        self.assertEqual(g.target_map, (24, 10))
+        self.assertEqual(g.target_pos, (7, 9))
+
+    def test_badge2_letter_delivered_retires_chain(self) -> None:
+        # Once the Letter flag is set the letter goal deactivates; the sail /
+        # Slateport goals are the next increment, so for now the chain is blank.
+        gs = make_gs(map_group=0, map_num=11, badge_count=2,
+                     flag_steven_letter_delivered=True)
+        self.assertIsNone(goals_mod.current_goal(gs))
+
+    def test_badge2_low_hp_heals_before_cave_trek(self) -> None:
+        # A near-dead L30 lead (post-Brawly 2/86) must heal at the Dewford PC
+        # before walking the encounter-filled cave to Steven — else it faints on
+        # a wild step and whiteouts. heal goal now covers badge>=2.
+        gs = make_gs(map_group=24, map_num=7, badge_count=2,
+                     party0_hp=2, party0_max_hp=86,
+                     flag_steven_letter_delivered=False)
+        self.assertEqual(goals_mod.current_goal(gs).name, "heal_at_dewford_pc")
 
     def test_route104_north_south_split(self) -> None:
         # 同一 map (0,19) でも y 座標で goal が分岐 (INVARIANTS C-18)

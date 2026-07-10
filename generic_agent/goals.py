@@ -69,6 +69,7 @@ _GOAL_ORDER_WEIGHT = {
     "grind_granite_cave": 72,
     "reach_dewford_gym": 70,
     "dewford_gym_brawly": 71,
+    "deliver_steven_letter": 80,
 }
 
 
@@ -91,6 +92,9 @@ _GOAL_BYPASS_VISITED = {
     # Grind loop: the cave and PC get marked visited immediately but must stay
     # re-targetable every heal/grind cycle until the lead reaches L30.
     "grind_granite_cave", "heal_at_dewford_pc",
+    # Post-Brawly: StevensRoom/cave get marked visited during the grind, but the
+    # letter goal must stay re-targetable until the delivery flag flips.
+    "deliver_steven_letter",
 }
 
 
@@ -288,15 +292,20 @@ class Goal:
                 and cur in {(0, 11), (3, 3)}
             )
         if c == "heal_low_hp_dewford":
-            # Lead hurt (<40% HP) in the Dewford grind loop → route to the
-            # Dewford PC nurse so grinding continues instead of stalling once
-            # the low-HP whiteout guard starts fleeing every wild battle.
+            # Lead hurt (<40% HP) on the Dewford side → route to the Dewford PC
+            # nurse. Used by the grind loop (pre-Brawly) AND the post-Brawly
+            # Steven-letter trek: after Brawly the lead is often near-dead (L30
+            # 2/86 vs the Bulk Up Makuhita), and Granite Cave 1F rolls a wild
+            # encounter on every floor step, so walking to Steven at 2 HP would
+            # faint and whiteout. badge>=1 (not <2) so it also guards the
+            # post-badge cave trek; cave B2F/StevensRoom added to the zone.
             return (
-                1 <= gs.badge_count < 2
+                gs.badge_count >= 1
                 and gs.party0_max_hp > 0
                 and gs.party0_hp_frac < 0.4
                 and not gs.in_battle
-                and cur in {(0, 11), (3, 1), (0, 21), (24, 7), (24, 8)}
+                and cur in {(0, 11), (3, 1), (3, 3), (0, 21), (24, 7),
+                            (24, 8), (24, 9), (24, 10)}
             )
         if c == "grind_pre_brawly":
             # Lead below L30 → grind wild battles in Granite Cave 1F (reachable
@@ -309,6 +318,18 @@ class Goal:
                 1 <= gs.badge_count < 2
                 and gs.party0_level < 30
                 and cur in {(0, 11), (3, 1), (0, 21), (24, 7), (24, 8)}
+            )
+        if c == "deliver_steven_letter":
+            # Post-Brawly (H4): deliver the Letter to Steven in
+            # GraniteCave_StevensRoom (24,10). This is the HARD gate for the
+            # Dewford->Slateport sail (decomp DewfordTown/scripts.inc does
+            # goto_if_unset FLAG_DELIVERED_STEVEN_LETTER). Steven's room is
+            # reached DIRECTLY from cave 1F warp (5,10) — both maps bright
+            # (requires_flash=False), so no dark B1F/B2F traversal. Active until
+            # the flag flips (delivery also grants TM47 Steel Wing).
+            return (
+                gs.badge_count >= 2
+                and not gs.flag_steven_letter_delivered
             )
         return False
 
@@ -478,6 +499,16 @@ GOAL_TABLE: list[Goal] = [
         target_pos=(4, 3),        # Brawly (map_data/canon coords) — reaching triggers battle
         condition="seek_brawly",
         desc="Dewford Town/Gym → Brawly (4,3) に到達して Knuckle Badge 戦",
+    ),
+    # Post-Brawly (H4): deliver Steven's Letter — the hard gate for the
+    # Slateport sail. Placed after the gym goals (badge>=2). heal_at_dewford_pc
+    # (badge>=1, above) still wins first when the L30 lead is near-dead.
+    Goal(
+        name="deliver_steven_letter",
+        target_map=(24, 10),      # GraniteCave_StevensRoom (bright; via 1F warp (5,10))
+        target_pos=(7, 9),        # tile below Steven (7,8); face Up + A hands the Letter
+        condition="deliver_steven_letter",
+        desc="Badge2後: Steven (GraniteCave StevensRoom) に Letter 配達 → TM47 + 渡し船 gate 解除",
     ),
 ]
 

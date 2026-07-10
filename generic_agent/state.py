@@ -115,6 +115,14 @@ class GameState:
     # after beating the Aqua grunt (Peeko rescued, Devon Goods returned).
     # This is the story gate for Mr.Briney's sail to Dewford.
     flag_devon_goods_recovered: bool = False
+    # FLAG_DELIVERED_STEVEN_LETTER (0xBD): set in GraniteCave_StevensRoom after
+    # handing Steven the Letter (also gives TM47 Steel Wing). Story gate for
+    # Mr.Briney's Dewford->Slateport(Route109) sail — decomp DewfordTown/
+    # scripts.inc goto_if_unset FLAG_DELIVERED_STEVEN_LETTER.
+    flag_steven_letter_delivered: bool = False
+    # FLAG_DELIVERED_DEVON_GOODS (0x95): set at Slateport Oceanic Museum 2F on
+    # handoff to Capt. Stern; clears the Route110 Team Aqua block to Mauville.
+    flag_devon_goods_delivered: bool = False
     bag_pokeball_count: int = 0
     bag_first_item_id: int = 0
     bag_first_item_qty: int = 0
@@ -298,6 +306,8 @@ def read_state(client: MGBAClient) -> GameState:
     flag_birch = False
     flag_starter = False
     flag_devon = False
+    flag_steven_letter = False
+    flag_devon_delivered = False
     pokeballs = 0
     first_item_id = 0
     first_item_qty = 0
@@ -324,6 +334,10 @@ def read_state(client: MGBAClient) -> GameState:
         flag_starter = bool(flag_byte_starter & (1 << (0x55 % 8)))
         flag_byte_devon = client.read8(ptr + SB1_FLAGS_OFFSET + (0x8F // 8))
         flag_devon = bool(flag_byte_devon & (1 << (0x8F % 8)))
+        flag_byte_letter = client.read8(ptr + SB1_FLAGS_OFFSET + (0xBD // 8))
+        flag_steven_letter = bool(flag_byte_letter & (1 << (0xBD % 8)))
+        flag_byte_dgd = client.read8(ptr + SB1_FLAGS_OFFSET + (0x95 // 8))
+        flag_devon_delivered = bool(flag_byte_dgd & (1 << (0x95 % 8)))
         first_item_id = client.read16(ptr + SB1_BAG_ITEMS + 0)
         first_item_qty_enc = client.read16(ptr + SB1_BAG_ITEMS + 2)
         # 35 fix (06-29): Pokemon Emerald bag quantities are XOR-encrypted
@@ -394,6 +408,8 @@ def read_state(client: MGBAClient) -> GameState:
         flag_birch_met=flag_birch,
         flag_starter_received=flag_starter,
         flag_devon_goods_recovered=flag_devon,
+        flag_steven_letter_delivered=flag_steven_letter,
+        flag_devon_goods_delivered=flag_devon_delivered,
         bag_pokeball_count=pokeballs,
         bag_first_item_id=first_item_id,
         bag_first_item_qty=first_item_qty,
