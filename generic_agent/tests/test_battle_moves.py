@@ -140,5 +140,75 @@ class BestMoveIndexTest(unittest.TestCase):
         self.assertEqual(bm.best_move_index(c), 1)
 
 
+class EffectivenessChartDerivedTest(unittest.TestCase):
+    """effectiveness() の期待倍率を bm._CHART から機械的に導出して検証する。
+    チャート値をテスト側に再ハードコードしない(4.0/1.0/0.0 は構造上の帰結)。"""
+
+    def test_immunity_is_zero(self):
+        checked = 0
+        for atk, row in bm._CHART.items():
+            for dft, mult in row.items():
+                if mult == 0.0:
+                    self.assertEqual(bm.effectiveness(atk, dft, dft), 0.0)
+                    checked += 1
+        self.assertGreater(checked, 0)
+
+    def test_single_type_not_squared(self):
+        for atk, row in bm._CHART.items():
+            for dft, mult in row.items():
+                got = bm.effectiveness(atk, dft, dft)
+                self.assertEqual(got, mult)
+                if mult not in (0.0, 1.0):
+                    self.assertNotEqual(got, mult * mult)
+
+    def test_double_super_effective_is_4(self):
+        checked = 0
+        for atk, row in bm._CHART.items():
+            supers = [t for t, m in row.items() if m == 2]
+            for i in range(len(supers)):
+                for j in range(len(supers)):
+                    d1, d2 = supers[i], supers[j]
+                    if d1 == d2:
+                        continue
+                    expected = row[d1] * row[d2]
+                    self.assertEqual(expected, 4.0)
+                    self.assertEqual(bm.effectiveness(atk, d1, d2), expected)
+                    checked += 1
+        self.assertGreater(checked, 0)
+
+    def test_unregistered_pair_defaults_to_1(self):
+        atk = 0
+        row = bm._CHART[atk]
+        missing = next(t for t in range(18) if t not in row)
+        self.assertEqual(bm.effectiveness(atk, missing, missing),
+                         row.get(missing, 1.0))
+        self.assertEqual(bm.effectiveness(atk, missing, missing), 1.0)
+        absent = next(t for t in range(64) if t not in bm._CHART)
+        self.assertEqual(bm.effectiveness(absent, 0, 5), 1.0)
+
+
+class MoveSelectSequenceNavDerivedTest(unittest.TestCase):
+    """末尾ナビを bm._SLOT_NAV から導出して照合。範囲外 slot は nav なし fallback。"""
+
+    def _prefix(self):
+        return bm.move_select_sequence(0)[:-1]
+
+    def _tail_nav(self, slot):
+        seq = bm.move_select_sequence(slot)
+        return seq[len(self._prefix()):-1]
+
+    def test_tail_nav_matches_slot_nav_table(self):
+        for slot, nav in bm._SLOT_NAV.items():
+            seq = bm.move_select_sequence(slot)
+            self.assertEqual(seq[-1], "A")
+            self.assertEqual(self._tail_nav(slot), nav)
+
+    def test_out_of_range_slot_is_no_nav_fallback(self):
+        for bad in (-1, 4, 99):
+            self.assertNotIn(bad, bm._SLOT_NAV)
+            seq = bm.move_select_sequence(bad)
+            self.assertEqual(seq[-1], "A")
+            self.assertEqual(self._tail_nav(bad), ())
+
 if __name__ == "__main__":
     unittest.main()
