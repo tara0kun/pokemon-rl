@@ -284,11 +284,21 @@ class MapCache:
         blocked_tiles: set[tuple[int, int]] | None = None,
         tile_elevation: dict[tuple[int, int], int] | None = None,
         ledge_jumps: dict[tuple[int, int], tuple[int, int]] | None = None,
+        extra_walkable: set[tuple[int, int]] | None = None,
     ) -> list[str] | None:
         info = self.get(map_g, map_n)
         if info is None:
             return None
-        if not info.walkable(*start):
+        # extra_walkable: tiles that are statically BLOCKED but currently
+        # passable in the live grid (a lowered dynamic barrier, e.g. a Mauville
+        # Gym switch). Treat them as walkable so BFS can route through an opened
+        # barrier the static map.bin still shows as a wall.
+        extra_w = extra_walkable or set()
+
+        def _walk(x: int, y: int) -> bool:
+            return info.walkable(x, y) or (x, y) in extra_w
+
+        if not _walk(*start):
             return None
         blocked = blocked_tiles or set()
         elev = tile_elevation or {}
@@ -309,14 +319,14 @@ class MapCache:
                 jump = ledges.get((nx, ny))
                 if jump is not None and (dx, dy) == jump:
                     final = (nx + jump[0], ny + jump[1])
-                    if final in visited or not info.walkable(*final):
+                    if final in visited or not _walk(*final):
                         continue
                     if final in blocked:
                         continue
                     visited.add(final)
                     q.append((final, path + [btn]))
                     continue
-                if not info.walkable(nx, ny):
+                if not _walk(nx, ny):
                     continue
                 if (nx, ny) in blocked:
                     continue

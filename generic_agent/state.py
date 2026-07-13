@@ -41,6 +41,76 @@ OE_MAP_GROUP_OFFSET = 0x0A        # u8 mapGroup
 OE_CURRENT_X_OFFSET = 0x10        # s16 currentCoords.x
 OE_CURRENT_Y_OFFSET = 0x12        # s16 currentCoords.y
 
+# gBackupMapLayout (IWRAM, Emerald USA BPEE) — the LIVE metatile grid, which
+# reflects dynamically-changed tiles (e.g. Mauville Gym electric barriers raised/
+# lowered by floor switches). struct { s32 width; s32 height; u16 *map; }; .map
+# always points to sBackupMapData (0x02032318). Verified live: for Route117 the
+# padded width/height (mapW+15, mapH+14) matched the static dims and .map read
+# 0x02032318 exactly. Each grid u16: metatile_id 0x03FF, COLLISION 0x0C00 (bits
+# 10-11; non-zero = wall), elevation 0xF000. Real map coord (x,y) sits at grid
+# (x+7, y+7). Sources: pret/pokeemerald symbols branch + global.fieldmap.h.
+BACKUP_MAP_LAYOUT_ADDR = 0x03005DC0
+MAP_GRID_OFFSET = 7  # MAP_OFFSET — border padding around the real map
+MAPGRID_COLLISION_MASK = 0x0C00
+MAPGRID_UNDEFINED = 0x03FF
+
+
+def read_live_walkable_overrides(
+    client: MGBAClient, static_info,
+) -> tuple[set[tuple[int, int]], set[tuple[int, int]]]:
+    """Compare the LIVE collision grid to the static map.bin collision.
+
+    Returns (extra_walkable, extra_blocked): tiles whose live walkability
+    DIFFERS from static. extra_walkable = static-blocked but live-open (a
+    lowered barrier the BFS may now cross); extra_blocked = static-open but
+    live-closed (a raised barrier the BFS must avoid). Both empty on any read
+    failure or dimension mismatch (so nav safely falls back to static). Lets
+    the agent solve dynamic-barrier puzzles like the Mauville Gym, where the
+    switch scripts flip the 0x0C00 collision bits in this live grid.
+    """
+    try:
+        width = client.read32(BACKUP_MAP_LAYOUT_ADDR)
+        height = client.read32(BACKUP_MAP_LAYOUT_ADDR + 4)
+        map_ptr = client.read32(BACKUP_MAP_LAYOUT_ADDR + 8)
+    except EmulatorError:
+        return set(), set()
+    # Sanity: padded dims must match the loaded static map (+15 wide, +14 tall)
+    # and the buffer pointer must be the known EWRAM grid. A mismatch means a
+    # map transition / bad read -> fall back to static.
+    if (
+        width != static_info.width + 15
+        or height != static_info.height + 14
+        or not (0x02000000 <= map_ptr < 0x02040000)
+    ):
+        return set(), set()
+    try:
+        raw = client.read_range(map_ptr, width * height * 2)
+    except EmulatorError:
+        return set(), set()
+    if len(raw) < width * height * 2:
+        return set(), set()
+    extra_walkable: set[tuple[int, int]] = set()
+    extra_blocked: set[tuple[int, int]] = set()
+    off_base = MAP_GRID_OFFSET
+    for y in range(static_info.height):
+        gy = y + off_base
+        row = (gy * width)
+        for x in range(static_info.width):
+            gx = x + off_base
+            off = (row + gx) * 2
+            entry = raw[off] | (raw[off + 1] << 8)
+            live_walk = (
+                entry != MAPGRID_UNDEFINED
+                and (entry & MAPGRID_COLLISION_MASK) == 0
+            )
+            stat_walk = static_info.walkable(x, y)
+            if live_walk and not stat_walk:
+                extra_walkable.add((x, y))
+            elif not live_walk and stat_walk:
+                extra_blocked.add((x, y))
+    return extra_walkable, extra_blocked
+
+
 # SaveBlock1 inner offsets (pokeemerald struct SaveBlock1)
 # These are referenced relative to *gSaveBlock1Ptr.
 SB1_PLAYER_PARTY_COUNT = 0x0234  # u32 at SaveBlock1.playerPartyCount

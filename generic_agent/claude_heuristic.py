@@ -118,6 +118,7 @@ def heuristic_button(
     reward_state: reward_state_mod.RewardState | None = None,
     screen_signals: dict | None = None,
     current_goal: goals_mod.Goal | None = None,
+    client: MGBAClient | None = None,
 ) -> tuple[str, str]:
     if reward_state is None:
         reward_state = reward_state_mod.RewardState()
@@ -612,6 +613,33 @@ def heuristic_button(
                             tile_elevation=knowledge_elev,
                             ledge_jumps=knowledge_ledges,
                         )
+                    # Live-collision fallback: dynamic barriers (Mauville Gym
+                    # electric gates flipped by floor switches) are invisible to
+                    # the static map.bin — the barrier tiles read as walls, so
+                    # the goal BFS to Wattson is unreachable no matter what. Read
+                    # the LIVE metatile grid (gBackupMapLayout) and re-run the BFS
+                    # allowing tiles a switch has OPENED (extra_walkable) and
+                    # avoiding tiles a switch has CLOSED (extra_blocked). Only
+                    # fires when the static BFS already failed, so the (heavier)
+                    # RAM grid read stays rare — puzzle maps only.
+                    if not bfs_path and client is not None:
+                        try:
+                            extra_w, extra_b = (
+                                state_mod.read_live_walkable_overrides(
+                                    client, cur_info,
+                                )
+                            )
+                        except Exception:
+                            extra_w, extra_b = set(), set()
+                        if extra_w or extra_b:
+                            bfs_path = mc.bfs_to_tile(
+                                gs.map_group, gs.map_num,
+                                (gs.x, gs.y), target_tiles,
+                                blocked_tiles=(bfs_blocked | extra_b) - extra_w,
+                                tile_elevation=knowledge_elev,
+                                ledge_jumps=knowledge_ledges,
+                                extra_walkable=extra_w,
+                            )
                     if bfs_path:
                         next_btn = bfs_path[0]
                         delta = {
@@ -1538,6 +1566,7 @@ def run(
                     reward_state=rs,
                     screen_signals=screen_signals,
                     current_goal=cur_goal,
+                    client=client,
                 )
         else:
             button, src = heuristic_button(
@@ -1554,6 +1583,7 @@ def run(
                 reward_state=rs,
                 screen_signals=screen_signals,
                 current_goal=cur_goal,
+                client=client,
             )
         if "escape" in src:
             escape_dir_index = (escape_dir_index + 1) % 4
