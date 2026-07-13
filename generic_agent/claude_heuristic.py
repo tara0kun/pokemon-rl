@@ -1434,7 +1434,13 @@ def run(
                     )
                 except Exception:
                     indoor = False
-                if not is_grind and not indoor:
+                # Flee ONLY on a confirmed outdoor wild encounter: a VALID map
+                # read that is not indoor and not the grind. A flicker frame
+                # reads map (0,0) -> is_indoor False -> the old code fled and
+                # FLEE_SEQ's Up presses walked the agent onto stairs, bouncing
+                # it across the Shipyard 1F<->2F during a vision-battle_menu
+                # false positive (the phantom-battle trap north of the museum).
+                if not is_grind and not indoor and gs.saveblock1_valid:
                     battle_move_queue = list(FLEE_SEQ)
                 else:
                     # Grind or indoor trainer battle: pick a move with PP from
@@ -1451,9 +1457,10 @@ def run(
                         battle_move_queue = list(
                             battle_moves_mod.move_select_sequence(best_slot)
                         )
-                    elif indoor:
-                        # Indoors we cannot flee a trainer -> A-mash (FIGHT ->
-                        # first move; an over-leveled lead still wins).
+                    elif indoor or not gs.saveblock1_valid:
+                        # Indoor trainer (can't flee) or an unconfirmed flicker
+                        # frame (must not flee-bounce): A-mash (FIGHT -> first
+                        # move; an over-leveled lead still wins).
                         battle_move_queue = ["A"]
                     else:
                         # Grinding, no damaging move -> flee rather than loop a
