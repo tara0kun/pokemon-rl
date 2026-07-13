@@ -407,12 +407,18 @@ class Goal:
             )
         if c == "deliver_devon_dock":
             # Devon Goods errand step 1: talk to Dock at Stern's Shipyard (5,5);
-            # he redirects you to Capt.Stern (sets FLAG_DOCK_REJECTED 0x94). RAW
-            # flags — future events, so no latch (the devon false-latch lesson).
+            # he redirects you to Capt.Stern (sets FLAG_DOCK_REJECTED 0x94).
+            # delivered gate uses the _devon_delivered LATCH, not the raw flag:
+            # 0x95 DMA-flickers False on ~12% of live frames, and each flicker
+            # re-fired this goal post-delivery and yanked the agent SOUTH back to
+            # the Shipyard (it could not make north progress out of Slateport).
+            # The latch is written once 0x95 is genuinely True (measured stably
+            # True post-delivery) and never re-opens the errand. dock_rejected
+            # stays raw (a pre-latch flicker there only wobbles one frame).
             return (
                 gs.badge_count >= 2
                 and _letter_done(gs)
-                and not gs.flag_devon_goods_delivered
+                and not _devon_delivered(gs)
                 and not gs.flag_dock_rejected_devon
                 and cur in {(0, 1), (9, 0), (0, 24)}
             )
@@ -440,25 +446,27 @@ class Goal:
                 return (
                     gs.badge_count >= 2
                     and _letter_done(gs)
-                    and not gs.flag_devon_goods_delivered
+                    and not _devon_delivered(gs)
                 )
             return (
                 gs.badge_count >= 2
                 and _letter_done(gs)
                 and gs.flag_dock_rejected_devon
-                and not gs.flag_devon_goods_delivered
+                and not _devon_delivered(gs)
                 and cur in {(0, 1), (9, 0), (0, 24)}
             )
         if c == "reach_mauville":
-            # After delivering the Devon Goods (0x95), head north to Mauville
-            # for the Dynamo Badge. RAW flag: 0x95 measured stably True
-            # post-delivery (49/49 reads, no flicker), so no latch — and a
-            # positive gate on it can only fire after the genuine delivery.
-            # Below badge 3 so the whole Mauville chain retires once Wattson
-            # is beaten. Unrestricted cur: this is what pulls the agent out of
-            # the Oceanic Museum onto the Slateport->Route110->Mauville path.
+            # After delivering the Devon Goods, head north to Mauville for the
+            # Dynamo Badge. Uses the _devon_delivered LATCH (not the raw 0x95):
+            # reach_mauville (needs delivered) and deliver_devon_* (need NOT
+            # delivered) are perfectly anti-correlated on the 0x95 flicker, so a
+            # single flicker-False frame dropped reach_mauville AND re-fired the
+            # delivery goals, yanking the agent south. The monotonic latch keeps
+            # this stable north. Below badge 3 so the whole Mauville chain
+            # retires once Wattson is beaten. Unrestricted cur: pulls the agent
+            # out of the museum onto the Slateport->Route110->Mauville path.
             return (
-                gs.flag_devon_goods_delivered
+                _devon_delivered(gs)
                 and gs.badge_count < 3
             )
         if c == "mauville_gym_wattson":
@@ -466,7 +474,7 @@ class Goal:
             # Wattson (5,2). Gated to those two maps so table-order selection
             # keeps it above reach_mauville only where it should win.
             return (
-                gs.flag_devon_goods_delivered
+                _devon_delivered(gs)
                 and gs.badge_count < 3
                 and cur in {(0, 2), (10, 0)}
             )
