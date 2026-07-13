@@ -177,11 +177,36 @@ class TestDewfordChain(GoalsTestBase):
         self.assertEqual(g.name, "reach_slateport")
         self.assertEqual(g.target_map, (0, 1))
 
-    def test_devon_goods_delivered_retires_slateport_chain(self) -> None:
-        # After the Devon Goods are delivered in Slateport the sail/reach goals
-        # deactivate (Mauville chain is the next unimplemented increment -> None).
+    def test_slateport_devon_dock_first(self) -> None:
+        # At Slateport, letter delivered, Devon Goods not handed over and the Dock
+        # not yet talked to -> go to the Shipyard Dock (9,0)/(5,5) first.
         gs = make_gs(map_group=0, map_num=1, badge_count=2,
                      flag_steven_letter_delivered=True,
+                     flag_devon_goods_delivered=False,
+                     flag_dock_rejected_devon=False)
+        g = goals_mod.current_goal(gs)
+        self.assertEqual(g.name, "deliver_devon_dock")
+        self.assertEqual(g.target_map, (9, 0))
+        self.assertEqual(g.target_pos, (5, 5))
+
+    def test_slateport_devon_goods_after_dock(self) -> None:
+        # After the Dock redirect (flag 0x94 set), deliver to Capt.Stern on the
+        # Oceanic Museum 2F (9,8)/(13,6).
+        gs = make_gs(map_group=0, map_num=1, badge_count=2,
+                     flag_steven_letter_delivered=True,
+                     flag_dock_rejected_devon=True,
+                     flag_devon_goods_delivered=False)
+        g = goals_mod.current_goal(gs)
+        self.assertEqual(g.name, "deliver_devon_goods")
+        self.assertEqual(g.target_map, (9, 8))
+        self.assertEqual(g.target_pos, (13, 6))
+
+    def test_devon_goods_delivered_retires_slateport_chain(self) -> None:
+        # After the Devon Goods are delivered the whole Slateport chain (sail /
+        # reach / dock / deliver) deactivates (Mauville chain unimplemented -> None).
+        gs = make_gs(map_group=0, map_num=1, badge_count=2,
+                     flag_steven_letter_delivered=True,
+                     flag_dock_rejected_devon=True,
                      flag_devon_goods_delivered=True)
         self.assertIsNone(goals_mod.current_goal(gs))
 

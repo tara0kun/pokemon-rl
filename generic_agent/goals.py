@@ -102,6 +102,8 @@ _GOAL_ORDER_WEIGHT = {
     "deliver_steven_letter": 80,
     "sail_to_slateport": 81,
     "reach_slateport": 82,
+    "deliver_devon_dock": 83,
+    "deliver_devon_goods": 84,
 }
 
 
@@ -129,6 +131,9 @@ _GOAL_BYPASS_VISITED = {
     "deliver_steven_letter",
     # Slateport chain: Dewford (Briney) is long-visited; Slateport is the target.
     "sail_to_slateport", "reach_slateport",
+    # Devon Goods: Shipyard/Museum get marked visited on entry but the delivery
+    # goals must stay re-targetable until the flags flip.
+    "deliver_devon_dock", "deliver_devon_goods",
 }
 
 
@@ -394,6 +399,30 @@ class Goal:
                 and not gs.flag_devon_goods_delivered
                 and cur in {(0, 24), (0, 1)}
             )
+        if c == "deliver_devon_dock":
+            # Devon Goods errand step 1: talk to Dock at Stern's Shipyard (5,5);
+            # he redirects you to Capt.Stern (sets FLAG_DOCK_REJECTED 0x94). RAW
+            # flags — future events, so no latch (the devon false-latch lesson).
+            return (
+                gs.badge_count >= 2
+                and _letter_done(gs)
+                and not gs.flag_devon_goods_delivered
+                and not gs.flag_dock_rejected_devon
+                and cur in {(0, 1), (9, 0), (0, 24)}
+            )
+        if c == "deliver_devon_goods":
+            # Step 2: after the Dock redirect, deliver to Capt.Stern on Oceanic
+            # Museum 2F (13,6). Sets FLAG_DELIVERED_DEVON_GOODS (0x95) + unblocks
+            # Route110 to Mauville. The $50 entry dialog and the 2 Aqua-grunt
+            # battles are handled by the heuristic's dialog / (double-)battle
+            # handlers on the way to Stern.
+            return (
+                gs.badge_count >= 2
+                and _letter_done(gs)
+                and gs.flag_dock_rejected_devon
+                and not gs.flag_devon_goods_delivered
+                and cur in {(0, 1), (9, 0), (9, 7), (9, 8), (0, 24)}
+            )
         return False
 
 
@@ -589,6 +618,20 @@ GOAL_TABLE: list[Goal] = [
         target_map=(0, 1),        # SlateportCity (sail lands on Route109, walk north)
         condition="reach_slateport",
         desc="Route109 上陸 → 北上して Slateport City 到達",
+    ),
+    Goal(
+        name="deliver_devon_dock",
+        target_map=(9, 0),        # SlateportCity_SternsShipyard_1F
+        target_pos=(5, 5),        # Dock NPC — talk (redirects to Capt.Stern)
+        condition="deliver_devon_dock",
+        desc="Slateport: Stern's Shipyard の Dock (5,5) に話す → Museum へ redirect",
+    ),
+    Goal(
+        name="deliver_devon_goods",
+        target_map=(9, 8),        # SlateportCity_OceanicMuseum_2F
+        target_pos=(13, 6),       # Capt.Stern — deliver Devon Goods → Route110 unblock
+        condition="deliver_devon_goods",
+        desc="Slateport: Oceanic Museum 2F の Capt.Stern (13,6) に Devon Goods 配達",
     ),
 ]
 

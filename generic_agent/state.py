@@ -123,6 +123,10 @@ class GameState:
     # FLAG_DELIVERED_DEVON_GOODS (0x95): set at Slateport Oceanic Museum 2F on
     # handoff to Capt. Stern; clears the Route110 Team Aqua block to Mauville.
     flag_devon_goods_delivered: bool = False
+    # FLAG_DOCK_REJECTED_DEVON_GOODS (0x94): set when Dock at Stern's Shipyard
+    # redirects you to find Capt. Stern (who is at the Oceanic Museum). Sequences
+    # the Devon Goods errand — visit the Dock first, then the museum.
+    flag_dock_rejected_devon: bool = False
     bag_pokeball_count: int = 0
     bag_first_item_id: int = 0
     bag_first_item_qty: int = 0
@@ -308,6 +312,7 @@ def read_state(client: MGBAClient) -> GameState:
     flag_devon = False
     flag_steven_letter = False
     flag_devon_delivered = False
+    flag_dock_rejected = False
     pokeballs = 0
     first_item_id = 0
     first_item_qty = 0
@@ -338,6 +343,8 @@ def read_state(client: MGBAClient) -> GameState:
         flag_steven_letter = bool(flag_byte_letter & (1 << (0xBD % 8)))
         flag_byte_dgd = client.read8(ptr + SB1_FLAGS_OFFSET + (0x95 // 8))
         flag_devon_delivered = bool(flag_byte_dgd & (1 << (0x95 % 8)))
+        flag_byte_dr = client.read8(ptr + SB1_FLAGS_OFFSET + (0x94 // 8))
+        flag_dock_rejected = bool(flag_byte_dr & (1 << (0x94 % 8)))
         first_item_id = client.read16(ptr + SB1_BAG_ITEMS + 0)
         first_item_qty_enc = client.read16(ptr + SB1_BAG_ITEMS + 2)
         # 35 fix (06-29): Pokemon Emerald bag quantities are XOR-encrypted
@@ -410,6 +417,7 @@ def read_state(client: MGBAClient) -> GameState:
         flag_devon_goods_recovered=flag_devon,
         flag_steven_letter_delivered=flag_steven_letter,
         flag_devon_goods_delivered=flag_devon_delivered,
+        flag_dock_rejected_devon=flag_dock_rejected,
         bag_pokeball_count=pokeballs,
         bag_first_item_id=first_item_id,
         bag_first_item_qty=first_item_qty,
