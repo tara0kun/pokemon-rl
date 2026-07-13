@@ -416,12 +416,32 @@ class Goal:
             # Route110 to Mauville. The $50 entry dialog and the 2 Aqua-grunt
             # battles are handled by the heuristic's dialog / (double-)battle
             # handlers on the way to Stern.
+            #
+            # 0x94 (dock_rejected) DMA-flickers ~37% of frames (measured: 44 of
+            # 118 museum frames read False). On the outbound leg we gate on the
+            # RAW flag, where a flicker only wobbles direction for one frame and
+            # self-corrects. But the Oceanic Museum 1F<->2F stairs is a single
+            # tile warp: a None frame there hands nav to the explore heuristic,
+            # which routes back onto the warp and ping-pongs the agent across
+            # the floors before it can walk the ~10 tiles to Stern. Being ON a
+            # museum map already PROVES the Dock was talked (you can only route
+            # here via this goal with 0x94 genuinely True), so on the museum
+            # maps we drop the 0x94 requirement and stay latched to Stern
+            # regardless of the flicker. This cannot premature-trigger before
+            # the Dock: a pre-Dock flicker-True never actually walks you into
+            # the museum, so `cur in museum` is only reachable post-Dock.
+            if cur in {(9, 7), (9, 8)}:
+                return (
+                    gs.badge_count >= 2
+                    and _letter_done(gs)
+                    and not gs.flag_devon_goods_delivered
+                )
             return (
                 gs.badge_count >= 2
                 and _letter_done(gs)
                 and gs.flag_dock_rejected_devon
                 and not gs.flag_devon_goods_delivered
-                and cur in {(0, 1), (9, 0), (9, 7), (9, 8), (0, 24)}
+                and cur in {(0, 1), (9, 0), (0, 24)}
             )
         return False
 

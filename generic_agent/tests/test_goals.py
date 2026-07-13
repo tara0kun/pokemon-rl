@@ -201,6 +201,23 @@ class TestDewfordChain(GoalsTestBase):
         self.assertEqual(g.target_map, (9, 8))
         self.assertEqual(g.target_pos, (13, 6))
 
+    def test_museum_devon_goods_survives_dock_flag_flicker(self) -> None:
+        # On the Oceanic Museum floors (9,7)/(9,8) the deliver goal must NOT
+        # depend on the 0x94 dock flag: it DMA-flickers ~37% of frames and a
+        # None gap at the single-tile 1F<->2F warp ping-pongs the agent across
+        # floors (the explore heuristic routes back onto the warp). Reaching a
+        # museum map already proves the Dock was talked, so the goal stays on
+        # Stern even when 0x94 momentarily reads False.
+        for mid in [(9, 7), (9, 8)]:
+            gs = make_gs(map_group=mid[0], map_num=mid[1], badge_count=2,
+                         flag_steven_letter_delivered=True,
+                         flag_dock_rejected_devon=False,   # simulated flicker
+                         flag_devon_goods_delivered=False)
+            g = goals_mod.current_goal(gs)
+            self.assertIsNotNone(g, f"goal went None at {mid}")
+            self.assertEqual(g.name, "deliver_devon_goods", f"at {mid}")
+            self.assertEqual(g.target_pos, (13, 6), f"at {mid}")
+
     def test_devon_goods_delivered_retires_slateport_chain(self) -> None:
         # After the Devon Goods are delivered the whole Slateport chain (sail /
         # reach / dock / deliver) deactivates (Mauville chain unimplemented -> None).
