@@ -593,6 +593,25 @@ def heuristic_button(
                         tile_elevation=knowledge_elev,
                         ledge_jumps=knowledge_ledges,
                     )
+                    # Water-misclassification fallback: the metatile parser can
+                    # flag walkable LAND as water and wall off the only route to
+                    # a goal (Slateport's Route110 north exit is reachable only
+                    # across ~5 collision-walkable tiles the parser calls water;
+                    # with water blocked EVERY north path failed and the agent
+                    # fell back to a polluted path-memory exit into the Shipyard,
+                    # oscillating there). When the water-blocked BFS finds NO
+                    # path to the goal, retry with water un-blocked so the agent
+                    # can cross the misclassified land. This only relaxes
+                    # reachability; a genuine surfable-water bump is still caught
+                    # by empirical_blocked on the next pass.
+                    if not bfs_path and (bfs_blocked & knowledge_water):
+                        bfs_path = mc.bfs_to_tile(
+                            gs.map_group, gs.map_num,
+                            (gs.x, gs.y), target_tiles,
+                            blocked_tiles=bfs_blocked - knowledge_water,
+                            tile_elevation=knowledge_elev,
+                            ledge_jumps=knowledge_ledges,
+                        )
                     if bfs_path:
                         next_btn = bfs_path[0]
                         delta = {
