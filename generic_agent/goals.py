@@ -488,7 +488,10 @@ class Goal:
                 _devon_delivered(gs)
                 and gs.badge_count < 3
                 and gs.party0_hp_frac < 0.5
-                and cur in {(0, 1), (0, 25)}
+                # Include the PC map (9,11) itself: without it the goal drops the
+                # instant the agent walks in, reach_mauville fires (no cur gate)
+                # and routes it straight back out -> PC<->city bounce, never heals.
+                and cur in {(0, 1), (0, 25), (9, 11)}
             )
         if c == "heal_at_mauville":
             # Mauville Gym has 6 trainers before Wattson and no in-gym healing, so
@@ -502,7 +505,9 @@ class Goal:
                 _devon_delivered(gs)
                 and gs.badge_count < 3
                 and gs.party0_hp_frac < 0.5
-                and cur in {(0, 2), (10, 0)}
+                # Include the PC map (10,5): else the goal drops on entry and
+                # reach_mauville routes the agent back out -> bounce, never heals.
+                and cur in {(0, 2), (10, 0), (10, 5)}
             )
         if c == "mauville_gym_wattson":
             # At Mauville City or inside the Gym: route to / interact with
