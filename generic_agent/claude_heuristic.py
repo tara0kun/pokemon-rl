@@ -119,30 +119,35 @@ def heuristic_button(
     screen_signals: dict | None = None,
     current_goal: goals_mod.Goal | None = None,
     client: MGBAClient | None = None,
+    ram_battle_recent: bool = True,
 ) -> tuple[str, str]:
     if reward_state is None:
         reward_state = reward_state_mod.RewardState()
     if screen_signals is None:
         screen_signals = {}
-    # in_battle ground truth: gs.in_battle now comes from the verified US
-    # gBattleTypeFlags (0x02022FEC, restored in state.py), which reads
-    # non-zero for the ENTIRE battle (including the move-select screen)
-    # and clears to 0 in the overworld (live-verified 07-01). So trust it,
-    # and ALSO latch on the battle_menu vision signal (the FIGHT/BAG/
-    # POKEMON/RUN box, which is battle-exclusive) so a one-frame RAM miss
-    # can't drop us to overworld nav mid-battle. Do NOT OR dialog/menu
-    # here — those also appear in the overworld and would false-positive.
-    # (The previous code AND-ed with vision and forced in_battle=False on
-    # every turn vision wasn't sampled — that, combined with the turn%5
-    # detection throttle, is what made the FIGHT branch dead 4/5 turns.)
-    _in_battle_real = bool(gs.in_battle) or bool(
-        screen_signals.get("battle_menu")
+    # in_battle ground truth: gs.in_battle comes from the verified US
+    # gBattleTypeFlags (0x02022FEC), which reads non-zero for the ENTIRE battle
+    # (including the move-select screen) and clears to 0 in the overworld
+    # (live-verified). We ALSO latch on the battle_menu vision signal so a one-
+    # frame RAM miss can't drop us to overworld nav mid-battle — BUT only when
+    # a real battle was confirmed in RAM within the last ~12 turns
+    # (ram_battle_recent). Without that gate the vision detector false-positived
+    # the Mauville Gym's yellow-checkered floor + electric barriers as a battle
+    # menu (RAM in_battle=0, 10/10) and froze the agent at the FIGHT-cursor
+    # handler for 3000+ turns, unable to navigate the puzzle. Do NOT OR dialog/
+    # menu — those also appear in the overworld.
+    _in_battle_real = bool(gs.in_battle) or (
+        bool(screen_signals.get("battle_menu")) and ram_battle_recent
     )
     try:
         object.__setattr__(gs, "in_battle", _in_battle_real)
     except Exception:
         pass
-    if screen_signals.get("battle_menu"):
+    # gs.in_battle is now _in_battle_real, which already discounts a lone vision
+    # battle_menu when no RAM battle was seen recently — so this gate skips the
+    # gym-floor false positive and lets nav run, while a real battle (RAM-backed)
+    # still enters here.
+    if screen_signals.get("battle_menu") and gs.in_battle:
         # Indoor maps (museum, gyms) have no wild encounters -> any battle is a
         # scripted TRAINER battle. is_trainer_battle can false-negative here (the
         # battle-flags RAM word reads 0 on the move-select screen), so the RUN
@@ -1130,6 +1135,7 @@ def run(
     catch_seq_queue: list[str] = []
     battle_move_queue: list[str] = []
     battle_trainer_latch = False
+    last_ram_battle_turn = -999
     rs = reward_state_mod.RewardState()
     rs.load()
     checkpoint_target: tuple[int, int, int, int] | None = None
@@ -1208,10 +1214,17 @@ def run(
             last_pos = pos_now
         # gs.in_battle has a known RAM false-negative on English Emerald
         # (the BATTLE_FLAGS_CANDIDATES addresses stay 0 during the
-        # move-select screen), so screen vision is the ground truth.
+        # move-select screen), so screen vision backs it up. But a lone vision
+        # battle_menu is trusted ONLY when a real battle was RAM-confirmed within
+        # the last ~12 turns (ram_battle_recent) — else the Mauville Gym floor
+        # false-positives it and freezes nav. gs.in_battle here is the raw RAM
+        # read (heuristic_button, which overrides it, runs later this turn).
         ss_for_battle = locals().get("screen_signals") or {}
-        in_battle_seen = gs.in_battle or bool(
-            ss_for_battle.get("battle_menu")
+        if gs.in_battle:
+            last_ram_battle_turn = turn
+        ram_battle_recent = (turn - last_ram_battle_turn) <= 12
+        in_battle_seen = gs.in_battle or (
+            bool(ss_for_battle.get("battle_menu")) and ram_battle_recent
         )
         if in_battle_seen:
             battle_turn += 1
@@ -1567,6 +1580,7 @@ def run(
                     screen_signals=screen_signals,
                     current_goal=cur_goal,
                     client=client,
+                    ram_battle_recent=ram_battle_recent,
                 )
         else:
             button, src = heuristic_button(
@@ -1584,6 +1598,7 @@ def run(
                 screen_signals=screen_signals,
                 current_goal=cur_goal,
                 client=client,
+                ram_battle_recent=ram_battle_recent,
             )
         if "escape" in src:
             escape_dir_index = (escape_dir_index + 1) % 4
