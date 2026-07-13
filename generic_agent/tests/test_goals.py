@@ -218,10 +218,57 @@ class TestDewfordChain(GoalsTestBase):
             self.assertEqual(g.name, "deliver_devon_goods", f"at {mid}")
             self.assertEqual(g.target_pos, (13, 6), f"at {mid}")
 
-    def test_devon_goods_delivered_retires_slateport_chain(self) -> None:
-        # After the Devon Goods are delivered the whole Slateport chain (sail /
-        # reach / dock / deliver) deactivates (Mauville chain unimplemented -> None).
+    def test_devon_goods_delivered_advances_to_mauville(self) -> None:
+        # After the Devon Goods are delivered the Slateport delivery chain
+        # (sail / reach_slateport / dock / deliver) deactivates and the goal
+        # advances to reach_mauville — it must NOT loop the delivery goals nor
+        # go None (which stranded the agent at Slateport/museum).
         gs = make_gs(map_group=0, map_num=1, badge_count=2,
+                     flag_steven_letter_delivered=True,
+                     flag_dock_rejected_devon=True,
+                     flag_devon_goods_delivered=True)
+        g = goals_mod.current_goal(gs)
+        self.assertIsNotNone(g)
+        self.assertEqual(g.name, "reach_mauville")
+        self.assertNotIn(g.name, {"deliver_devon_dock", "deliver_devon_goods",
+                                   "reach_slateport", "sail_to_slateport"})
+
+    def test_delivered_devon_heads_to_mauville_from_museum(self) -> None:
+        # The delivery is done (0x95). From the Oceanic Museum floors the goal
+        # must now pull the agent OUT toward Mauville (reach_mauville), not go
+        # None (which stranded it force-exploring the 2F for 2000+ turns).
+        for mid in [(9, 8), (9, 7), (0, 1), (0, 25)]:
+            gs = make_gs(map_group=mid[0], map_num=mid[1], badge_count=2,
+                         flag_steven_letter_delivered=True,
+                         flag_dock_rejected_devon=True,
+                         flag_devon_goods_delivered=True)
+            g = goals_mod.current_goal(gs)
+            self.assertIsNotNone(g, f"goal went None at {mid}")
+            self.assertEqual(g.name, "reach_mauville", f"at {mid}")
+            self.assertEqual(g.target_map, (0, 2))
+
+    def test_at_mauville_targets_wattson_gym(self) -> None:
+        # At Mauville City the gym goal wins over reach_mauville (table order)
+        # and routes to the Gym; inside the Gym it targets Wattson's tile.
+        at_city = make_gs(map_group=0, map_num=2, badge_count=2,
+                          flag_steven_letter_delivered=True,
+                          flag_dock_rejected_devon=True,
+                          flag_devon_goods_delivered=True)
+        g_city = goals_mod.current_goal(at_city)
+        self.assertEqual(g_city.name, "mauville_gym_wattson")
+        self.assertEqual(g_city.target_map, (10, 0))
+        in_gym = make_gs(map_group=10, map_num=0, badge_count=2,
+                         flag_steven_letter_delivered=True,
+                         flag_dock_rejected_devon=True,
+                         flag_devon_goods_delivered=True)
+        g_gym = goals_mod.current_goal(in_gym)
+        self.assertEqual(g_gym.name, "mauville_gym_wattson")
+        self.assertEqual(g_gym.target_pos, (5, 2))  # Wattson NPC tile
+
+    def test_badge3_retires_mauville_chain(self) -> None:
+        # Once the Dynamo Badge is won (badge_count 3) the whole Mauville chain
+        # deactivates (Route111/Verdanturf is the next unimplemented step -> None).
+        gs = make_gs(map_group=0, map_num=2, badge_count=3,
                      flag_steven_letter_delivered=True,
                      flag_dock_rejected_devon=True,
                      flag_devon_goods_delivered=True)

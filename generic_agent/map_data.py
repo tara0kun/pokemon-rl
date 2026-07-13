@@ -75,6 +75,35 @@ class MapCache:
         # and only reachable via the dark B1F/B2F). Both memoized per map.
         self._components_cache: dict[tuple[int, int], tuple[dict, list]] = {}
         self._multicomp_cache: dict[tuple[int, int], bool] = {}
+        self._indoor_cache: dict[tuple[int, int], bool] = {}
+
+    def is_indoor(self, map_g: int, map_n: int) -> bool:
+        """True if the map is a building interior (MAP_TYPE_INDOOR).
+
+        Indoor maps have NO wild encounters, so ANY battle on one is a
+        scripted trainer battle (Oceanic Museum Aqua grunts, gym leaders).
+        The battle-flags RAM word DMA-reads 0 on the move-select screen, so
+        is_trainer_battle false-negatives there; on an indoor map the agent
+        must fight regardless (fleeing loops "no running from a TRAINER
+        battle" forever). Caves are MAP_TYPE_UNDERGROUND, NOT indoor — they
+        DO have wild encounters (the grind), so this is intentionally
+        INDOOR-only. Memoized; reads the cached map.json map_type field.
+        """
+        key = (map_g, map_n)
+        cached = self._indoor_cache.get(key)
+        if cached is not None:
+            return cached
+        result = False
+        try:
+            name = self.name_for(map_g, map_n)
+            jp = config.MEMORY_DIR / "map_cache" / f"{name}.map.json"
+            if jp.exists():
+                mt = json.loads(jp.read_text(encoding="utf-8")).get("map_type")
+                result = (mt == "MAP_TYPE_INDOOR")
+        except (OSError, json.JSONDecodeError, KeyError, TypeError):
+            result = False
+        self._indoor_cache[key] = result
+        return result
 
     def _ensure_index(self) -> bool:
         if self._loaded_index:

@@ -142,6 +142,18 @@ def heuristic_button(
     except Exception:
         pass
     if screen_signals.get("battle_menu"):
+        # Indoor maps (museum, gyms) have no wild encounters -> any battle is a
+        # scripted TRAINER battle. is_trainer_battle can false-negative here (the
+        # battle-flags RAM word reads 0 on the move-select screen), so the RUN
+        # guards below must also refuse to flee on indoor maps (RUN loops "No
+        # running from a TRAINER battle!"; Wattson would never resolve).
+        indoor_battle = False
+        try:
+            indoor_battle = map_data_mod.get_cache().is_indoor(
+                gs.map_group, gs.map_num,
+            )
+        except Exception:
+            indoor_battle = False
         # Low-HP safety guard: in a WILD battle at critical HP (<=25%),
         # another FIGHT or catch turn risks a whiteout (whole party faints
         # -> forced warp to the last Center + money loss), which throws away
@@ -152,7 +164,7 @@ def heuristic_button(
         # run from a trainer, and forcing RUN there loops the "No running
         # from a TRAINER battle!" dialog forever. (Pokemon Center routing is
         # intentionally out of scope here; this only prevents the whiteout.)
-        if not gs.is_trainer_battle and gs.party0_critical:
+        if not gs.is_trainer_battle and not indoor_battle and gs.party0_critical:
             run_seq = ("Right", "Down", "A", "A")
             return run_seq[battle_turn % len(run_seq)], (
                 f"wild_run_lowhp@hp{gs.party0_hp}/{gs.party0_max_hp}"
@@ -168,6 +180,7 @@ def heuristic_button(
             and gs.party_count <= 2
             and gs.party0_hp_frac >= 0.3
             and not gs.is_trainer_battle
+            and not indoor_battle
         ):
             return "Right", "wild_catch_try_screen:init"
         # Over-leveling guard: when starter is well above expected wild
@@ -179,6 +192,7 @@ def heuristic_button(
         # TRAINER battle!" dialog forever).
         if (
             not gs.is_trainer_battle
+            and not indoor_battle
             and gs.party0_level >= 14
             and gs.party_count == 1
             and gs.bag_pokeball_count == 0
@@ -301,7 +315,7 @@ def heuristic_button(
         current_goal is not None
         and current_goal.name.startswith(
             ("dewford", "peeko", "rescue_peeko", "reach",
-             "grind", "heal", "deliver", "sail")
+             "grind", "heal", "deliver", "sail", "mauville")
         )
     )
     # H4b: Mr.Briney's Dewford->Slateport sail multichoice (Petalburg=case 0 /
@@ -1406,14 +1420,29 @@ def run(
                     cur_goal is not None
                     and cur_goal.name.startswith("grind")
                 )
-                if not is_grind:
+                # Indoor maps (museum, gyms) have NO wild encounters: ANY battle
+                # there is a scripted TRAINER battle. But the battle-flags RAM
+                # word DMA-reads 0 on the move-select screen, so is_trainer_battle
+                # false-negatives and lands us in this "wild" branch. Fleeing a
+                # trainer loops "No running from a TRAINER battle!" (the Oceanic
+                # Museum Aqua grunts only got won by FLEE_SEQ's stray A presses;
+                # Wattson at parity would not). Force a fight on indoor maps.
+                indoor = False
+                try:
+                    indoor = map_data_mod.get_cache().is_indoor(
+                        gs.map_group, gs.map_num,
+                    )
+                except Exception:
+                    indoor = False
+                if not is_grind and not indoor:
                     battle_move_queue = list(FLEE_SEQ)
                 else:
-                    # Grind: pick a move with PP from RAM instead of decide()'s
-                    # blind "A" on the highlighted (often depleted) first move —
-                    # a depleted "A" only pops "There's no PP left!" and the turn
-                    # never resolves (the old Route106 grind froze at L26). Fire
-                    # the full self-correcting cursor sequence for ANY slot.
+                    # Grind or indoor trainer battle: pick a move with PP from
+                    # RAM instead of decide()'s blind "A" on the highlighted
+                    # (often depleted) first move — a depleted "A" only pops
+                    # "There's no PP left!" and the turn never resolves (the old
+                    # Route106 grind froze at L26). Fire the full self-correcting
+                    # cursor sequence for ANY slot.
                     try:
                         best_slot = battle_moves_mod.best_move_index(client)
                     except (OSError, RuntimeError, EmulatorError):
@@ -1422,9 +1451,13 @@ def run(
                         battle_move_queue = list(
                             battle_moves_mod.move_select_sequence(best_slot)
                         )
+                    elif indoor:
+                        # Indoors we cannot flee a trainer -> A-mash (FIGHT ->
+                        # first move; an over-leveled lead still wins).
+                        battle_move_queue = ["A"]
                     else:
-                        # Even while grinding, no damaging move -> flee rather
-                        # than loop a 0-damage move forever.
+                        # Grinding, no damaging move -> flee rather than loop a
+                        # 0-damage move forever.
                         battle_move_queue = list(FLEE_SEQ)
 
         if battle_move_queue:

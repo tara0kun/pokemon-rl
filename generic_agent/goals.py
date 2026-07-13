@@ -104,6 +104,8 @@ _GOAL_ORDER_WEIGHT = {
     "reach_slateport": 82,
     "deliver_devon_dock": 83,
     "deliver_devon_goods": 84,
+    "mauville_gym_wattson": 85,
+    "reach_mauville": 86,
 }
 
 
@@ -134,6 +136,10 @@ _GOAL_BYPASS_VISITED = {
     # Devon Goods: Shipyard/Museum get marked visited on entry but the delivery
     # goals must stay re-targetable until the flags flip.
     "deliver_devon_dock", "deliver_devon_goods",
+    # Mauville: Route110/Mauville get marked visited on entry, but reach_mauville
+    # must stay live so the agent doesn't go goal-less after first touching the
+    # city, and mauville_gym_wattson must persist until the badge is won.
+    "reach_mauville", "mauville_gym_wattson",
 }
 
 
@@ -443,6 +449,27 @@ class Goal:
                 and not gs.flag_devon_goods_delivered
                 and cur in {(0, 1), (9, 0), (0, 24)}
             )
+        if c == "reach_mauville":
+            # After delivering the Devon Goods (0x95), head north to Mauville
+            # for the Dynamo Badge. RAW flag: 0x95 measured stably True
+            # post-delivery (49/49 reads, no flicker), so no latch — and a
+            # positive gate on it can only fire after the genuine delivery.
+            # Below badge 3 so the whole Mauville chain retires once Wattson
+            # is beaten. Unrestricted cur: this is what pulls the agent out of
+            # the Oceanic Museum onto the Slateport->Route110->Mauville path.
+            return (
+                gs.flag_devon_goods_delivered
+                and gs.badge_count < 3
+            )
+        if c == "mauville_gym_wattson":
+            # At Mauville City or inside the Gym: route to / interact with
+            # Wattson (5,2). Gated to those two maps so table-order selection
+            # keeps it above reach_mauville only where it should win.
+            return (
+                gs.flag_devon_goods_delivered
+                and gs.badge_count < 3
+                and cur in {(0, 2), (10, 0)}
+            )
         return False
 
 
@@ -652,6 +679,27 @@ GOAL_TABLE: list[Goal] = [
         target_pos=(13, 6),       # Capt.Stern — deliver Devon Goods → Route110 unblock
         condition="deliver_devon_goods",
         desc="Slateport: Oceanic Museum 2F の Capt.Stern (13,6) に Devon Goods 配達",
+    ),
+    # --- Mauville: post-delivery north to the Dynamo Badge (Wattson) ---
+    # Devon Goods delivered (0x95) also sets FLAG_HIDE_ROUTE_110_TEAM_AQUA
+    # (0x384) in the SAME CaptStern script, so Route110 north is open. These
+    # pull the agent OUT of the museum toward Mauville. mauville_gym_wattson
+    # is listed BEFORE reach_mauville so that once at Mauville City / inside
+    # the gym it wins the table-order selection (reach_mauville's target is
+    # Mauville City, which would otherwise route the agent back out of the
+    # gym).
+    Goal(
+        name="mauville_gym_wattson",
+        target_map=(10, 0),       # MauvilleCity_Gym
+        target_pos=(5, 2),        # Wattson (Gym Leader) NPC tile — interact + face
+        condition="mauville_gym_wattson",
+        desc="Mauville Gym (10,0) の Wattson (5,2) 撃破 → Dynamo Badge (Badge 3)",
+    ),
+    Goal(
+        name="reach_mauville",
+        target_map=(0, 2),        # MauvilleCity (north via Route110 from Slateport)
+        condition="reach_mauville",
+        desc="Devon Goods 配達後: Route110 北上 → Mauville City 到達 (Wattson へ)",
     ),
 ]
 
