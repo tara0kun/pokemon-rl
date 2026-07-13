@@ -218,6 +218,42 @@ class TestDewfordChain(GoalsTestBase):
             self.assertEqual(g.name, "deliver_devon_goods", f"at {mid}")
             self.assertEqual(g.target_pos, (13, 6), f"at {mid}")
 
+    def test_low_hp_on_route110_heals_at_slateport(self) -> None:
+        # A hurt lead on Route110 (or Slateport) routes to the Slateport PC to
+        # heal — preventing a whiteout AND re-homing the whiteout point to the
+        # mainland instead of Dewford.
+        for mid in [(0, 25), (0, 1)]:
+            gs = make_gs(map_group=mid[0], map_num=mid[1], badge_count=2,
+                         flag_steven_letter_delivered=True,
+                         flag_dock_rejected_devon=True,
+                         flag_devon_goods_delivered=True,
+                         party0_hp=20, party0_max_hp=93)
+            g = goals_mod.current_goal(gs)
+            self.assertEqual(g.name, "heal_at_slateport", f"at {mid}")
+            self.assertEqual(g.target_map, (9, 11))
+            self.assertEqual(g.target_pos, (7, 2))
+
+    def test_healthy_on_route110_pushes_to_mauville(self) -> None:
+        # A healthy lead does NOT detour to heal — it keeps pushing to Mauville.
+        gs = make_gs(map_group=0, map_num=25, badge_count=2,
+                     flag_steven_letter_delivered=True,
+                     flag_dock_rejected_devon=True,
+                     flag_devon_goods_delivered=True,
+                     party0_hp=90, party0_max_hp=93)
+        self.assertEqual(goals_mod.current_goal(gs).name, "reach_mauville")
+
+    def test_whiteout_to_dewford_sails_back(self) -> None:
+        # Post-delivery, a whiteout strands the agent at Dewford across the sea;
+        # sail_to_slateport must re-fire (recovery) so it can get back, even
+        # though the Devon Goods are already delivered.
+        for mid in [(0, 11), (0, 22)]:  # Dewford Town, Route107
+            gs = make_gs(map_group=mid[0], map_num=mid[1], badge_count=2,
+                         flag_steven_letter_delivered=True,
+                         flag_dock_rejected_devon=True,
+                         flag_devon_goods_delivered=True)
+            g = goals_mod.current_goal(gs)
+            self.assertEqual(g.name, "sail_to_slateport", f"at {mid}")
+
     def test_devon_goods_delivered_advances_to_mauville(self) -> None:
         # After the Devon Goods are delivered the Slateport delivery chain
         # (sail / reach_slateport / dock / deliver) deactivates and the goal

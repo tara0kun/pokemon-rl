@@ -104,6 +104,7 @@ _GOAL_ORDER_WEIGHT = {
     "reach_slateport": 82,
     "deliver_devon_dock": 83,
     "deliver_devon_goods": 84,
+    "heal_at_slateport": 84,
     "mauville_gym_wattson": 85,
     "reach_mauville": 86,
 }
@@ -140,6 +141,9 @@ _GOAL_BYPASS_VISITED = {
     # must stay live so the agent doesn't go goal-less after first touching the
     # city, and mauville_gym_wattson must persist until the badge is won.
     "reach_mauville", "mauville_gym_wattson",
+    # Slateport PC gets visited immediately but must stay re-targetable for every
+    # heal cycle along the Route110 grind.
+    "heal_at_slateport",
 }
 
 
@@ -383,19 +387,21 @@ class Goal:
             # (12,9) now offers the Slateport sail (a Petalburg/Slateport
             # multichoice — the heuristic picks Slateport). Gated to the
             # Dewford-side maps so once the sail lands the agent on Route109 this
-            # goal goes silent (no back-routing to Dewford). Ends after the
-            # Devon Goods are delivered in Slateport.
-            # devon-delivered uses the RAW flag, not a latch: it is a FUTURE
-            # event here, so a monotonic latch permanently disabled the sail on a
-            # single DMA-flicker True read (it did). The raw flag only drops the
-            # goal for that one flicker frame (self-corrects next frame), and
-            # once the goods are genuinely delivered it retires the chain.
+            # goal goes silent (no back-routing to Dewford).
+            # NOT gated on devon anymore: this ALSO serves whiteout recovery.
+            # A Route110 faint whites the agent out to the last-healed PC — which
+            # was Dewford, across the sea — and reach_mauville then routes it onto
+            # the impassable Route107/108 open water. Re-sailing from Briney is
+            # the only way back, so the goal fires on the whole Dewford side
+            # (incl. Route107 0,22) whenever the agent is stranded there, until
+            # badge 3. Once healing re-homes the whiteout point to Slateport
+            # (heal_at_slateport) this recovery stops being needed.
             return (
                 gs.badge_count >= 2
                 and _letter_done(gs)
-                and not gs.flag_devon_goods_delivered
-                and cur in {(0, 11), (3, 1), (3, 3), (0, 21), (24, 7),
-                            (24, 8), (24, 9), (24, 10)}
+                and gs.badge_count < 3
+                and cur in {(0, 11), (3, 1), (3, 3), (0, 21), (0, 22),
+                            (24, 7), (24, 8), (24, 9), (24, 10)}
             )
         if c == "reach_slateport":
             # The sail lands on Route109 (0,24); walk north into Slateport City.
@@ -468,6 +474,18 @@ class Goal:
             return (
                 _devon_delivered(gs)
                 and gs.badge_count < 3
+            )
+        if c == "heal_at_slateport":
+            # Route110 is trainer-dense; a solo Grovyle wears down and whites out
+            # (back to Dewford — see sail_to_slateport). Heal at the Slateport PC
+            # (9,11) nurse (7,2) when the lead drops below half, from Slateport or
+            # Route110. This both prevents the whiteout AND re-homes the whiteout
+            # point to Slateport (mainland), breaking the Dewford strand loop.
+            return (
+                _devon_delivered(gs)
+                and gs.badge_count < 3
+                and gs.party0_hp_frac < 0.5
+                and cur in {(0, 1), (0, 25)}
             )
         if c == "mauville_gym_wattson":
             # At Mauville City or inside the Gym: route to / interact with
@@ -687,6 +705,15 @@ GOAL_TABLE: list[Goal] = [
         target_pos=(13, 6),       # Capt.Stern — deliver Devon Goods → Route110 unblock
         condition="deliver_devon_goods",
         desc="Slateport: Oceanic Museum 2F の Capt.Stern (13,6) に Devon Goods 配達",
+    ),
+    # heal at the Slateport PC before/along Route110 — listed before the Mauville
+    # goals so a low-HP lead heals instead of marching into a whiteout.
+    Goal(
+        name="heal_at_slateport",
+        target_map=(9, 11),       # SlateportCity_PokemonCenter_1F
+        target_pos=(7, 2),        # Nurse — talk to heal (sets the whiteout point)
+        condition="heal_at_slateport",
+        desc="Route110 消耗時: Slateport PC (9,11) の Nurse (7,2) で全回復 → whiteout先をSlateportに固定",
     ),
     # --- Mauville: post-delivery north to the Dynamo Badge (Wattson) ---
     # Devon Goods delivered (0x95) also sets FLAG_HIDE_ROUTE_110_TEAM_AQUA
