@@ -1101,6 +1101,7 @@ def run(
     catch_phase_remaining = 0
     catch_seq_queue: list[str] = []
     battle_move_queue: list[str] = []
+    battle_trainer_latch = False
     rs = reward_state_mod.RewardState()
     rs.load()
     checkpoint_target: tuple[int, int, int, int] | None = None
@@ -1186,8 +1187,25 @@ def run(
         )
         if in_battle_seen:
             battle_turn += 1
+            # Trainer-battle latch: gBattleTypeFlags DMA-reads 0 on the move-
+            # select screen, so is_trainer_battle false-negatives mid-battle and
+            # the wild-flee path fires -> FLEE_SEQ backs out of the FIGHT menu
+            # every turn and NO move ever commits. Observed as a Route110 trainer
+            # SOFT-LOCK: the agent pressed B forever, never won, never whited
+            # out. Once the TRAINER bit is seen in THIS battle, keep it set for
+            # the rest of the battle (OR 0x8 into battle_flags) so both the run
+            # dispatch and heuristic_button consistently FIGHT (never flee). The
+            # indoor-fight guard only covered buildings; trainers on outdoor
+            # routes need this. Resets to wild between battles (see else).
+            if gs.battle_flags & 0x8:
+                battle_trainer_latch = True
+            if battle_trainer_latch:
+                object.__setattr__(
+                    gs, "battle_flags", gs.battle_flags | 0x8,
+                )
         else:
             battle_turn = 0
+            battle_trainer_latch = False
 
         if turn > 1 and gs.saveblock1_valid:
             r_battle = rs.record_battle_event(
