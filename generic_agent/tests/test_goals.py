@@ -283,6 +283,20 @@ class TestDewfordChain(GoalsTestBase):
             self.assertEqual(g.name, "reach_mauville", f"at {mid}")
             self.assertEqual(g.target_map, (0, 2))
 
+    def test_low_hp_in_mauville_gym_heals(self) -> None:
+        # A worn-down lead at the Mauville Gym / city heals at the Mauville PC
+        # before facing Wattson (the gym has 6 trainers and no in-gym heal).
+        for mid in [(10, 0), (0, 2)]:
+            gs = make_gs(map_group=mid[0], map_num=mid[1], badge_count=2,
+                         flag_steven_letter_delivered=True,
+                         flag_dock_rejected_devon=True,
+                         flag_devon_goods_delivered=True,
+                         party0_hp=2, party0_max_hp=98)
+            g = goals_mod.current_goal(gs)
+            self.assertEqual(g.name, "heal_at_mauville", f"at {mid}")
+            self.assertEqual(g.target_map, (10, 5))
+            self.assertEqual(g.target_pos, (7, 2))
+
     def test_at_mauville_targets_wattson_gym(self) -> None:
         # At Mauville City the gym goal wins over reach_mauville (table order)
         # and routes to the Gym; inside the Gym it targets Wattson's tile.

@@ -105,6 +105,7 @@ _GOAL_ORDER_WEIGHT = {
     "deliver_devon_dock": 83,
     "deliver_devon_goods": 84,
     "heal_at_slateport": 84,
+    "heal_at_mauville": 85,
     "mauville_gym_wattson": 85,
     "reach_mauville": 86,
 }
@@ -144,6 +145,8 @@ _GOAL_BYPASS_VISITED = {
     # Slateport PC gets visited immediately but must stay re-targetable for every
     # heal cycle along the Route110 grind.
     "heal_at_slateport",
+    # Mauville PC: re-targetable for every heal cycle through the Wattson gym.
+    "heal_at_mauville",
 }
 
 
@@ -487,6 +490,20 @@ class Goal:
                 and gs.party0_hp_frac < 0.5
                 and cur in {(0, 1), (0, 25)}
             )
+        if c == "heal_at_mauville":
+            # Mauville Gym has 6 trainers before Wattson and no in-gym healing, so
+            # a solo Grovyle wears down (observed: reached Wattson at 2/98 HP).
+            # When the lead drops below half at Mauville City or inside the Gym,
+            # heal at the Mauville PC (10,5) nurse (7,2). Also re-homes the
+            # whiteout point to Mauville so a gym faint is a short setback, not a
+            # Dewford strand. Re-entering the gym resets the barrier puzzle, but
+            # the live-collision + frontier-explore machinery re-solves it.
+            return (
+                _devon_delivered(gs)
+                and gs.badge_count < 3
+                and gs.party0_hp_frac < 0.5
+                and cur in {(0, 2), (10, 0)}
+            )
         if c == "mauville_gym_wattson":
             # At Mauville City or inside the Gym: route to / interact with
             # Wattson (5,2). Gated to those two maps so table-order selection
@@ -723,6 +740,13 @@ GOAL_TABLE: list[Goal] = [
     # the gym it wins the table-order selection (reach_mauville's target is
     # Mauville City, which would otherwise route the agent back out of the
     # gym).
+    Goal(
+        name="heal_at_mauville",
+        target_map=(10, 5),       # MauvilleCity_PokemonCenter_1F
+        target_pos=(7, 2),        # Nurse — heal (sets Mauville as the whiteout point)
+        condition="heal_at_mauville",
+        desc="Gym消耗時: Mauville PC (10,5) の Nurse (7,2) で全回復 → whiteout先をMauvilleに固定",
+    ),
     Goal(
         name="mauville_gym_wattson",
         target_map=(10, 0),       # MauvilleCity_Gym
