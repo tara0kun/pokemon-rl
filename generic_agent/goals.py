@@ -728,7 +728,9 @@ GOAL_TABLE: list[Goal] = [
     Goal(
         name="heal_at_slateport",
         target_map=(9, 11),       # SlateportCity_PokemonCenter_1F
-        target_pos=(7, 2),        # Nurse — talk to heal (sets the whiteout point)
+        target_pos=(7, 3),        # PC counter in front of the Nurse (7,2): stand at
+                                  # (7,4), face Up, A -> talk over the MB_COUNTER.
+                                  # The nurse's own tile has NO walkable neighbor.
         condition="heal_at_slateport",
         desc="Route110 消耗時: Slateport PC (9,11) の Nurse (7,2) で全回復 → whiteout先をSlateportに固定",
     ),
@@ -743,7 +745,8 @@ GOAL_TABLE: list[Goal] = [
     Goal(
         name="heal_at_mauville",
         target_map=(10, 5),       # MauvilleCity_PokemonCenter_1F
-        target_pos=(7, 2),        # Nurse — heal (sets Mauville as the whiteout point)
+        target_pos=(7, 3),        # PC counter in front of the Nurse (7,2): stand at
+                                  # (7,4), face Up, A -> talk over the MB_COUNTER.
         condition="heal_at_mauville",
         desc="Gym消耗時: Mauville PC (10,5) の Nurse (7,2) で全回復 → whiteout先をMauvilleに固定",
     ),

@@ -231,7 +231,7 @@ class TestDewfordChain(GoalsTestBase):
             g = goals_mod.current_goal(gs)
             self.assertEqual(g.name, "heal_at_slateport", f"at {mid}")
             self.assertEqual(g.target_map, (9, 11))
-            self.assertEqual(g.target_pos, (7, 2))
+            self.assertEqual(g.target_pos, (7, 3))
 
     def test_healthy_on_route110_pushes_to_mauville(self) -> None:
         # A healthy lead does NOT detour to heal — it keeps pushing to Mauville.
@@ -295,7 +295,7 @@ class TestDewfordChain(GoalsTestBase):
             g = goals_mod.current_goal(gs)
             self.assertEqual(g.name, "heal_at_mauville", f"at {mid}")
             self.assertEqual(g.target_map, (10, 5))
-            self.assertEqual(g.target_pos, (7, 2))
+            self.assertEqual(g.target_pos, (7, 3))
 
     def test_at_mauville_targets_wattson_gym(self) -> None:
         # At Mauville City the gym goal wins over reach_mauville (table order)
