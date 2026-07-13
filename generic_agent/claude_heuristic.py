@@ -925,6 +925,26 @@ def heuristic_button(
         ] or rotation
         return order[0], f"escape:{order[0]}"
 
+    # Keep-in-goal-map exploration: when we're ON the goal's target map but its
+    # target tile is unreachable (the goal BFS above found nothing — e.g. Wattson
+    # is walled off behind the Mauville Gym electric barriers, and even the live-
+    # collision retry failed because the switches aren't set yet), do NOT let the
+    # path-memory exit below route us back out the door. Systematically walk to
+    # unvisited tiles to step on the floor SWITCHES that toggle the barriers;
+    # once a switch opens a path, the live-collision BFS above reaches Wattson.
+    if (
+        current_goal is not None
+        and (gs.map_group, gs.map_num) == current_goal.target_map
+        and getattr(current_goal, "target_pos", None) is not None
+        and gs.saveblock1_valid
+        and not gs.in_battle
+    ):
+        fdir = tm.bfs_frontier_direction(
+            gs.map_group, gs.map_num, cur_x, cur_y, prefer="nearest",
+        )
+        if fdir and fdir not in blocked:
+            return fdir, f"goal_map_explore:{fdir}"
+
     cur_map_key = f"{gs.map_group}-{gs.map_num}"
     from_paths = pm._store.get(cur_map_key, {})
 
