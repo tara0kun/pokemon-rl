@@ -915,6 +915,42 @@ def heuristic_button(
     last_20 = recent_pos[-20:]
     uniq_20 = len(set(last_20))
 
+    # Keep-in-goal-map exploration (BEFORE the generic escape rotation, so in a
+    # puzzle gym it drives instead of the agent thrashing in place): when we are
+    # ON the goal's target map but its target tile is unreachable (the goal BFS
+    # above found nothing — e.g. Wattson is walled off behind the Mauville Gym
+    # electric barriers and even the live-collision retry failed because the
+    # switches aren't set yet), do NOT let the escape rotation / path-memory exit
+    # route us out. Walk unvisited tiles to step on the floor SWITCHES that toggle
+    # the barriers; once a switch opens a path the live-collision BFS above
+    # reaches Wattson.
+    goal_map_stuck = (
+        current_goal is not None
+        and (gs.map_group, gs.map_num) == current_goal.target_map
+        and getattr(current_goal, "target_pos", None) is not None
+        and gs.saveblock1_valid
+        and not gs.in_battle
+    )
+    if goal_map_stuck:
+        fdir = tm.bfs_frontier_direction(
+            gs.map_group, gs.map_num, cur_x, cur_y, prefer="nearest",
+        )
+        if fdir and fdir not in blocked:
+            return fdir, f"goal_map_explore:{fdir}"
+        # Frontier exhausted (every accessible tile already visited) yet the
+        # target is still unreachable — e.g. we healed, re-entered the gym, and
+        # the barrier puzzle RESET, but the switch tiles are all "visited" so
+        # there is no new frontier. Re-walk pseudo-randomly to step on the floor
+        # switches AGAIN; the live-collision BFS above catches the frame a switch
+        # re-opens the path to Wattson. Vary by position + streak so we don't
+        # wall into one tile.
+        seed = (cur_x * 31 + cur_y * 17 + same_map_streak) % 4
+        rot = ["Up", "Right", "Down", "Left"]
+        for k in range(4):
+            cand = rot[(seed + k) % 4]
+            if cand not in blocked:
+                return cand, f"goal_map_rewalk:{cand}"
+
     if same_pos_streak >= 12 or (
         len(last_20) >= 20 and uniq_20 <= 4
     ):
@@ -924,40 +960,6 @@ def heuristic_button(
             if d not in blocked
         ] or rotation
         return order[0], f"escape:{order[0]}"
-
-    # Keep-in-goal-map exploration: when we're ON the goal's target map but its
-    # target tile is unreachable (the goal BFS above found nothing — e.g. Wattson
-    # is walled off behind the Mauville Gym electric barriers, and even the live-
-    # collision retry failed because the switches aren't set yet), do NOT let the
-    # path-memory exit below route us back out the door. Systematically walk to
-    # unvisited tiles to step on the floor SWITCHES that toggle the barriers;
-    # once a switch opens a path, the live-collision BFS above reaches Wattson.
-    if (
-        current_goal is not None
-        and (gs.map_group, gs.map_num) == current_goal.target_map
-        and getattr(current_goal, "target_pos", None) is not None
-        and gs.saveblock1_valid
-        and not gs.in_battle
-    ):
-        fdir = tm.bfs_frontier_direction(
-            gs.map_group, gs.map_num, cur_x, cur_y, prefer="nearest",
-        )
-        if fdir and fdir not in blocked:
-            return fdir, f"goal_map_explore:{fdir}"
-        # Frontier exhausted (every accessible tile already visited) yet the
-        # target is still unreachable — e.g. we healed, re-entered the gym, and
-        # the barrier puzzle RESET, but the switch tiles are all "visited" so
-        # there is no new frontier. Re-walk the map pseudo-randomly to step on
-        # the floor switches AGAIN; the live-collision BFS above catches the
-        # frame a switch re-opens the path to Wattson. Vary the direction by
-        # position + streak so we don't wall into one tile, and prefer moves
-        # that aren't empirically blocked (keeps us off walls / the exit).
-        seed = (cur_x * 31 + cur_y * 17 + same_map_streak) % 4
-        rot = ["Up", "Right", "Down", "Left"]
-        for k in range(4):
-            cand = rot[(seed + k) % 4]
-            if cand not in blocked:
-                return cand, f"goal_map_rewalk:{cand}"
 
     cur_map_key = f"{gs.map_group}-{gs.map_num}"
     from_paths = pm._store.get(cur_map_key, {})
