@@ -1,0 +1,59 @@
+# INVARIANTS — 壊すと静かに劣化する不変条件
+
+> Last verified: 2026-07-06 (HEAD `3e9e23db6`)
+> **training / env / nav コードを変更する前に必読。** ここにある前提を無効化する変更は、同じコミットでこのファイルも更新すること。
+> 各項目に根拠(`ファイル:行` または daily_progress 日付)を付す。
+
+## A. プロジェクト原則(repo CLAUDE.md 由来 / gates.py が機械強制)
+
+1. **ROM 操作のみ**: ボタン + screenshot + RAM read。**RAM 直接書込は禁止**(gates.py:13-17 が diff を拒否)
+2. **saveStateLoad でストーリー進行をリセットしない**。ただし例外が2つ: (a) セッション再開時の復元(RESUME.md 手順2)、(b) mGBA 異常終了後の emergency restore(io.py:180-193 docstring)。`MGBAClient` が load を「意図的に」別メソッドに隔離しているのはこのため
+3. **game 固有座標/map_id をコードにハードコードしない**(prompt と data は OK)。map_data.py は「ランタイムで pokeemerald decomp からデータ取得」でこれを満たす(map_data.py:8-18)。goals.py の GOAL_TABLE 座標は canon データのラベルであり、decision code への埋め込みではない、という整理
+4. **old branch (pokemon_env) を import しない**(gates.py:22-25 が拒否)
+
+## B. RAM 読みの不変条件(state.py)
+
+5. **SaveBlock1 は毎フレーム DMA 再配置される**。ポインタは「連続2回一致 + EWRAM 範囲(0x02000000-0x02040000)」のみ採用(state.py:84-95, 07-06 commit 9998ad652)。これを経ない直接 read は戦闘中に過渡アドレスを掴み、flag が間欠的に 0 を返す
+6. **単調 story flag は disk latch にする**(goals.py:30-48 の `peeko_done.marker` パターン)。DMA flicker で goal chain が振動した実害あり(07-06)。今後 story gate flag を増やすときは同じパターンを使う
+7. **`gs.in_battle` を単独で信用しない**。gBattleTypeFlags(0x02022FEC)は (a) whiteout 後にクリアされず残留する(state.py:58-66 NUANCE)、(b) move-select 画面で 0 を返す個体もある。よって:
+   - state.py は gMain.callback2(0x030022C4)が CB2_Overworld(0x08085E5D)のとき in_battle=False に矯正(state.py:70-78, 222-234)
+   - heuristic 側は vision の battle_menu 信号で latch し、wild 系分岐は「UI 信号があるときだけ」行動(claude_heuristic.py:116-133, 649-691)
+8. **gObjectEvents の NPC 座標は -7 補正が必要**(state.py:190-196)。RAM 座標系は map 座標 +7。また `npcs_on_map` には**プレイヤー自身も含まれる** — 自タイル除外を忘れると自分を障害物扱いする(claude_heuristic.py:362-366)
+9. **座標系は canon(map_data)= gs.x/gs.y**。古いメモリの「+7」値と混ぜない(goals.py:267-269)
+10. **暗号化された値**: bag 数量は SaveBlock2 security key と XOR(state.py:328-365)、party の species は personality/otid XOR + substruct 順で復号(state.py:272-295)。生値を信用した過去バグあり(35 fix / 06-29 audit)
+11. badge_count は FLAG_BADGE01(0x867)〜08 のビット集計(state.py:311-320)。以前は常に 0 を返すバグだった — badge 条件を触るときはここを確認
+12. lua からの応答は空文字列があり得る。read 系は `_parse_int` / hex-token 検証で EmulatorError に正規化(io.py:110-157)。`int("")` ValueError で落ちた過去あり(06-08)
+
+## C. ナビゲーション不変条件
+
+13. **canon 衝突レイヤは「歩ける」の上界でしかない**。深い水(WATER_BEHAVIORS)は collision=walkable だが徒歩不可(map_knowledge.py:58-70)。**ただし INDOOR / UNDERGROUND(洞窟)map では水封鎖をしない** — これらのタイルセットは床を水の behavior byte で誤分類し、Dewford Gym(INDOOR)で BFS が Brawly に到達不能、Granite Cave(UNDERGROUND)で 1F 入口が B1F ラダー(17,11)から分断され Steven letter trek が不能になった。Surf は Granite Cave より遥か後なので、この段階で story が渡らせる「水」は必ず歩ける床(H4a, map_knowledge.py block_water は OUTDOOR のみ True)。**region-aware 経路(H4a、map_data.py `_components`/`region_route_targets`)は raw canon collision で component 分解するので、bfs_to_tile 側の水封鎖と一致していないと「region graph は連結と判断→bfs は水で不達→徘徊」になる。両者の walkability モデルは一致させること。**
+14. **BFS の blocked 合成順**(claude_heuristic.py:394-477): NPC タイル + 経験的封鎖(3方向 blocked のタイル / 200回試行失敗の方向エッジ)+ permanent + 水 + **目的地以外の warp タイル**。最後のは「BFS 経路が他人の家のドアを踏んで別 map に飛ぶ」事故の防止(Dewford で実害: gym door と民家 door が同じ x 列)
+15. **interior door warp は non-walkable タイルに乗っている**。BFS の目的地はドアの1つ下の approach タイルにし、到着後 `warp_step_direction()` が Up を返す(map_data.py:441-463, 481-518)。ドアタイル自体を target にすると BFS が None を返し徘徊する(旧 Rustboro 東縁振動の真因)
+16. **tile_map の封鎖は 3 回失敗で確定、ただし 4 方向封鎖は記録バグ**(そのタイルに立てた以上、最低1方向は通れる)— 起動時 `cleanup_phantom_walls()` で自動解除(tile_map.py:126-135, 159-171)。dialog/battle 中の方向キーは `overworld=False` で記録スキップ(tile_map.py:104-124)— これを怠ると封鎖リストが汚染される
+17. **ledge は 1 方向エッジ**: JUMP behavior タイルへ「ジャンプ方向と同じ向きで」踏み込むと 2 タイル先に着地(map_knowledge.py:77-87, map_data.py:281-293)。BFS はこれを特殊エッジとして扱う
+18. Route104 北と南浜は同一 map で徒歩非接続。横断は Petalburg Woods 経由(goals.py:199-213)。Route104→Rustboro の実働 exit は x=19 のみ(canon-walkable でも game-blocked の縁がある: map_data.py:369-377 `_EMPIRICAL_EXIT_TILES`)
+19. trainer LOS は**封鎖しない**(Stone Badge 後は勝てる+Route104 では LOS 回避が Woods を到達不能にした)。победа後に回避が必要になったら map_data._PERMANENT_BLOCKED_TILES に理由コメント付きで追加(map_data.py:384-399 の削除履歴参照)
+
+## D. バトル不変条件
+
+20. **trainer 戦から RUN は不可**。wild 判定なしに RUN を強制すると "No running from a TRAINER battle!" dialog が無限ループ(claude_heuristic.py:141-176)
+21. FIGHT 選択は必ずカーソルリセット付き(`Up,Up,Left` → A,A)。カーソル位置は前ターン依存で、盲目 A 連打は RUN/POKEMON を誤確定する(claude_heuristic.py:179-191, Roxanne 戦 06-24 実証)
+22. RUN_CYCLE は先頭 B(`B,A,Down,Right,A,A`)。B なしの旧シーケンスは 1 phase ずれると party メニュー内を永久航行した(claude_heuristic.py:66-72, Route116 で 40+ turn 実害)
+23. wild 戦の低HP(<26%)は FIGHT/catch せず RUN — whiteout(全滅→強制 warp+所持金半減)の方が損失大(claude_heuristic.py:134-148, GameState.party0_critical state.py:143-145)
+24. battle_menu の vision 検出は「battle 疑いがある turn は毎 turn」実行。turn%5 スロットルに戻すと FIGHT 枝が 4/5 turn 死ぬ(07-01 の全セッション Roxanne 失敗の真因; claude_heuristic.py:1097-1114)
+
+## E. タイミング・プロセス・環境
+
+25. **poll は 0.6s 未満にしない**。タイル歩行 ≈16 frame + button hold 15 frame。poll が短いと移動が正しく queue されず chronic stuck(claude_heuristic.py:1555-1564 の実測表)
+26. socket は 1 コマンド = 1 接続(使い回し不安定; io.py:35-39)。lua script の多重 load は listener 重複で router が壊れる — mGBA ごと再起動が復旧手順(06-08)
+27. **python プロセスの一括 kill 禁止**。dual_dev orchestrate を巻き添えにすると run-state が固着し Codex が無限待機(07-06)。`claude_heuristic|dual_dev` でコマンドラインを絞って kill(RESUME.md 停止コマンド)
+28. ROM は EN 版(`emerald_en.gba`)。JP ROM は vision 理解が著しく弱い(06-08 実測)。ROM ファイルは repo に含めない(著作権)
+29. mGBA 起動 + lua load だけが人間の仕事(1回/セッション)。それ以外の操作をコード外で行ったら daily_progress に記録する(再現性)
+30. 定期 in-game save(500 turn 毎, Start メニューシーケンス)+ savestate 自動スナップ(150 turn 毎)。クラッシュ時は autosnap から emergency restore(claude_heuristic.py:1492-1526)
+
+## F. 開発プロセス
+
+31. git: `dev` = 日常、`main` = milestone のみ(必ず tag)、`old` = 凍結(repo CLAUDE.md)
+32. deploy 前に docs/MISTAKE_PREVENTION_CHECKLIST.md を通す(真因単数性 / patch tower 反復 / verify 完全性 / goal target_pos 必須)
+33. dual_dev の Claude 呼び出しは API key を strip した subscription 経路(dual_dev/README.md:11-13)— API credit を dev loop で燃やさない
+34. SakanaAI/Codex は **5時間ローリング枠**が拘束。バーストさせず `--codex-min-interval` で終日低レート運用(07-06 実測)

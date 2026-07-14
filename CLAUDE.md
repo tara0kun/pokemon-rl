@@ -19,6 +19,13 @@
 
 ---
 
+## 必読 docs (2026-07-06 整備)
+
+- `docs/ARCHITECTURE.md` — 全体構成 (decision cascade / 知識ストア / dual_dev)
+- `docs/INVARIANTS.md` — **training/env/nav コードを変更する前に必読**。不変条件を無効化する変更は同じコミットでこのファイルも更新する
+- `docs/GOTCHAS.md` — 罠 / `docs/HYPOTHESES.md` — 未解決問題(次にやること) / `docs/DECISIONS.md` — 設計判断録
+- テスト: `poke-rl/Scripts/python.exe -m unittest discover -s generic_agent/tests -t .`(mGBA/API 不要・依存ゼロ)。nav / goal / RAM 系を触ったら必ず実行
+
 ## 現プロジェクト (generic_agent) の基本方針
 
 ### 開発原則

@@ -45,6 +45,7 @@ OVERVISIT_THRESHOLD = 5
 OVERVISIT_FACTOR = 1.0
 SAME_MAP_DECAY = 0.5  # was 0.05 — 10x stronger nudge off stuck maps
 CHECKPOINT_MAX = 50
+LOG_MAX = 300
 RECENT_MAP_PENALTY_PER_VISIT = 30.0  # subtracted from reward_pick scores
 RECENT_MAP_WINDOW = 4  # last N maps treated as "too familiar"
 
@@ -161,6 +162,11 @@ class RewardState:
             )
         return score
 
+    def _trim_log(self) -> None:
+        """Cap the reward log at the most recent LOG_MAX entries."""
+        if len(self.log) > LOG_MAX:
+            self.log = self.log[-LOG_MAX:]
+
     def record_new_map(
         self,
         prev_map: tuple[int, int],
@@ -181,8 +187,7 @@ class RewardState:
         reward = NEW_MAP_BONUS if is_new else 50.0
         self.cumulative_reward += reward
         self.log.append((turn, reward, f"new_map={new_map} from={springboard}"))
-        if len(self.log) > 300:
-            self.log = self.log[-300:]
+        self._trim_log()
         return reward
 
     def record_event_flag_delta(
@@ -203,8 +208,7 @@ class RewardState:
         self.log.append(
             (turn, reward, f"event_flags+{delta} (total={cur_flags})"),
         )
-        if len(self.log) > 300:
-            self.log = self.log[-300:]
+        self._trim_log()
         return reward
 
     def record_healing(
@@ -226,8 +230,7 @@ class RewardState:
         self.log.append(
             (turn, reward, f"heal_frac={heal_frac:.2f}"),
         )
-        if len(self.log) > 300:
-            self.log = self.log[-300:]
+        self._trim_log()
         return reward
 
     def record_badge_delta(
@@ -241,8 +244,7 @@ class RewardState:
         self.cumulative_reward += reward
         self.max_badges_seen = max(self.max_badges_seen, cur_badges)
         self.log.append((turn, reward, f"BADGE+{delta} (total={cur_badges})"))
-        if len(self.log) > 300:
-            self.log = self.log[-300:]
+        self._trim_log()
         return reward
 
     def record_coord_visit(
@@ -381,8 +383,7 @@ class RewardState:
         if reward != 0.0:
             self.cumulative_reward += reward
             self.log.append((turn, reward, ",".join(notes)))
-            if len(self.log) > 300:
-                self.log = self.log[-300:]
+            self._trim_log()
         return reward
 
     def pick_checkpoint(

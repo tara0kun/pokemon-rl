@@ -28,6 +28,7 @@ BATTLEMON_TYPE1 = 0x21         # u8
 BATTLEMON_TYPE2 = 0x22         # u8
 BATTLEMON_HP = 0x28            # u16 current HP
 BATTLEMON_MAXHP = 0x2C         # u16 max HP
+BATTLEMON_PP = 0x24            # 4 x u8 current PP of the active battler's moves
 GBATTLEMOVES = 0x0831C898      # BattleMove[], 12 bytes each: power@+1, type@+2
 
 # Substruct permutation order (personality % 24); moves live in the 'A'
@@ -64,6 +65,15 @@ _CHART: dict[int, dict[int, float]] = {
 
 
 def effectiveness(atk_type: int, def_t1: int, def_t2: int) -> float:
+    """Type-chart damage multiplier of an attacking type vs a (possibly
+    dual-type) defender.
+
+    Why: in gen 3 both of the defender's types apply multiplicatively, so we
+    take the attacker's row in _CHART (default 1.0 for unlisted pairings) and
+    multiply the def_t1 and def_t2 lookups, skipping the second when the mon
+    is single-typed (def_t2 == def_t1) so a 0.5x/2x isn't squared. Returns 0.0
+    for an immunity, up to 4.0 for a double super-effective hit.
+    """
     row = _CHART.get(atk_type, {})
     mult = row.get(def_t1, 1.0)
     if def_t2 != def_t1:
@@ -72,13 +82,32 @@ def effectiveness(atk_type: int, def_t1: int, def_t2: int) -> float:
 
 
 def enemy_types(client: MGBAClient) -> tuple[int, int]:
+    """(type1, type2) of the opponent's active battler, feeding effectiveness().
+
+    Why gBattleMons[1]: slot 0 is the player's active mon and slot 1 is the
+    opponent's, so we offset one BATTLEMON_SIZE before reading the type bytes.
+    """
     a = GBATTLEMONS + BATTLEMON_SIZE  # gBattleMons[1] = opponent
     return client.read8(a + BATTLEMON_TYPE1), client.read8(a + BATTLEMON_TYPE2)
 
 
 def enemy_hp(client: MGBAClient) -> tuple[int, int]:
+    """(current_hp, max_hp) of the opponent's active battler, read as u16s.
+
+    Uses the same gBattleMons[1] offset as enemy_types() (slot 1 = opponent).
+    """
     a = GBATTLEMONS + BATTLEMON_SIZE
     return client.read16(a + BATTLEMON_HP), client.read16(a + BATTLEMON_MAXHP)
+
+
+def active_hp(client: MGBAClient) -> int:
+    """Current HP of the player's ACTIVE battler (gBattleMons[0]).
+
+    0 => the lead fainted and the game is on the 'choose a POKEMON' send-out
+    screen; >0 => it is our turn to pick a move. Used to tell those two
+    battle sub-states apart from reliable RAM instead of the flaky
+    battle_menu vision signal (the H6a opening-thrash root cause)."""
+    return client.read16(GBATTLEMONS + BATTLEMON_HP)
 
 
 def active_move_ids(client: MGBAClient) -> list[int]:
@@ -89,6 +118,17 @@ def active_move_ids(client: MGBAClient) -> list[int]:
     """
     a = GBATTLEMONS  # gBattleMons[0] = player's active battler
     return [client.read16(a + BATTLEMON_MOVES + i * 2) for i in range(4)]
+
+
+def active_pp(client: MGBAClient) -> list[int]:
+    """Current PP of the player's ACTIVE battler's four move slots.
+
+    best_move_index skips 0-PP moves: selecting a depleted move only pops
+    'There's no PP left for this move!' and the turn never resolves, stalling
+    the whole battle (grinding one move down to 0 PP on Route106 was exactly
+    the Brawly-vs-Meditite stall)."""
+    a = GBATTLEMONS
+    return [client.read8(a + BATTLEMON_PP + i) for i in range(4)]
 
 
 def party0_move_ids(client: MGBAClient) -> list[int]:
@@ -115,12 +155,15 @@ def best_move_index(client: MGBAClient) -> int:
     move of the party leader vs the current opponent, or -1 if none / unread."""
     try:
         moves = active_move_ids(client)
+        pp = active_pp(client)
         et1, et2 = enemy_types(client)
     except EmulatorError:
         return -1
     best_i, best_score = -1, 0.0
     for i, mid in enumerate(moves):
         if mid == 0:
+            continue
+        if pp[i] == 0:  # depleted — selecting it stalls on "no PP left"
             continue
         try:
             power, mtype = move_power_type(client, mid)
@@ -139,11 +182,17 @@ _SLOT_NAV = {0: (), 1: ("Right",), 2: ("Down",), 3: ("Down", "Right")}
 
 
 def move_select_sequence(best_slot: int) -> tuple[str, ...]:
-    """Button sequence to select a specific move slot from the FIGHT menu.
+    """Self-correcting button sequence to select a move slot from ANY screen.
 
-    Resets the battle menu cursor to FIGHT (Up,Up,Left), A opens the move
-    submenu, Up+Left forces the submenu cursor to slot 0 (robust to the game
-    remembering the last-used move), then navigates to the target slot and A.
+    Leading B,B first backs out of whatever wrong sub-screen we might be on —
+    a SUMMARY page, the POKEMON list, or the BAG that the slot-2/3 Down/Right
+    nav can accidentally open when fired a frame off the FIGHT menu (two levels
+    deep needs two B's; harmless at the top battle menu / in dialogue). Then
+    Up,Up,Left puts the cursor on FIGHT, A opens the move submenu, Up+Left
+    forces its cursor to slot 0 (robust to the game remembering the last move),
+    then the per-slot nav and A. Being self-correcting lets it fire without a
+    vision confirm, so a best move in a bottom slot (e.g. Pursuit once Pound is
+    out of PP) still gets picked instead of stalling.
     """
     nav = _SLOT_NAV.get(best_slot, ())
-    return ("Up", "Up", "Left", "A", "Up", "Left") + nav + ("A",)
+    return ("B", "B", "Up", "Up", "Left", "A", "Up", "Left") + nav + ("A",)

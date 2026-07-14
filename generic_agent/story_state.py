@@ -52,6 +52,17 @@ _FLAG_THRESHOLDS = {
 
 
 def infer_flags(map_visit_counts: dict[tuple[int, int], int]) -> StoryFlags:
+    """Infer story flags from where the agent has spent its turns.
+
+    Why: the real story flags aren't read from RAM (that would need many
+    EN Emerald addresses), so progress is approximated from observed
+    behaviour — a key map visited past its threshold means that story beat
+    almost certainly happened. ``starter_received`` is derived from the two
+    prerequisite flags rather than thresholded, because Birch's Lab plus
+    Route 101 is the only path the story allows to leave with a starter.
+    Thresholds stay conservative on purpose: a wrong flag only changes the
+    hint, never blocks an action.
+    """
     flags = StoryFlags()
     for attr, keys in _KEY_MAPS.items():
         total = sum(map_visit_counts.get(k, 0) for k in keys)
@@ -68,6 +79,14 @@ def hint_for(
     current_map: tuple[int, int] | None = None,
     visits_this_map: int = 0,
 ) -> str:
+    """Return the goal-hint line matching the furthest-reached flag.
+
+    Why: the navigate prompt wants exactly one line of direction, so the
+    branches are ordered latest-progress-first and the first match wins.
+    The Oldale-plus-low-visit case is checked before the generic "go north"
+    hint so a freshly arrived agent keeps exploring the new town instead of
+    immediately walking back south onto Route 101.
+    """
     if flags.oldale_reached and current_map == (3, 0) and visits_this_map < 50:
         return (
             "Goal: STAY in Oldale Town and explore. Walk around inside the "

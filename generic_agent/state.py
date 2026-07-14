@@ -41,6 +41,76 @@ OE_MAP_GROUP_OFFSET = 0x0A        # u8 mapGroup
 OE_CURRENT_X_OFFSET = 0x10        # s16 currentCoords.x
 OE_CURRENT_Y_OFFSET = 0x12        # s16 currentCoords.y
 
+# gBackupMapLayout (IWRAM, Emerald USA BPEE) — the LIVE metatile grid, which
+# reflects dynamically-changed tiles (e.g. Mauville Gym electric barriers raised/
+# lowered by floor switches). struct { s32 width; s32 height; u16 *map; }; .map
+# always points to sBackupMapData (0x02032318). Verified live: for Route117 the
+# padded width/height (mapW+15, mapH+14) matched the static dims and .map read
+# 0x02032318 exactly. Each grid u16: metatile_id 0x03FF, COLLISION 0x0C00 (bits
+# 10-11; non-zero = wall), elevation 0xF000. Real map coord (x,y) sits at grid
+# (x+7, y+7). Sources: pret/pokeemerald symbols branch + global.fieldmap.h.
+BACKUP_MAP_LAYOUT_ADDR = 0x03005DC0
+MAP_GRID_OFFSET = 7  # MAP_OFFSET — border padding around the real map
+MAPGRID_COLLISION_MASK = 0x0C00
+MAPGRID_UNDEFINED = 0x03FF
+
+
+def read_live_walkable_overrides(
+    client: MGBAClient, static_info,
+) -> tuple[set[tuple[int, int]], set[tuple[int, int]]]:
+    """Compare the LIVE collision grid to the static map.bin collision.
+
+    Returns (extra_walkable, extra_blocked): tiles whose live walkability
+    DIFFERS from static. extra_walkable = static-blocked but live-open (a
+    lowered barrier the BFS may now cross); extra_blocked = static-open but
+    live-closed (a raised barrier the BFS must avoid). Both empty on any read
+    failure or dimension mismatch (so nav safely falls back to static). Lets
+    the agent solve dynamic-barrier puzzles like the Mauville Gym, where the
+    switch scripts flip the 0x0C00 collision bits in this live grid.
+    """
+    try:
+        width = client.read32(BACKUP_MAP_LAYOUT_ADDR)
+        height = client.read32(BACKUP_MAP_LAYOUT_ADDR + 4)
+        map_ptr = client.read32(BACKUP_MAP_LAYOUT_ADDR + 8)
+    except EmulatorError:
+        return set(), set()
+    # Sanity: padded dims must match the loaded static map (+15 wide, +14 tall)
+    # and the buffer pointer must be the known EWRAM grid. A mismatch means a
+    # map transition / bad read -> fall back to static.
+    if (
+        width != static_info.width + 15
+        or height != static_info.height + 14
+        or not (0x02000000 <= map_ptr < 0x02040000)
+    ):
+        return set(), set()
+    try:
+        raw = client.read_range(map_ptr, width * height * 2)
+    except EmulatorError:
+        return set(), set()
+    if len(raw) < width * height * 2:
+        return set(), set()
+    extra_walkable: set[tuple[int, int]] = set()
+    extra_blocked: set[tuple[int, int]] = set()
+    off_base = MAP_GRID_OFFSET
+    for y in range(static_info.height):
+        gy = y + off_base
+        row = (gy * width)
+        for x in range(static_info.width):
+            gx = x + off_base
+            off = (row + gx) * 2
+            entry = raw[off] | (raw[off + 1] << 8)
+            live_walk = (
+                entry != MAPGRID_UNDEFINED
+                and (entry & MAPGRID_COLLISION_MASK) == 0
+            )
+            stat_walk = static_info.walkable(x, y)
+            if live_walk and not stat_walk:
+                extra_walkable.add((x, y))
+            elif not live_walk and stat_walk:
+                extra_blocked.add((x, y))
+    return extra_walkable, extra_blocked
+
+
 # SaveBlock1 inner offsets (pokeemerald struct SaveBlock1)
 # These are referenced relative to *gSaveBlock1Ptr.
 SB1_PLAYER_PARTY_COUNT = 0x0234  # u32 at SaveBlock1.playerPartyCount
@@ -81,6 +151,20 @@ CB2_OVERWORLD_SET = frozenset({0x08085E5D})
 BATTLE_TYPE_TRAINER = 0x0008
 
 
+def _read_saveblock1_ptr(client: MGBAClient, tries: int = 4) -> int | None:
+    """Return a stable SaveBlock1 pointer, ignoring DMA relocation transients."""
+    prev = None
+    for _ in range(tries):
+        try:
+            ptr = client.read32(SAVEBLOCK1_PTR_ADDR)
+        except EmulatorError:
+            return None
+        if 0x02000000 <= ptr < 0x02040000 and ptr == prev:
+            return ptr
+        prev = ptr
+    return None
+
+
 @dataclass
 class GameState:
     map_group: int
@@ -97,6 +181,22 @@ class GameState:
     party_count: int = 0
     flag_birch_met: bool = False
     flag_starter_received: bool = False
+    # FLAG_RECOVERED_DEVON_GOODS (0x8F): set by RusturfTunnel scripts.inc
+    # after beating the Aqua grunt (Peeko rescued, Devon Goods returned).
+    # This is the story gate for Mr.Briney's sail to Dewford.
+    flag_devon_goods_recovered: bool = False
+    # FLAG_DELIVERED_STEVEN_LETTER (0xBD): set in GraniteCave_StevensRoom after
+    # handing Steven the Letter (also gives TM47 Steel Wing). Story gate for
+    # Mr.Briney's Dewford->Slateport(Route109) sail — decomp DewfordTown/
+    # scripts.inc goto_if_unset FLAG_DELIVERED_STEVEN_LETTER.
+    flag_steven_letter_delivered: bool = False
+    # FLAG_DELIVERED_DEVON_GOODS (0x95): set at Slateport Oceanic Museum 2F on
+    # handoff to Capt. Stern; clears the Route110 Team Aqua block to Mauville.
+    flag_devon_goods_delivered: bool = False
+    # FLAG_DOCK_REJECTED_DEVON_GOODS (0x94): set when Dock at Stern's Shipyard
+    # redirects you to find Capt. Stern (who is at the Oceanic Museum). Sequences
+    # the Devon Goods errand — visit the Dock first, then the museum.
+    flag_dock_rejected_devon: bool = False
     bag_pokeball_count: int = 0
     bag_first_item_id: int = 0
     bag_first_item_qty: int = 0
@@ -220,17 +320,8 @@ def _read_battle_flags(client: MGBAClient) -> tuple[bool, int]:
 def read_state(client: MGBAClient) -> GameState:
     in_battle, flags = _read_battle_flags(client)
 
-    try:
-        ptr = client.read32(SAVEBLOCK1_PTR_ADDR)
-    except EmulatorError:
-        return GameState(
-            0, 0, 0, 0,
-            saveblock1_valid=False,
-            in_battle=in_battle,
-            battle_flags=flags,
-        )
-
-    if ptr < 0x02000000 or ptr >= 0x02040000:
+    ptr = _read_saveblock1_ptr(client)
+    if ptr is None:
         return GameState(
             0, 0, 0, 0,
             saveblock1_valid=False,
@@ -288,6 +379,10 @@ def read_state(client: MGBAClient) -> GameState:
     party_count = 0
     flag_birch = False
     flag_starter = False
+    flag_devon = False
+    flag_steven_letter = False
+    flag_devon_delivered = False
+    flag_dock_rejected = False
     pokeballs = 0
     first_item_id = 0
     first_item_qty = 0
@@ -312,6 +407,14 @@ def read_state(client: MGBAClient) -> GameState:
         flag_birch = bool(flag_byte_birch & (1 << (0x52 % 8)))
         flag_byte_starter = client.read8(ptr + SB1_FLAGS_OFFSET + (0x55 // 8))
         flag_starter = bool(flag_byte_starter & (1 << (0x55 % 8)))
+        flag_byte_devon = client.read8(ptr + SB1_FLAGS_OFFSET + (0x8F // 8))
+        flag_devon = bool(flag_byte_devon & (1 << (0x8F % 8)))
+        flag_byte_letter = client.read8(ptr + SB1_FLAGS_OFFSET + (0xBD // 8))
+        flag_steven_letter = bool(flag_byte_letter & (1 << (0xBD % 8)))
+        flag_byte_dgd = client.read8(ptr + SB1_FLAGS_OFFSET + (0x95 // 8))
+        flag_devon_delivered = bool(flag_byte_dgd & (1 << (0x95 % 8)))
+        flag_byte_dr = client.read8(ptr + SB1_FLAGS_OFFSET + (0x94 // 8))
+        flag_dock_rejected = bool(flag_byte_dr & (1 << (0x94 % 8)))
         first_item_id = client.read16(ptr + SB1_BAG_ITEMS + 0)
         first_item_qty_enc = client.read16(ptr + SB1_BAG_ITEMS + 2)
         # 35 fix (06-29): Pokemon Emerald bag quantities are XOR-encrypted
@@ -381,6 +484,10 @@ def read_state(client: MGBAClient) -> GameState:
         party_count=party_count,
         flag_birch_met=flag_birch,
         flag_starter_received=flag_starter,
+        flag_devon_goods_recovered=flag_devon,
+        flag_steven_letter_delivered=flag_steven_letter,
+        flag_devon_goods_delivered=flag_devon_delivered,
+        flag_dock_rejected_devon=flag_dock_rejected,
         bag_pokeball_count=pokeballs,
         bag_first_item_id=first_item_id,
         bag_first_item_qty=first_item_qty,

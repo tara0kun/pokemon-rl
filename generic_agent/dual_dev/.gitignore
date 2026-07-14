@@ -1,0 +1,8 @@
+logs/
+handoffs/
+runs/
+__pycache__/
+*.pyc
+SANITY.md
+DRY_RUN_CHECK.md
+SAKANA_LOG.md

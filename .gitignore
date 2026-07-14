@@ -21,6 +21,9 @@ saved_states/
 # Screenshots (46MB recording history)
 screenshots/
 
+# Scratch dir (temp screenshots / working files)
+scratch/
+
 # Training logs (per-run, regenerable)
 training_current.log
 training_*.log
