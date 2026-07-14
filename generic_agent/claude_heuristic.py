@@ -944,6 +944,20 @@ def heuristic_button(
         )
         if fdir and fdir not in blocked:
             return fdir, f"goal_map_explore:{fdir}"
+        # Frontier exhausted (every accessible tile already visited) yet the
+        # target is still unreachable — e.g. we healed, re-entered the gym, and
+        # the barrier puzzle RESET, but the switch tiles are all "visited" so
+        # there is no new frontier. Re-walk the map pseudo-randomly to step on
+        # the floor switches AGAIN; the live-collision BFS above catches the
+        # frame a switch re-opens the path to Wattson. Vary the direction by
+        # position + streak so we don't wall into one tile, and prefer moves
+        # that aren't empirically blocked (keeps us off walls / the exit).
+        seed = (cur_x * 31 + cur_y * 17 + same_map_streak) % 4
+        rot = ["Up", "Right", "Down", "Left"]
+        for k in range(4):
+            cand = rot[(seed + k) % 4]
+            if cand not in blocked:
+                return cand, f"goal_map_rewalk:{cand}"
 
     cur_map_key = f"{gs.map_group}-{gs.map_num}"
     from_paths = pm._store.get(cur_map_key, {})
