@@ -315,13 +315,27 @@ class TestDewfordChain(GoalsTestBase):
         self.assertEqual(g_gym.name, "mauville_gym_wattson")
         self.assertEqual(g_gym.target_pos, (5, 2))  # Wattson NPC tile
 
-    def test_badge3_retires_mauville_chain(self) -> None:
-        # Once the Dynamo Badge is won (badge_count 3) the whole Mauville chain
-        # deactivates (Route111/Verdanturf is the next unimplemented step -> None).
+    def test_badge3_advances_to_lavaridge_arc(self) -> None:
+        # Once the Dynamo Badge is won (badge_count 3) the Mauville chain
+        # deactivates and the Lavaridge/Flannery arc begins: from Mauville the
+        # goal is reach_fallarbor (leg 1, via Route112/Fiery Path).
         gs = make_gs(map_group=0, map_num=2, badge_count=3,
                      flag_steven_letter_delivered=True,
                      flag_dock_rejected_devon=True,
                      flag_devon_goods_delivered=True)
+        g = goals_mod.current_goal(gs)
+        self.assertIsNotNone(g)
+        self.assertEqual(g.name, "reach_fallarbor")
+        self.assertEqual(g.target_map, (0, 13))
+
+    def test_badge4_retires_lavaridge_arc(self) -> None:
+        # Once Flannery is beaten (FLAG_BADGE04_GET) the Lavaridge arc retires
+        # (Petalburg/Norman is the next unimplemented step -> None).
+        gs = make_gs(map_group=0, map_num=13, badge_count=4,
+                     flag_steven_letter_delivered=True,
+                     flag_dock_rejected_devon=True,
+                     flag_devon_goods_delivered=True,
+                     flag_badge04_get=True)
         self.assertIsNone(goals_mod.current_goal(gs))
 
     def test_badge2_low_hp_heals_before_cave_trek(self) -> None:

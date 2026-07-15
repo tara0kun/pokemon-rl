@@ -197,6 +197,17 @@ class GameState:
     # redirects you to find Capt. Stern (who is at the Oceanic Museum). Sequences
     # the Devon Goods errand — visit the Dock first, then the museum.
     flag_dock_rejected_devon: bool = False
+    # --- Lavaridge / Flannery (Badge 4) arc gates (canon docs/PLAN_lavaridge_flannery) ---
+    # FLAG_HIDE_ROUTE_112_TEAM_MAGMA (0x333): set by the Meteor Falls meteorite-
+    # theft cutscene; removes the 2 grunts guarding the Route112 Cable Car.
+    flag_route112_magma_cleared: bool = False
+    # FLAG_DEFEATED_EVIL_TEAM_MT_CHIMNEY (0x8B): set after beating Tabitha+Maxie at
+    # Mt.Chimney; opens the north exit to Jagged Pass -> Lavaridge (the ONLY entry
+    # to Lavaridge). Gate for descend_jagged_pass / reach_lavaridge.
+    flag_mtchimney_magma_defeated: bool = False
+    # FLAG_BADGE04_GET (0x86A, Heat Badge): set on beating Flannery. Retires the
+    # whole Lavaridge arc.
+    flag_badge04_get: bool = False
     bag_pokeball_count: int = 0
     bag_first_item_id: int = 0
     bag_first_item_qty: int = 0
@@ -415,6 +426,13 @@ def read_state(client: MGBAClient) -> GameState:
         flag_devon_delivered = bool(flag_byte_dgd & (1 << (0x95 % 8)))
         flag_byte_dr = client.read8(ptr + SB1_FLAGS_OFFSET + (0x94 // 8))
         flag_dock_rejected = bool(flag_byte_dr & (1 << (0x94 % 8)))
+        # Lavaridge arc gates
+        flag_byte_r112m = client.read8(ptr + SB1_FLAGS_OFFSET + (0x333 // 8))
+        flag_r112_magma = bool(flag_byte_r112m & (1 << (0x333 % 8)))
+        flag_byte_mtc = client.read8(ptr + SB1_FLAGS_OFFSET + (0x8B // 8))
+        flag_mtc_defeated = bool(flag_byte_mtc & (1 << (0x8B % 8)))
+        flag_byte_b4 = client.read8(ptr + SB1_FLAGS_OFFSET + (0x86A // 8))
+        flag_badge4 = bool(flag_byte_b4 & (1 << (0x86A % 8)))
         first_item_id = client.read16(ptr + SB1_BAG_ITEMS + 0)
         first_item_qty_enc = client.read16(ptr + SB1_BAG_ITEMS + 2)
         # 35 fix (06-29): Pokemon Emerald bag quantities are XOR-encrypted
@@ -488,6 +506,9 @@ def read_state(client: MGBAClient) -> GameState:
         flag_steven_letter_delivered=flag_steven_letter,
         flag_devon_goods_delivered=flag_devon_delivered,
         flag_dock_rejected_devon=flag_dock_rejected,
+        flag_route112_magma_cleared=flag_r112_magma,
+        flag_mtchimney_magma_defeated=flag_mtc_defeated,
+        flag_badge04_get=flag_badge4,
         bag_pokeball_count=pokeballs,
         bag_first_item_id=first_item_id,
         bag_first_item_qty=first_item_qty,

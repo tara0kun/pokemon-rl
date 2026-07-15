@@ -518,6 +518,21 @@ class Goal:
                 and gs.badge_count < 3
                 and cur in {(0, 2), (10, 0)}
             )
+        # --- Lavaridge / Flannery (Badge 4) arc — docs/PLAN_lavaridge_flannery ---
+        if c == "reach_fallarbor":
+            # First leg of the Lavaridge arc: Mauville -> Route111 -> Route112
+            # (SE) -> [Fiery Path warp, region-aware nav] -> Route112 (N) ->
+            # Route113 -> Fallarbor. Route112 is one map split by Mt.Chimney
+            # (multi-warp-component True), so the crossing goes through Fiery
+            # Path. Gated to the pre-Fallarbor maps so meteor_falls_theft takes
+            # over once we're at/past Fallarbor.
+            return (
+                gs.badge_count >= 3
+                and not gs.flag_badge04_get
+                and not gs.flag_route112_magma_cleared
+                # (10,0)/(10,5) = the Mauville gym / PC we exit after Wattson.
+                and cur in {(0, 2), (10, 0), (10, 5), (0, 26), (0, 27), (0, 28)}
+            )
         return False
 
 
@@ -767,6 +782,13 @@ GOAL_TABLE: list[Goal] = [
         target_map=(0, 2),        # MauvilleCity (north via Route110 from Slateport)
         condition="reach_mauville",
         desc="Devon Goods 配達後: Route110 北上 → Mauville City 到達 (Wattson へ)",
+    ),
+    # --- Lavaridge / Flannery (Badge 4) arc — see docs/PLAN_lavaridge_flannery ---
+    Goal(
+        name="reach_fallarbor",
+        target_map=(0, 13),       # FallarborTown (via Route111->112->[FieryPath]->113)
+        condition="reach_fallarbor",
+        desc="Badge4 arc leg1: Mauville→Route112(Fiery Path横断)→Route113→Fallarbor",
     ),
 ]
 
