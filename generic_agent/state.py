@@ -394,6 +394,9 @@ def read_state(client: MGBAClient) -> GameState:
     flag_steven_letter = False
     flag_devon_delivered = False
     flag_dock_rejected = False
+    flag_r112_magma = False
+    flag_mtc_defeated = False
+    flag_badge4 = False
     pokeballs = 0
     first_item_id = 0
     first_item_qty = 0
