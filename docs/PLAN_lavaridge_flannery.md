@@ -42,5 +42,17 @@ Mauville(0,2) --北--> Route111(0,26) --西(砂漠の手前で分岐)--> Route11
 - **Grovyle(草)は不可**（Fire 2x 被弾、Grass STAB 0.5x で通らない、Sunny Overheat で一撃圏）。
 - **推奨: Route112 で Marill 捕獲(Lv14-16) → Azumarill(L18)**。Water は Fire 全員に有効、Numel/Camerupt は Fire/Ground=**Water 4x**。Water Gun/Pulse で sweep。手持ちの Lotad→Ludicolo(Water/Grass)も可だが Fire 2x 弱点は残る。
 
-## 実装方針（incremental）
-Segment 1: state.py flags + goal 1-4(Meteor Falls まで) + Marill 捕獲。Segment 2: cable car + Mt.Chimney battles。Segment 3: Jagged Pass + reach_lavaridge(connection-lie 対応)。Segment 4: gym hole puzzle(live-collision) + Flannery。各 segment で offline test + live 検証。
+## ★ Segment 0（NEW・最優先）: Rock Smash 能力チェーン（architect Fable 診断 2026-07-15）
+**Route111 の (20,104) stall の真因は砂漠でなく BREAKABLE_ROCK ゲート**（砂漠 trigger は全 y≤61、stuck は 40 タイル南で反証）。Mauville 側から北へ抜ける唯一の通路 = (19,100)/(18,101) の岩 + (19,101) FatMan。static BFS は貫通するが live は read_npcs_on_map が gObjectEvents から岩/NPC を拾い bfs_blocked→None→wander/escape で袋小路 stuck。**HM06 Rock Smash（+ Dynamo Badge、取得済）で砕く必要。generic_agent に rock smash/field move/HM コードは 0 行。**
+- **HM06 give NPC = MauvilleCityHouse1(10,2) の RockSmashDude (4,4)**（house 入口 = Mauville (3,7)/(4,7)）。
+- Rock Smash チェーン（**完全自動・ユーザーは操作しない**方針）:
+  1. `get_rock_smash` goal: House1(10,2)→RockSmashDude(4,4) interact で HM06 受領（既存 nav+interact）
+  2. **HM を教える**: bag/party UI = 前例ゼロの最難所 → **VLM brain 委譲**（screenshot 見てメニュー操作、1回のみ）。Rock Smash は dead-weight の Poochyena に教えて HM slave 化（Grovyle の技を潰さない）
+  3. 岩砕き: 既存 interact_target 機構で岩隣接→face+A。砕けた岩は flag→gObjectEvents から自然消滅
+- **Part B（砂漠ガード、岩突破後の予防）**: map_knowledge の coord_triggers から ViciousSandstorm tile（(11,61)(12,61)(13,61)(14,61)/(12,44)(13,43)(14,42)(16,40)(17,39)(18,38)）を bfs_blocked に追加（canon script-name 由来、座標ハードコードでない）。これで南 BFS は y=28-31(砂漠経由)を諦め y=66-71 に正しくルート。
+
+## latent bug（記録）
+`MapInfo.connections` が direction-key dict のため、Route111 の2つの left 接続（Route113 offset0 / Route112 offset20）の片方が clobber され **Route113 が消失**。現チェーン（Route112北→up端→Route113）では非ブロッキングだが要修正。docs/HYPOTHESES 参照。
+
+## 実装方針（incremental・realistically 複数セッション）
+**Segment 0（Rock Smash、最優先・下記が無いと1歩も進めない）** → Segment 1: reach_fallarbor(実装済) → Marill 捕獲 → Segment 2: Meteor Falls event + cable car + Mt.Chimney battles → Segment 3: Jagged Pass + reach_lavaridge(connection-lie) → Segment 4: gym hole puzzle(live-collision) + Flannery。各 segment で offline test + live 検証。
