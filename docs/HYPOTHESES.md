@@ -113,6 +113,38 @@ queue が空になるたび再充填されるので self-syncing に働くが、
   send_out が何押しで抜けたかを複数サンプル集める。10 押しを大きく超えるケースが出たら
   レイアウト対応(Down だけでなく Right も混ぜる等)を検討。
 
+## H9. HM-teach は VLM でなく決定論 RAM 駆動にすべき(2026-07-16 実機検証)
+
+teach_rock_smash が繰り返し失敗(前セッション 53/59 turn 費やし knows_rs=False)。
+1ステップずつ実機観察して真因を2つ特定:
+1. **VLM がメニューが開いているのに Start を再出力 → メニューが閉じる**。以降ずっと
+   overworld なのに VLM は「party 画面」と幻覚して Down/A を空打ち。→ cb2 guard で修正済
+   (overworld なら Start で開く / メニュー中は Start 禁止、hm_teach.py)。
+2. **修正後も VLM は 240x160 の GBA メニューを読めない**。reason が幻覚だらけ
+   ("CRY OF SHADOWISH"、"Nuzleaf Shroomish"、"VU meter")。カーソル位置も画面種別も
+   当てずっぽう。**この精密メニュー操作に VLM は根本的に不向き**。
+
+### ★ 実機で手動完遂した検証済み決定論シーケンス(これを hm_teach に焼くべき)
+- **最重要教訓: 単発・遅め(frames≈10-12, sleep≈0.6s)なら入力は確実。速い連打はアニメ中に
+  落ちる**(Up×8 を高速で送ると SAVE で止まる=途中欠落)。
+- 経路: overworld→`Start`→(遅い `Up`×8 で最上段 POKéDEX)→`Down`×2→`BAG`→`A`
+- bag pocket: **Right/Left は「カーソルがリスト内(CLOSE BAG 以外)」の時だけ pocket 切替**。
+  bag は最後の pocket を記憶。TMs&HMs 到達は要 pocket-index RAM 特定(未了、下記 TODO)
+- TMHM pocket の中身は **SB1+0x690**(ItemSlot[64], {u16 id, u16 qty_enc})。HM06=item 344。
+  実機では index 5(TM08,TM34,TM39,TM47,HM05,HM06)。RAM で HM06 の index を求めてカーソル移動
+- HM06 で `A`→context menu **USE**(既定・左上)→`A`
+- ダイアログ3枚: `A`×3("Booted up an HM." / "It contained ROCK SMASH." / "Teach to POKéMON? YES")
+- party list: **cursor slot = RAM 0x0203CED1**(実測: Right で 0→1、Down で 1→2、唯一変化したバイト)。
+  slot0=Grovyle(選ぶな) / slot1-3=Poochyena(ABLE!,空き技枠→即習得) / slot4=Lotad(NOT ABLE!)。
+  **slot0→slot1 は Right**(Down は別枠/CANCEL 方向)。目標 slot に置いて `A`
+- 成功判定: `knows_rock_smash`(move 249 が party のどれかに存在)を複数回読み(flicker 対策)
+
+### 未了 TODO(socket を止められる時に)
+- **bag pocket-index の RAM アドレス特定**(party cursor と同じ read_range diff 法で)。
+  これが取れれば TMs&HMs へ決定論的に到達でき、full 決定論 teach が完成する
+- 完成後の live テストは「次の HM(Strength/Surf 等)」でのみ可能(Rock Smash は習得済で
+  run_teach_subtask が即 True を返すため再テスト不可)
+
 ## 記録規則
 
 仮説を検証したら結果をこのファイルに追記(棄却/確定/部分確定 + 日付 + 証拠)。新しい chronic stuck は必ず「decisions.jsonl の src 分布」を証拠にしてから仮説化する。

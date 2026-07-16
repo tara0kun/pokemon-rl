@@ -22,17 +22,22 @@ _SCREEN = config.MEMORY_DIR / "hm_teach_screen.png"
 
 SYSTEM_PROMPT_TEACH_HM = (
     "You are operating Pokemon Emerald menus to TEACH the HM move ROCK SMASH to a "
-    "party Pokemon. Look at the screenshot and reply with ONLY a JSON object: "
-    '{"button": "<A|B|Up|Down|Left|Right|Start>", "reason": "<short>"}. '
-    "The path is: open the START menu, choose BAG, switch to the TMs & HMs pocket "
-    "(press Right/Left to change pocket), scroll to HM06 ROCK SMASH, press A, "
-    "choose USE/TEACH, then on the party screen move the cursor to a POOCHYENA and "
-    "press A to teach it. "
-    "HARD RULES: (1) NEVER teach it to GROVYLE (the grass starter) — if a Summary "
-    "or 'teach to GROVYLE?' screen appears, press B to cancel and pick a POOCHYENA "
-    "instead. (2) On the party list, confirm the cursor is on a POOCHYENA before A. "
-    "(3) If asked 'Forget a move?' / which move to delete, pick the FIRST move. "
-    "(4) If you see the plain overworld (no menu), the task is done or lost — press B."
+    "party Pokemon. Reply with ONLY a JSON object: "
+    '{"button": "<A|B|Up|Down|Left|Right>", "reason": "<short>"}. '
+    "The START menu is ALREADY OPEN when you begin — do NOT try to open it. "
+    "From the open menu the path is: choose BAG (press A on BAG), switch to the "
+    "TMs & HMs pocket (press Right/Left to change pocket), scroll to HM06 ROCK "
+    "SMASH, press A, choose USE, then on the party screen move the cursor to a "
+    "POOCHYENA and press A to teach it. "
+    "HARD RULES: (1) NEVER output 'Start' — it CLOSES the menu and breaks the task. "
+    "Never emit Start under any circumstance. "
+    "(2) NEVER teach it to GROVYLE (the grass starter) — if a Summary or 'teach to "
+    "GROVYLE?' screen appears, press B to cancel and pick a POOCHYENA instead. "
+    "(3) On the party list, confirm the cursor is on a POOCHYENA before A. "
+    "(4) If asked 'Forget a move?' / which move to delete, pick the FIRST move. "
+    "(5) LOOK at the screenshot and describe the CURRENT screen in your reason "
+    "(overworld / start-menu / bag / party-list / dialog) so you don't repeat a "
+    "button that isn't working."
 )
 
 
@@ -55,8 +60,17 @@ def run_teach_subtask(
     party Pokemon knows move 249. Blocks (~<120s) — call as a one-shot sub-task,
     NOT per turn. Safe to re-enter (no-op if already known)."""
     def _log(m: str) -> None:
-        if log:
+        if not log:
+            return
+        try:
             log(m)
+        except (UnicodeEncodeError, OSError):
+            # Haiku's reason can contain non-console-codepage chars; a logging
+            # crash must never abort the teach. Fall back to an ASCII-safe form.
+            try:
+                log(m.encode("ascii", "replace").decode("ascii"))
+            except Exception:  # noqa: BLE001 — logging must not raise
+                pass
 
     if _knows_rock_smash(client):
         return True
@@ -82,6 +96,24 @@ def run_teach_subtask(
                 time.sleep(0.3)
             _log(f"teach_hm: SUCCESS (step {step})")
             return True
+        # Menu-state guard via gMain.callback2. The VLM has no state memory and
+        # kept re-emitting Start, which TOGGLES the menu shut -> every later step
+        # ran in the overworld while the model hallucinated a party screen (the
+        # whole 145-turn teach failure). So: if the menu is closed (overworld),
+        # the only correct move is to (re)open it with Start; while a menu is
+        # open, Start is forbidden entirely (it would close it), and the VLM
+        # drives. cb2 flips instantly, unlike the stale battle flag.
+        gs = _read(client)
+        in_overworld = bool(gs and gs.game_cb2 in state_mod.CB2_OVERWORLD_SET)
+        if in_overworld:
+            _log(f"teach_hm[{step}]: Start (reopen-menu; cb2=overworld)")
+            try:
+                client.tap("Start", frames=15)
+            except EmulatorError:
+                break
+            last_btns.append("Start")
+            time.sleep(_STEP_SLEEP)
+            continue
         try:
             client.screenshot(_SCREEN)
         except EmulatorError:
@@ -89,8 +121,9 @@ def run_teach_subtask(
             continue
         user_text = (
             f"Step {step}/{_MAX_STEPS}. Recent buttons: {last_btns[-6:]}. "
-            "Party: slot0=GROVYLE (never pick), slot1=POOCHYENA (TEACH TARGET). "
-            "Teach ROCK SMASH to the POOCHYENA. What is the next single button?"
+            "The menu is OPEN. Party: slot0=GROVYLE (never pick), "
+            "slot1/2/3=POOCHYENA (TEACH TARGET). "
+            "Teach ROCK SMASH to a POOCHYENA. What is the next single button?"
         )
         try:
             resp, _, _ = rescue_brain._call_haiku(
@@ -100,6 +133,12 @@ def run_teach_subtask(
             btn, reason = rescue_brain._parse_response(raw)
         except Exception as exc:  # noqa: BLE001 — API/parse failure -> back out
             btn, reason = "B", f"haiku-err:{exc}"
+        # Hard filter: Start while a menu is open would close it. The model is
+        # told never to emit Start, but enforce it regardless — drop to B, which
+        # backs out one level and self-corrects (over-backing lands in the
+        # overworld, which the guard above reopens next step).
+        if btn == "Start":
+            btn, reason = "B", f"start-forbidden(was:{reason[:40]})"
         _log(f"teach_hm[{step}]: {btn} ({reason})")
         try:
             client.tap(btn, frames=12)
