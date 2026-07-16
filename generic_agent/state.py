@@ -149,6 +149,27 @@ CB2_OVERWORLD_SET = frozenset({0x08085E5D})
 
 
 BATTLE_TYPE_TRAINER = 0x0008
+MOVE_ROCK_SMASH = 249  # MOVE_ROCK_SMASH (moves.h)
+
+# Pokemon substruct order by personality % 24 (Gen 3 box-mon encryption).
+_SUBSTRUCT_PERMS = [
+    "GAEM", "GAME", "GEAM", "GEMA", "GMAE", "GMEA",
+    "AGEM", "AGME", "AEGM", "AEMG", "AMGE", "AMEG",
+    "EGAM", "EGMA", "EAGM", "EAMG", "EMGA", "EMAG",
+    "MGAE", "MGEA", "MAGE", "MAEG", "MEGA", "MEAG",
+]
+
+
+def _read_party_move_ids(client: MGBAClient, slot: int) -> list[int]:
+    """Decrypt gPlayerParty[slot]'s 4 move IDs from the Attacks substruct."""
+    base = PLAYER_PARTY_ADDR + slot * POKEMON_STRUCT_SIZE
+    pv = client.read32(base + 0x00)
+    otid = client.read32(base + 0x04)
+    key = pv ^ otid
+    a_off = 0x20 + _SUBSTRUCT_PERMS[pv % 24].index("A") * 12
+    w0 = client.read32(base + a_off) ^ key
+    w1 = client.read32(base + a_off + 4) ^ key
+    return [w0 & 0xFFFF, (w0 >> 16) & 0xFFFF, w1 & 0xFFFF, (w1 >> 16) & 0xFFFF]
 
 
 def _read_saveblock1_ptr(client: MGBAClient, tries: int = 4) -> int | None:
@@ -208,6 +229,13 @@ class GameState:
     # FLAG_BADGE04_GET (0x86A, Heat Badge): set on beating Flannery. Retires the
     # whole Lavaridge arc.
     flag_badge04_get: bool = False
+    # FLAG_RECEIVED_HM_ROCK_SMASH (0x6B): set when the Mauville House1 RockSmashDude
+    # gives HM06. Gate for get_rock_smash (retire once received).
+    flag_rock_smash_hm: bool = False
+    # party_moves[slot] = [4 move ids] (decrypted Attacks substruct) for each
+    # party member. Used to tell whether any Pokemon KNOWS Rock Smash (field-move
+    # gate) and to confirm the HM-teach sub-task succeeded. Empty on read failure.
+    party_moves: list[list[int]] = field(default_factory=list)
     bag_pokeball_count: int = 0
     bag_first_item_id: int = 0
     bag_first_item_qty: int = 0
@@ -225,6 +253,12 @@ class GameState:
     @property
     def is_wild_battle(self) -> bool:
         return self.in_battle and not self.is_trainer_battle
+
+    @property
+    def knows_rock_smash(self) -> bool:
+        """True if any party member knows MOVE_ROCK_SMASH (249) — the field-move
+        gate for smashing rocks."""
+        return any(MOVE_ROCK_SMASH in moves for moves in self.party_moves)
 
     @property
     def party0_hp_frac(self) -> float:
@@ -397,6 +431,8 @@ def read_state(client: MGBAClient) -> GameState:
     flag_r112_magma = False
     flag_mtc_defeated = False
     flag_badge4 = False
+    flag_rock_smash = False
+    party_moves: list[list[int]] = []
     pokeballs = 0
     first_item_id = 0
     first_item_qty = 0
@@ -436,6 +472,8 @@ def read_state(client: MGBAClient) -> GameState:
         flag_mtc_defeated = bool(flag_byte_mtc & (1 << (0x8B % 8)))
         flag_byte_b4 = client.read8(ptr + SB1_FLAGS_OFFSET + (0x86A // 8))
         flag_badge4 = bool(flag_byte_b4 & (1 << (0x86A % 8)))
+        flag_byte_rs = client.read8(ptr + SB1_FLAGS_OFFSET + (0x6B // 8))
+        flag_rock_smash = bool(flag_byte_rs & (1 << (0x6B % 8)))
         first_item_id = client.read16(ptr + SB1_BAG_ITEMS + 0)
         first_item_qty_enc = client.read16(ptr + SB1_BAG_ITEMS + 2)
         # 35 fix (06-29): Pokemon Emerald bag quantities are XOR-encrypted
@@ -490,6 +528,16 @@ def read_state(client: MGBAClient) -> GameState:
     except EmulatorError:
         pass
 
+    # Independent try for party move IDs (field-move gate: knows_rock_smash).
+    # Reads gPlayerParty (fixed addr, not SaveBlock1). ~3 read32/slot.
+    try:
+        _pm: list[list[int]] = []
+        for slot in range(min(max(party_count, 0), 6)):
+            _pm.append(_read_party_move_ids(client, slot))
+        party_moves = _pm
+    except EmulatorError:
+        pass
+
     return GameState(
         map_group=mg,
         map_num=mn,
@@ -512,6 +560,8 @@ def read_state(client: MGBAClient) -> GameState:
         flag_route112_magma_cleared=flag_r112_magma,
         flag_mtchimney_magma_defeated=flag_mtc_defeated,
         flag_badge04_get=flag_badge4,
+        flag_rock_smash_hm=flag_rock_smash,
+        party_moves=party_moves,
         bag_pokeball_count=pokeballs,
         bag_first_item_id=first_item_id,
         bag_first_item_qty=first_item_qty,
