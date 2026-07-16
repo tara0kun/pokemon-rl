@@ -1708,6 +1708,8 @@ def run(
                     "button": button,
                     "src": src,
                     "inb": bool(gs.in_battle),
+                    "cb2": gs.game_cb2,
+                    "bfl": gs.battle_flags,
                 }) + "\n")
         except OSError:
             pass

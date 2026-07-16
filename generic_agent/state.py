@@ -146,6 +146,14 @@ GMAIN_CB2_ADDR = 0x030022C4
 # Field/overworld callback2 values where a set gBattleTypeFlags must NOT be
 # read as in-battle. 0x08085E5D = CB2_Overworld (US), live-observed 07-01.
 CB2_OVERWORLD_SET = frozenset({0x08085E5D})
+# gBattleTypeFlags is stale after a battle (never cleared). The overworld guard
+# above catches the field, but a MENU opened later (Pokedex, region map, bag)
+# has its own callback2 and was slipping through -> a stale double-battle flag
+# read as in-battle froze the loop mashing A in the Pokedex for 4000 turns
+# (07-16). Until the battle-callback whitelist (H-cb2) is captured, treat known
+# menu callbacks as not-in-battle too. 0x080BB775 = Pokedex/region-map detail,
+# live-observed 07-16 (cb2 stable 6/6 while the screen showed the town map).
+CB2_MENU_SET = frozenset({0x080BB775})
 
 
 BATTLE_TYPE_TRAINER = 0x0008
@@ -195,6 +203,7 @@ class GameState:
     saveblock1_valid: bool
     in_battle: bool = False
     battle_flags: int = 0
+    game_cb2: int = 0  # gMain.callback2 (game-mode fn ptr); overworld/menu/battle
     party0_level: int = 0
     party0_hp: int = 0
     party0_max_hp: int = 0
@@ -356,7 +365,7 @@ def _read_battle_flags(client: MGBAClient) -> tuple[bool, int]:
             cb2 = client.read32(GMAIN_CB2_ADDR)
         except EmulatorError:
             cb2 = None
-        if cb2 is not None and cb2 in CB2_OVERWORLD_SET:
+        if cb2 is not None and (cb2 in CB2_OVERWORLD_SET or cb2 in CB2_MENU_SET):
             return False, 0
         return True, v
     return False, 0
@@ -364,6 +373,10 @@ def _read_battle_flags(client: MGBAClient) -> tuple[bool, int]:
 
 def read_state(client: MGBAClient) -> GameState:
     in_battle, flags = _read_battle_flags(client)
+    try:
+        cb2 = client.read32(GMAIN_CB2_ADDR)
+    except EmulatorError:
+        cb2 = 0
 
     ptr = _read_saveblock1_ptr(client)
     if ptr is None:
@@ -546,6 +559,7 @@ def read_state(client: MGBAClient) -> GameState:
         saveblock1_valid=True,
         in_battle=in_battle,
         battle_flags=flags,
+        game_cb2=cb2,
         party0_level=lv,
         party0_hp=hp,
         party0_max_hp=max_hp,
