@@ -46,6 +46,7 @@ from . import (
     config,
     curriculum as curr_mod,
     goals as goals_mod,
+    hm_teach,
     knn_explorer as knn_mod,
     llm_advisor as llm_mod,
     map_data as map_data_mod,
@@ -1176,6 +1177,7 @@ def run(
     battle_move_queue: list[str] = []
     battle_trainer_latch = False
     last_ram_battle_turn = -999
+    teach_cooldown_until = 0
     rs = reward_state_mod.RewardState()
     rs.load()
     checkpoint_target: tuple[int, int, int, int] | None = None
@@ -1417,6 +1419,31 @@ def run(
                 pass
 
         cur_goal = goals_mod.current_goal(gs) if gs.saveblock1_valid else None
+
+        # HM-teach sub-task hook (Rock Smash chain): teach_rock_smash is a bag/
+        # party MENU operation (target_map=None), not a nav goal. When active and
+        # stable in the overworld, hand off to the VLM-driven menu driver for a
+        # bounded one-shot; it presses its own buttons and returns once a party
+        # mon knows Rock Smash. Placed BEFORE the battle/nav dispatch so the None
+        # target never reaches mapbfs. A cooldown avoids hammering it if a run
+        # gives up.
+        if (
+            cur_goal is not None
+            and cur_goal.name == "teach_rock_smash"
+            and gs.saveblock1_valid
+            and not gs.in_battle
+            and turn >= teach_cooldown_until
+        ):
+            print(f"  [hm_teach] turn {turn}: teaching Rock Smash via VLM…")
+            try:
+                ok = hm_teach.run_teach_subtask(client, log=print)
+            except Exception as _exc:  # noqa: BLE001 — never crash the loop
+                print(f"  [hm_teach] error: {_exc}")
+                ok = False
+            if not ok:
+                teach_cooldown_until = turn + 30
+            last_action = "teach_rock_smash"
+            continue
 
         # Part B — trainer-battle decision, driven by RAM not vision.
         # H6a root cause: the refill used to be gated on the flaky
