@@ -519,6 +519,46 @@ class Goal:
                 and cur in {(0, 2), (10, 0)}
             )
         # --- Lavaridge / Flannery (Badge 4) arc — docs/PLAN_lavaridge_flannery ---
+        # Segment 0: Rock Smash chain (Route111 north is gated by a BREAKABLE_ROCK).
+        if c == "get_rock_smash":
+            # Get HM06 from the Mauville House1 RockSmashDude (4,4). Retires once
+            # received (FLAG_RECEIVED_HM_ROCK_SMASH 0x6B). Existing nav + interact
+            # + dialog A-mash complete it; re-talk is idempotent (goto_if_set).
+            return (
+                gs.badge_count >= 3
+                and not gs.flag_badge04_get
+                and not gs.flag_rock_smash_hm
+            )
+        if c == "teach_rock_smash":
+            # HM06 received but no party member knows Rock Smash yet -> teach it.
+            # This is a bag/party UI SUB-TASK (target_map=None), driven by the VLM
+            # in hm_teach via the claude_heuristic hook. Retires when a party mon
+            # knows MOVE_ROCK_SMASH (249).
+            return (
+                gs.badge_count >= 3
+                and not gs.flag_badge04_get
+                and gs.flag_rock_smash_hm
+                and not gs.knows_rock_smash
+                and not gs.in_battle
+            )
+        if c == "smash_route111_rock":
+            # Know Rock Smash and standing on Route111 with the rock still a live
+            # object_event -> walk up and smash it (existing interact machinery;
+            # the YES/NO defaults to YES so the dialog A-mash confirms). The rock
+            # is FLAG_TEMP so it reappears on map reload -> re-fires + re-smashes
+            # (cost 0). (19,100) is the east-lane rock; the tip-guy at (19,101)
+            # vanished when HM06 was received (0x34B).
+            if not (
+                gs.knows_rock_smash
+                and gs.badge_count >= 3
+                and not gs.flag_badge04_get
+                and cur == (0, 26)
+            ):
+                return False
+            return any(
+                (nx, ny) == (19, 100)
+                for (nx, ny, _g) in getattr(gs, "npcs_on_map", []) or []
+            )
         if c == "reach_fallarbor":
             # First leg of the Lavaridge arc: Mauville -> Route111 -> Route112
             # (SE) -> [Fiery Path warp, region-aware nav] -> Route112 (N) ->
@@ -784,6 +824,27 @@ GOAL_TABLE: list[Goal] = [
         desc="Devon Goods 配達後: Route110 北上 → Mauville City 到達 (Wattson へ)",
     ),
     # --- Lavaridge / Flannery (Badge 4) arc — see docs/PLAN_lavaridge_flannery ---
+    # Segment 0: Rock Smash chain (before reach_fallarbor; flag-serialized).
+    Goal(
+        name="get_rock_smash",
+        target_map=(10, 2),       # MauvilleCity_House1
+        target_pos=(4, 4),        # RockSmashDude — interact to receive HM06
+        condition="get_rock_smash",
+        desc="Route111 の岩用に Mauville House1 (4,4) で HM06 Rock Smash 受領",
+    ),
+    Goal(
+        name="teach_rock_smash",
+        target_map=None,          # UI sub-task, not a nav goal (hm_teach via VLM)
+        condition="teach_rock_smash",
+        desc="HM06 を Poochyena に教える (bag/party UI, VLM 委譲)",
+    ),
+    Goal(
+        name="smash_route111_rock",
+        target_map=(0, 26),       # Route111
+        target_pos=(19, 100),     # east-lane BREAKABLE_ROCK (approach from (19,101))
+        condition="smash_route111_rock",
+        desc="Route111 (19,100) の岩を Rock Smash で砕いて北へ",
+    ),
     Goal(
         name="reach_fallarbor",
         target_map=(0, 13),       # FallarborTown (via Route111->112->[FieryPath]->113)

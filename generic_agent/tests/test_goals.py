@@ -315,18 +315,49 @@ class TestDewfordChain(GoalsTestBase):
         self.assertEqual(g_gym.name, "mauville_gym_wattson")
         self.assertEqual(g_gym.target_pos, (5, 2))  # Wattson NPC tile
 
-    def test_badge3_advances_to_lavaridge_arc(self) -> None:
-        # Once the Dynamo Badge is won (badge_count 3) the Mauville chain
-        # deactivates and the Lavaridge/Flannery arc begins: from Mauville the
-        # goal is reach_fallarbor (leg 1, via Route112/Fiery Path).
+    def test_badge3_starts_with_rock_smash(self) -> None:
+        # Once the Dynamo Badge is won (badge_count 3) the Lavaridge arc begins,
+        # and its FIRST step is getting HM06 Rock Smash (Route111 is gated by a
+        # breakable rock) — get_rock_smash before reach_fallarbor.
         gs = make_gs(map_group=0, map_num=2, badge_count=3,
                      flag_steven_letter_delivered=True,
                      flag_dock_rejected_devon=True,
                      flag_devon_goods_delivered=True)
         g = goals_mod.current_goal(gs)
-        self.assertIsNotNone(g)
-        self.assertEqual(g.name, "reach_fallarbor")
-        self.assertEqual(g.target_map, (0, 13))
+        self.assertEqual(g.name, "get_rock_smash")
+        self.assertEqual(g.target_map, (10, 2))
+        self.assertEqual(g.target_pos, (4, 4))
+
+    def test_rock_smash_chain_serializes(self) -> None:
+        # HM received but not taught -> teach_rock_smash; taught -> reach_fallarbor
+        # takes over (the smash goal only fires on Route111 with the rock present).
+        base = dict(map_group=0, map_num=2, badge_count=3,
+                    flag_steven_letter_delivered=True,
+                    flag_dock_rejected_devon=True,
+                    flag_devon_goods_delivered=True)
+        # HM received, no party mon knows Rock Smash -> teach it (UI sub-task)
+        gs_teach = make_gs(flag_rock_smash_hm=True,
+                           party_moves=[[348, 43, 228, 98]], **base)
+        self.assertEqual(goals_mod.current_goal(gs_teach).name, "teach_rock_smash")
+        # taught (move 249 present) -> advance to reach_fallarbor
+        gs_taught = make_gs(flag_rock_smash_hm=True,
+                            party_moves=[[348, 43, 228, 98], [249, 0, 0, 0]],
+                            **base)
+        self.assertEqual(goals_mod.current_goal(gs_taught).name, "reach_fallarbor")
+
+    def test_smash_goal_fires_on_route111_with_rock(self) -> None:
+        # On Route111, knowing Rock Smash, with the rock live at (19,100) ->
+        # smash_route111_rock (interact + smash), NOT reach_fallarbor.
+        gs = make_gs(map_group=0, map_num=26, badge_count=3,
+                     flag_steven_letter_delivered=True,
+                     flag_dock_rejected_devon=True,
+                     flag_devon_goods_delivered=True,
+                     flag_rock_smash_hm=True,
+                     party_moves=[[249, 0, 0, 0]],
+                     npcs_on_map=[(19, 100, 86)])
+        g = goals_mod.current_goal(gs)
+        self.assertEqual(g.name, "smash_route111_rock")
+        self.assertEqual(g.target_pos, (19, 100))
 
     def test_badge4_retires_lavaridge_arc(self) -> None:
         # Once Flannery is beaten (FLAG_BADGE04_GET) the Lavaridge arc retires
