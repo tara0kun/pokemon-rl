@@ -13,9 +13,10 @@ from generic_agent import battle_moves as bm
 class FakeBattleClient:
     """read8/16/32 を dict から返す stub。未登録アドレスは 0。"""
 
-    def __init__(self, mem8=None, mem16=None):
+    def __init__(self, mem8=None, mem16=None, mem32=None):
         self.mem8 = dict(mem8 or {})
         self.mem16 = dict(mem16 or {})
+        self.mem32 = dict(mem32 or {})
         self.reads: list[tuple[str, int]] = []
 
     def read8(self, addr: int) -> int:
@@ -28,7 +29,7 @@ class FakeBattleClient:
 
     def read32(self, addr: int) -> int:
         self.reads.append(("r32", addr))
-        return 0
+        return self.mem32.get(addr, 0)
 
 
 class EffectivenessTest(unittest.TestCase):
@@ -223,10 +224,21 @@ class DoubleBattleSendOutTest(unittest.TestCase):
     def _party(slot: int) -> int:
         return bm.PLAYER_PARTY_ADDR + slot * bm.PARTY_STRUCT_SIZE + bm.PARTY_HP_OFFSET
 
-    def _client(self, battlers: dict[int, int], party: dict[int, int]):
+    def _client(self, battlers: dict[int, int], party: dict[int, int], eggs=None):
         mem16 = {self._battler(i): hp for i, hp in battlers.items()}
         mem16.update({self._party(s): hp for s, hp in party.items()})
-        return FakeBattleClient(mem16=mem16)
+        mem32: dict[int, int] = {}
+        for slot in eggs or ():
+            # Substruct order is PERMS[personality % 24]; personality 0 -> "GAEM",
+            # so Misc is the 4th substruct: 0x20 + 3*12 = 0x44, IV word at +4.
+            # Store it XOR-encrypted (key = personality ^ otId) so the test only
+            # passes if the decode is right, not merely if the offset is.
+            base = bm.PLAYER_PARTY_ADDR + slot * bm.PARTY_STRUCT_SIZE
+            otid = 0x12345678
+            mem32[base + 0x00] = 0             # personality -> "GAEM"
+            mem32[base + 0x04] = otid
+            mem32[base + 0x48] = (1 << 30) ^ otid   # isEgg bit, encrypted
+        return FakeBattleClient(mem16=mem16, mem32=mem32)
 
     def test_reads_our_slots_not_the_foes(self):
         # slots interleave: 0/2 ours, 1/3 theirs. Live-verified Route111 frame.
@@ -235,10 +247,10 @@ class DoubleBattleSendOutTest(unittest.TestCase):
         # single battle must not look at slot 2 (garbage outside a double)
         self.assertEqual(bm.player_battler_hps(c), [50])
 
-    def test_alive_party_count_ignores_slots_beyond_party(self):
+    def test_sendable_party_count_ignores_slots_beyond_party(self):
         c = self._client({}, {0: 50, 1: 0, 2: 27, 3: 15, 4: 23, 5: 99})
-        self.assertEqual(bm.alive_party_count(c, 5), 4)  # slot5 not ours
-        self.assertEqual(bm.alive_party_count(c, 0), 0)
+        self.assertEqual(bm.sendable_party_count(c, 5), 4)  # slot5 not ours
+        self.assertEqual(bm.sendable_party_count(c, 0), 0)
 
     def test_route111_frozen_frame_asks_for_send_out(self):
         # the exact live state: Grovyle 50/101 up, Poochyena 0/27 down, 4 alive
@@ -259,6 +271,27 @@ class DoubleBattleSendOutTest(unittest.TestCase):
         # would thrash the FIGHT menu (the 3784-turn stall this A-mash fixed).
         c = self._client({0: 50, 1: 48, 2: 0, 3: 46}, {0: 50, 1: 0, 2: 0})
         self.assertFalse(bm.double_battle_needs_send_out(c, 3))
+
+    def test_egg_is_not_a_replacement(self):
+        # An EGG has HP but can never be sent out, so an HP-only count would see
+        # a bench that does not exist and thrash the list. Reachable: Lavaridge
+        # (our next town) hands over a Wynaut egg via a YES/NO the dialog rule
+        # answers YES, and the party has a free slot.
+        c = self._client(
+            {0: 50, 1: 48, 2: 0, 3: 46}, {0: 50, 1: 0, 2: 20}, eggs=(2,),
+        )
+        self.assertTrue(bm.is_egg(c, 2))
+        self.assertFalse(bm.is_egg(c, 0))
+        self.assertEqual(bm.sendable_party_count(c, 3), 1)  # Grovyle only
+        self.assertFalse(bm.double_battle_needs_send_out(c, 3))
+
+    def test_egg_does_not_mask_a_real_replacement(self):
+        # ...but a real benched mon alongside an egg must still be sent out.
+        c = self._client(
+            {0: 50, 1: 48, 2: 0, 3: 46}, {0: 50, 1: 0, 2: 20, 3: 27}, eggs=(2,),
+        )
+        self.assertEqual(bm.sendable_party_count(c, 4), 2)
+        self.assertTrue(bm.double_battle_needs_send_out(c, 4))
 
 
 if __name__ == "__main__":

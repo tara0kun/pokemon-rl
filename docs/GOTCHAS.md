@@ -18,6 +18,8 @@
 - bag 数量・species は暗号化されている(INVARIANTS B-10)。「生で読めた気がする」値はノイズ
 - map.bin の寸法が layouts.json と合わないことがある → 幅候補から因数分解で推定するフォールバックあり(map_data.py:171-180)
 - pokeemerald からの map データは**初回アクセス時にネットワーク DL**(map_data.py:106-111)。オフラインだと BFS 系が None を返し、heuristic は素の探索に落ちる(設計上のフォールバック)
+- **battler slot は敵味方交互(0/2=自分、1/3=敵)**。`active_hp()` は slot 0 のみ = **ダブルでは自分の2体目(slot 2)のひんしが構造的に見えない**。Route111 Twins で 900 turn 停止した真因(07-16 fix)。ダブルの自分側は `battle_moves.player_battler_hps(double=True)` で両方読む
+- **タマゴは hp>0 だが出せない**。HP だけで「控えがいる」と数えると、開いていないパーティリストを操作し続ける。`is_egg`(暗号化 M substruct の IV word bit30)で除外する。Lavaridge の Wynaut タマゴは NPC の YES/NO を dialog の A 連打が YES と答えて受け取るので、放っておくと必ず踏む(07-16、verifier 指摘)
 
 ## vision(screen_features)
 

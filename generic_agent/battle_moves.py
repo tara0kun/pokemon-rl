@@ -127,12 +127,28 @@ def player_battler_hps(client: MGBAClient, double: bool = False) -> list[int]:
     ]
 
 
-def alive_party_count(client: MGBAClient, party_count: int) -> int:
-    """Party members with HP > 0. Tells "a benched mon can be sent out" from
-    "this is all we have" — a double battle with no replacement keeps playing
-    1v2 and must not be driven into the party list.
+def is_egg(client: MGBAClient, slot: int) -> bool:
+    """Whether a party slot holds an EGG rather than a usable Pokemon.
 
-    HP lives outside the encrypted substructs, so no decryption is needed.
+    An egg has HP > 0 but can never be sent into battle, so an HP-only count
+    would see a replacement that does not exist. The flag is bit 30 of the IV
+    word in the encrypted Misc ('M') substruct — same personality-keyed decode
+    as the species read in state.py.
+    """
+    base = PLAYER_PARTY_ADDR + slot * PARTY_STRUCT_SIZE
+    pv = client.read32(base + 0x00)
+    key = pv ^ client.read32(base + 0x04)
+    m_off = 0x20 + _PERMS[pv % 24].index("M") * 12
+    return bool((client.read32(base + m_off + 4) ^ key) & (1 << 30))
+
+
+def sendable_party_count(client: MGBAClient, party_count: int) -> int:
+    """Party members that could actually be sent into battle: HP > 0 and not an
+    egg. Tells "a benched mon can replace the fainted one" from "this is all we
+    have" — a double battle with no replacement keeps playing 1v2 and must not
+    be driven into the party list.
+
+    HP lives outside the encrypted substructs, so only the egg check decodes.
     """
     return sum(
         1
@@ -140,6 +156,7 @@ def alive_party_count(client: MGBAClient, party_count: int) -> int:
         if client.read16(
             PLAYER_PARTY_ADDR + slot * PARTY_STRUCT_SIZE + PARTY_HP_OFFSET
         ) > 0
+        and not is_egg(client, slot)
     )
 
 
@@ -155,7 +172,7 @@ def double_battle_needs_send_out(client: MGBAClient, party_count: int) -> bool:
     if not any(h == 0 for h in hps):
         return False
     alive_battlers = sum(1 for h in hps if h > 0)
-    return alive_party_count(client, party_count) > alive_battlers
+    return sendable_party_count(client, party_count) > alive_battlers
 
 
 def active_move_ids(client: MGBAClient) -> list[int]:

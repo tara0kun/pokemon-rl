@@ -86,6 +86,33 @@ Route109 上陸 → SlateportCity (0,1) 北上 → Devon Goods を Capt.Stern �
 - **H5a: タスク粒度が大きすぎる** — 対処: task_gen に「単一関数+テスト」粒度を強制、`--allow-path` を 1-2 ファイルに絞る。
 - **H5b: ゲートが厳しすぎる**(diff 上限・dirty 判定) — 検証: 直近 fail の GateReport を集計し、落ちた理由の分布を見る。hard_hits でなく diff_lines 超過が多数なら上限調整の余地。
 
+## H7. ダブル交代修正が tag battle で誤発火する(未検証・Badge7 まで無害)
+
+07-16 の `double_battle_needs_send_out` は「自分の battler slot = 0/2」を前提にしている。
+これは通常のダブル戦では正しいが、**tag battle(Mossdeep の Steven 同行戦)では slot 2 は
+パートナーのポケモン**で、倒れても交代を選ぶのは相手側。誤って SEND_OUT_SEQ を出しうる
+= 修正前の A 連打では起きなかった**新規リスク**(verifier 指摘 07-16)。
+
+- 想定ガード: `gBattleTypeFlags` の **BATTLE_TYPE_INGAME_PARTNER = 1<<20 (0x100000)** を
+  見て、立っていたら slot 2 を自分の battler として扱わない。
+- **ただしこのビット値は未実測**。該当戦闘は Badge 7 相当で遠く、当面発火しない。
+  ライブで tag battle に入る前に、`battle_flags` を実測してから実装すること
+  (実測なしにビットを埋め込むのは「知らない値の捏造」)。
+- 検証方法: Mossdeep 到達時に tag battle 中の `battle_flags` を dump → 0x100000 が立つか確認。
+
+## H8. SEND_OUT_SEQ の double パーティ画面での決定性(部分検証のみ)
+
+`SEND_OUT_SEQ = ("A","B","Down","A","A")` のコメント(claude_heuristic.py:800-817)は
+**シングル配置前提**で書かれている(「Down で瀕死の先頭から健康な個体へ」)。double の
+パーティ画面は 2 列レイアウトで異なる。07-16 の実測では 10 押し(= 5押し×2サイクル)で
+交代成立 = **1 サイクル目は外して 2 サイクル目で決まった可能性が高い**。
+queue が空になるたび再充填されるので self-syncing に働くが、**決定論的に外し続ける
+カーソル配置があれば新たな無限ループになる**(verifier 指摘)。
+
+- 検証方法: 次にダブル戦でひんしが出たら `logs/decisions_<session>.jsonl` の src 分布を見て、
+  send_out が何押しで抜けたかを複数サンプル集める。10 押しを大きく超えるケースが出たら
+  レイアウト対応(Down だけでなく Right も混ぜる等)を検討。
+
 ## 記録規則
 
 仮説を検証したら結果をこのファイルに追記(棄却/確定/部分確定 + 日付 + 証拠)。新しい chronic stuck は必ず「decisions.jsonl の src 分布」を証拠にしてから仮説化する。
