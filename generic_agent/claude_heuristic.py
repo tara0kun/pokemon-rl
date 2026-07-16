@@ -1469,11 +1469,29 @@ def run(
         # commits (a 3784-turn Route109 stall vs a full-HP Wingull was exactly
         # this). Just mash A: it takes FIGHT -> a move -> the default target for
         # BOTH mons, advancing the turn; the L32 lead overpowers the L13 doubles.
+        # ...but when one of OUR mons faints, the game opens the party list to
+        # pick its replacement, and there A only re-confirms whatever the cursor
+        # already sits on — "GROVYLE is already in battle!" or a fainted mon —
+        # so the cursor never moves and no replacement is ever sent. Observed on
+        # Route111 vs the Twins: 900 turns frozen with BOTH foes still at full
+        # HP. The lead-faint check below cannot catch it either, because battler
+        # slots interleave sides (0/2 ours, 1/3 theirs): our second mon is index
+        # 2, and active_hp() reads index 0. Navigate the list only when a benched
+        # mon actually exists — with no replacement the game keeps playing 1v2
+        # and SEND_OUT_SEQ would thrash the FIGHT menu (the Route109 stall).
         elif (
             not battle_move_queue and gs.in_battle
             and (getattr(gs, "battle_flags", 0) & 0x1)
         ):
-            battle_move_queue = ["A"]
+            try:
+                needs_send_out = battle_moves_mod.double_battle_needs_send_out(
+                    client, gs.party_count,
+                )
+            except (OSError, RuntimeError, EmulatorError):
+                needs_send_out = False
+            battle_move_queue = (
+                list(SEND_OUT_SEQ) if needs_send_out else ["A"]
+            )
         elif not battle_move_queue and gs.in_battle and gs.is_trainer_battle:
             try:
                 active_hp = battle_moves_mod.active_hp(client)

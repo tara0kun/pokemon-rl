@@ -210,5 +210,56 @@ class MoveSelectSequenceNavDerivedTest(unittest.TestCase):
             self.assertEqual(seq[-1], "A")
             self.assertEqual(self._tail_nav(bad), ())
 
+class DoubleBattleSendOutTest(unittest.TestCase):
+    """Route111 Twins soft-lock: our 2nd mon fainted in a double battle and the
+    loop mashed A at the party list for 900 turns (cursor never moves) with both
+    foes still at full HP. Guards the RAM reads that tell that state apart."""
+
+    @staticmethod
+    def _battler(idx: int) -> int:
+        return bm.GBATTLEMONS + idx * bm.BATTLEMON_SIZE + bm.BATTLEMON_HP
+
+    @staticmethod
+    def _party(slot: int) -> int:
+        return bm.PLAYER_PARTY_ADDR + slot * bm.PARTY_STRUCT_SIZE + bm.PARTY_HP_OFFSET
+
+    def _client(self, battlers: dict[int, int], party: dict[int, int]):
+        mem16 = {self._battler(i): hp for i, hp in battlers.items()}
+        mem16.update({self._party(s): hp for s, hp in party.items()})
+        return FakeBattleClient(mem16=mem16)
+
+    def test_reads_our_slots_not_the_foes(self):
+        # slots interleave: 0/2 ours, 1/3 theirs. Live-verified Route111 frame.
+        c = self._client({0: 50, 1: 48, 2: 0, 3: 46}, {})
+        self.assertEqual(bm.player_battler_hps(c, double=True), [50, 0])
+        # single battle must not look at slot 2 (garbage outside a double)
+        self.assertEqual(bm.player_battler_hps(c), [50])
+
+    def test_alive_party_count_ignores_slots_beyond_party(self):
+        c = self._client({}, {0: 50, 1: 0, 2: 27, 3: 15, 4: 23, 5: 99})
+        self.assertEqual(bm.alive_party_count(c, 5), 4)  # slot5 not ours
+        self.assertEqual(bm.alive_party_count(c, 0), 0)
+
+    def test_route111_frozen_frame_asks_for_send_out(self):
+        # the exact live state: Grovyle 50/101 up, Poochyena 0/27 down, 4 alive
+        c = self._client(
+            {0: 50, 1: 48, 2: 0, 3: 46}, {0: 50, 1: 0, 2: 27, 3: 15, 4: 23},
+        )
+        self.assertTrue(bm.double_battle_needs_send_out(c, 5))
+
+    def test_our_turn_never_drives_the_party_list(self):
+        # both battlers up = it is our turn to attack -> mash A, not SEND_OUT
+        c = self._client(
+            {0: 50, 1: 48, 2: 27, 3: 46}, {0: 50, 1: 27, 2: 15, 3: 23},
+        )
+        self.assertFalse(bm.double_battle_needs_send_out(c, 4))
+
+    def test_one_usable_mon_keeps_fighting_1v2(self):
+        # Route109-style guard: no bench -> the game never asks, so SEND_OUT_SEQ
+        # would thrash the FIGHT menu (the 3784-turn stall this A-mash fixed).
+        c = self._client({0: 50, 1: 48, 2: 0, 3: 46}, {0: 50, 1: 0, 2: 0})
+        self.assertFalse(bm.double_battle_needs_send_out(c, 3))
+
+
 if __name__ == "__main__":
     unittest.main()
