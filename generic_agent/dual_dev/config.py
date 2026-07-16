@@ -13,7 +13,10 @@ HANDOFF_DIR = DUAL_DEV_DIR / "handoffs"
 RUN_DIR = DUAL_DEV_DIR / "runs"
 
 CODEX_TIMEOUT_S = int(os.environ.get("DUAL_DEV_CODEX_TIMEOUT", "1800"))
-CLAUDE_TIMEOUT_S = int(os.environ.get("DUAL_DEV_CLAUDE_TIMEOUT", "600"))
+# The reviewer reads the diff + touched files before ruling; a ~180-line diff
+# review ran past 600s and got killed (verdict UNKNOWN, no commit) even though
+# gates passed. 1200s gives it room; still env-overridable for tighter loops.
+CLAUDE_TIMEOUT_S = int(os.environ.get("DUAL_DEV_CLAUDE_TIMEOUT", "1200"))
 MAX_DIFF_LINES = int(os.environ.get("DUAL_DEV_MAX_DIFF_LINES", "400"))
 
 # dev = 通常運用。sakana/* = 隔離 worktree 用(並行 production commit と gate の
