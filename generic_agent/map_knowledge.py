@@ -128,6 +128,13 @@ class MapKnowledge:
     ledge_jumps: dict[tuple[int, int], tuple[int, int]] = field(
         default_factory=dict,
     )
+    # blocked_triggers: coord_event tiles that PUSH THE PLAYER BACK (a story/item
+    # gate we can't pass), e.g. Route111's Route111_EventScript_ViciousSandstorm-
+    # Trigger* which checkitem GO_GOGGLES and shove you off the tile. BFS must
+    # treat them as walls so it routes AROUND the desert to the pre-desert exit,
+    # instead of dead-ending against the invisible push-back (the static
+    # collision shows these tiles walkable). Seeded from canon coord_events.
+    blocked_triggers: set[tuple[int, int]] = field(default_factory=set)
     warps: dict[tuple[int, int], dict] = field(default_factory=dict)
     npcs: list[dict] = field(default_factory=list)
     encounters_seen: list[dict] = field(default_factory=list)
@@ -170,6 +177,7 @@ class MapKnowledge:
             "ledge_jumps": {
                 f"{x},{y}": list(d) for (x, y), d in self.ledge_jumps.items()
             },
+            "blocked_triggers": sorted(list(self.blocked_triggers)),
             "warps": {f"{x},{y}": v for (x, y), v in self.warps.items()},
             "npcs": self.npcs,
             "encounters_seen": self.encounters_seen,
@@ -197,6 +205,9 @@ class MapKnowledge:
         mk.ledge_jumps = {
             tuple(map(int, k.split(","))): tuple(v)
             for k, v in data.get("ledge_jumps", {}).items()
+        }
+        mk.blocked_triggers = {
+            tuple(t) for t in data.get("blocked_triggers", [])
         }
         mk.warps = {
             tuple(map(int, k.split(","))): v
@@ -395,6 +406,18 @@ class MapKnowledgeStore:
                         "sight": sight,
                         "script": script,
                     })
+                # Push-back coord_event triggers (item/story gates that shove
+                # the player off the tile — e.g. the Route111 Go-Goggles desert
+                # ViciousSandstorm gate). BFS must treat these as walls. We match
+                # by script keyword (canon-name reference, not a hardcoded coord),
+                # and ONLY the "Vicious" variants push back — the plain
+                # SandstormTrigger just starts the weather and is harmless.
+                for ce in map_json.get("coord_events") or []:
+                    cx = ce.get("x", -1)
+                    cy = ce.get("y", -1)
+                    cs = str(ce.get("script", "") or "")
+                    if cx >= 0 and cy >= 0 and "ViciousSandstorm" in cs:
+                        mk.blocked_triggers.add((cx, cy))
         except (OSError, json.JSONDecodeError):
             pass
         # Exits per direction from canon connections (no empirical fix here;

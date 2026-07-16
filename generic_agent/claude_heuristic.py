@@ -540,11 +540,13 @@ def heuristic_button(
                         knowledge_elev = mk.tile_elevation
                         knowledge_ledges = mk.ledge_jumps
                         knowledge_water = mk.water_tiles
+                        knowledge_triggers = mk.blocked_triggers
                     except Exception:
                         knowledge_trainer = set()
                         knowledge_elev = {}
                         knowledge_ledges = {}
                         knowledge_water = set()
+                        knowledge_triggers = set()
                     # Deep water is walkable in the raw collision layer but
                     # impassable on foot (no Surf) — block it so BFS routes
                     # over the bridges instead of straight through the pond
@@ -577,6 +579,7 @@ def heuristic_button(
                     bfs_blocked = (
                         npc_tiles | empirical_blocked
                         | perm_blocked | knowledge_water | other_warps
+                        | knowledge_triggers
                     )
                     # Never treat the interaction target or its approach
                     # tiles as blocked: face+A bumps against a leader/NPC (or
