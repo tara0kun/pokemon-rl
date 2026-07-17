@@ -57,6 +57,7 @@ from . import (
     reward_state as reward_state_mod,
     screen_features as sf_mod,
     state as state_mod,
+    vlm_screen,
     tile_map as tile_map_mod,
 )
 from .io import EmulatorError, MGBAClient
@@ -1335,6 +1336,31 @@ def run(
         in_battle_seen = gs.in_battle or (
             bool(ss_for_battle.get("battle_menu")) and ram_battle_recent
         )
+        # VLM tiebreaker (Option-1 / H11): a real battle animates; a FROZEN
+        # "battle" that never resolves is the pixel-heuristic false-positive or
+        # a stale gBattleTypeFlags read on a menu (the 4000-turn Pokedex stall).
+        # When we've believed we're in a battle for a while AND the frame has
+        # been static, ask the VLM once (cached by frame_hash) whether it is
+        # really a battle; if not, drop the false battle so nav resumes. This
+        # generalizes the hardcoded menu-CB2 guard. Cheap: fires only when
+        # genuinely stuck, one Haiku call per static frame.
+        if (
+            in_battle_seen and client is not None
+            and battle_turn >= 20 and same_hash_streak >= 8
+        ):
+            try:
+                verdict = vlm_screen.is_battle_screen(shot, log=print)
+            except Exception:
+                verdict = None
+            if verdict is False:
+                object.__setattr__(gs, "in_battle", False)
+                in_battle_seen = False
+                last_ram_battle_turn = -999  # clear the recency latch
+                print(
+                    f"  [vlm_screen] turn {turn}: frozen 'battle' is NOT a "
+                    f"battle -> dropping false in_battle (battle_turn="
+                    f"{battle_turn}, frozen={same_hash_streak})"
+                )
         if in_battle_seen:
             battle_turn += 1
             # Trainer-battle latch: gBattleTypeFlags DMA-reads 0 on the move-
