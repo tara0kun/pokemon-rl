@@ -798,6 +798,30 @@ def heuristic_button(
                             gs.map_group, gs.map_num, gs.x, gs.y,
                         )
                         if step_btn is not None:
+                            # Consumed step-on pad: if we warped in and landed ON
+                            # a walkable warp tile that IS the goal target (Fiery
+                            # Path north pad (26,4)), warp_step_direction's door
+                            # heuristic returns the wall side ("Down" into (26,5))
+                            # and we bump forever. A step-on pad only re-fires
+                            # after you leave and step back, so dismount to a
+                            # walkable neighbour; next turn's BFS re-lands on it.
+                            # same_map_streak<=1 = "just warped in" (a Woods-style
+                            # press-through warp reached on foot has a big streak
+                            # and keeps the old behaviour — test_map_data pins it).
+                            if (
+                                same_map_streak <= 1
+                                and cur_info.walkable(gs.x, gs.y)
+                                and any(
+                                    w.get("x") == gs.x and w.get("y") == gs.y
+                                    for w in getattr(cur_info, "warps", []) or []
+                                )
+                            ):
+                                for _d, (_dx, _dy) in (
+                                    ("Up", (0, -1)), ("Left", (-1, 0)),
+                                    ("Right", (1, 0)), ("Down", (0, 1)),
+                                ):
+                                    if cur_info.walkable(gs.x + _dx, gs.y + _dy):
+                                        return _d, f"warp_pad_dismount:{_d}"
                             return step_btn, (
                                 f"mapbfs_warp:{step_btn}->{next_hop_name}"
                             )

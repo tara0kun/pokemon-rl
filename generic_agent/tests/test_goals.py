@@ -395,6 +395,36 @@ class TestDewfordChain(GoalsTestBase):
         self.assertEqual(goals_mod.current_goal(gs_south).name,
                          "fiery_path_cross")
 
+    def test_exit_fiery_path_north_fires_inside_the_cave(self) -> None:
+        # Once IN Fiery Path (24,14), route to the north warp pad -- neither
+        # fiery_path_cross (needs Route112) nor reach_fallarbor (cur-set) fire
+        # there, so the agent wandered goal-less for 1243 turns (07-17).
+        base = dict(map_group=24, map_num=14, badge_count=3,
+                    flag_steven_letter_delivered=True,
+                    flag_dock_rejected_devon=True,
+                    flag_devon_goods_delivered=True,
+                    flag_rock_smash_hm=True, party_moves=[[249, 0, 0, 0]])
+        goals_mod.record_map_visit(24, 14)   # visited the instant we step in
+        gs = make_gs(x=26, y=21, **base)     # the stuck-at-y21 tile
+        g = goals_mod.current_goal(gs)
+        self.assertEqual(g.name, "exit_fiery_path_north")
+        self.assertEqual(g.target_pos, (26, 4))
+        # retires once Flannery is beaten / the magma leg is cleared
+        self.assertIsNone(goals_mod.current_goal(
+            make_gs(x=26, y=21, flag_badge04_get=True, **base)))
+
+    def test_exit_fiery_path_target_matches_canon_north_warp(self) -> None:
+        # No hardcoded-coord drift: the goal's target_pos must be the min-y
+        # (northern) FieryPath->Route112 warp read from the map cache.
+        from generic_agent import map_data as md
+        fp = md.get_cache().get(24, 14)
+        r112 = [(w["x"], w["y"]) for w in (fp.warps or [])
+                if "Route112" in str(w.get("dest_map", ""))]
+        north = min(r112, key=lambda t: t[1])
+        goal = next(g for g in goals_mod.GOAL_TABLE
+                    if g.name == "exit_fiery_path_north")
+        self.assertEqual(goal.target_pos, north)
+
     def test_badge4_retires_lavaridge_arc(self) -> None:
         # Once Flannery is beaten (FLAG_BADGE04_GET) the Lavaridge arc retires
         # (Petalburg/Norman is the next unimplemented step -> None).

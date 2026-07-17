@@ -57,6 +57,7 @@ def _peeko_done(gs) -> bool:
 # the south blob it routes to Fiery Path. "South blob" = the component holding
 # the higher-y Fiery Path warp (derived from map data, not a hardcoded tile).
 _ROUTE112 = (0, 27)
+_FIERY_PATH = (24, 14)
 
 
 def _in_route112_fiery_south(gs) -> bool:
@@ -612,6 +613,20 @@ class Goal:
                 and not gs.flag_route112_magma_cleared
                 and _in_route112_fiery_south(gs)
             )
+        if c == "exit_fiery_path_north":
+            # Inside Fiery Path: head to the NORTH warp pad regardless of which
+            # side we entered from. fiery_path_cross only got us IN (its
+            # condition needs Route112); once on the FieryPath map neither it nor
+            # reach_fallarbor fire, so the agent wandered (goal=None, 1243 turns,
+            # never reached the y4 exit). Deactivates the instant cur leaves
+            # FieryPath -> Route112 north is picked up by reach_fallarbor.
+            # Stateless + direction-agnostic = loop-safe. Same Badge4-arc gate.
+            return (
+                gs.badge_count >= 3
+                and not gs.flag_badge04_get
+                and not gs.flag_route112_magma_cleared
+                and (gs.map_group, gs.map_num) == _FIERY_PATH
+            )
         if c == "reach_fallarbor":
             # First leg of the Lavaridge arc: Mauville -> Route111 -> Route112
             # SOUTH -> [fiery_path_cross routes across Fiery Path] -> Route112
@@ -906,6 +921,16 @@ GOAL_TABLE: list[Goal] = [
         target_map=(24, 14),      # FieryPath (region nav routes to the in-blob warp)
         condition="fiery_path_cross",
         desc="Route112 南で Fiery Path を横断して北 blob へ (Fallarbor 手前)",
+    ),
+    Goal(
+        # Inner leg of the crossing: once IN Fiery Path, walk to the north warp
+        # pad (min-y Fiery->Route112 warp, canon-walkable step-on pad) and warp
+        # out into Route112's north blob.
+        name="exit_fiery_path_north",
+        target_map=(24, 14),      # FieryPath
+        target_pos=(26, 4),       # north warp pad (step-on; BFS lands + warps)
+        condition="exit_fiery_path_north",
+        desc="Fiery Path 内: 北 warp (26,4) を踏んで Route112 北 blob へ抜ける",
     ),
     Goal(
         name="reach_fallarbor",
