@@ -205,7 +205,15 @@ pixel heuristic と RAM が食い違う時(例: battle_menu=True かつ in_battl
 群を一般解に置換できる。H-cb2(battle CB2 whitelist)も VLM tiebreaker で代替可能。
 → **次の実装候補**(hot loop に VLM を差すのでコスト設計を user 確認してから)。
 
-## H12. Mauville⇄Route111 南バウンス(2026-07-17 未解決・次の起点)
+## H12. Mauville⇄Route111 南バウンス(2026-07-17 ✅ RESOLVED)
+
+**真因 = 1行の変数 shadowing**(commit ad13077c5)。heuristic_button の main BFS 内に
+`from . import map_knowledge as mk_mod` のローカル import があり、mk_mod が関数全体で
+ローカル変数化。前方の Part B probe が mk_mod 参照で UnboundLocalError → `except: _seal=set()`
+で seal 空 → sandstorm 壁を見ず Route113(封鎖)を reachable と誤判定 → ban せず →
+main BFS が封鎖 Route113 strip を狙って None → path_memory fallback が Mauville へ戻す。
+NAV_DEBUG live trace で seal=0 を捕捉して確定。修正後 seal=10, Route113 ban, next=Route112(bfs=91)。
+
 
 回復パーティが Fallarbor へ向かえず Mauville⇄Route111 南(y130-139)で往復。全修正
 (nav A+B+C1 / wild-faint / VLM tiebreaker / badge latch)込みでも継続。
