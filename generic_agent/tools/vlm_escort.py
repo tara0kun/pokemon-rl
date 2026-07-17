@@ -78,10 +78,10 @@ def compute_bfs_hint(g, goal_map: tuple[int, int]) -> str:
     next_name = mc.name_for(*next_map) or ""
 
     target_tiles: set[tuple[int, int]] = set()
-    for direction, conn in info.connections.items():
-        if conn.get("map_name") == next_name:
+    for direction, conns in info.connections.items():
+        if any(c.get("map_name") == next_name for c in conns):
             target_tiles |= mc.exit_tiles_toward(
-                g.map_group, g.map_num, direction
+                g.map_group, g.map_num, direction, dest_name=next_name,
             )
     if not target_tiles:
         target_tiles |= mc.warp_tiles_for(

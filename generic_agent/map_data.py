@@ -40,6 +40,35 @@ MAP_GROUPS_URL = f"{POKEEMERALD_RAW}/data/maps/map_groups.json"
 _DEFAULT_DIM = (20, 20)
 
 
+def _norm_map_name(s: str) -> str:
+    """MAP_ROUTE_111 -> Route111 (connection/warp normalized form)."""
+    out: list[str] = []
+    for p in s.replace("MAP_", "").split("_"):
+        if not p:
+            continue
+        out.append(p[0].upper() + p[1:].lower() if p[0].isalpha() else p)
+    return "".join(out)
+
+
+def _parse_connections(raw) -> dict[str, list[dict]]:
+    """Group raw pokeemerald connections by direction into a LIST per side.
+
+    A side can hold more than one connection (Route111 left, Route124 right);
+    a dict[direction] would keep only the last and silently drop the others.
+    Pure function so the clobber invariant is unit-testable without a cache.
+    """
+    conns: dict[str, list[dict]] = {}
+    for c in raw or []:
+        d = c.get("direction")
+        if not d:
+            continue
+        conns.setdefault(d, []).append({
+            "map_name": _norm_map_name(c.get("map", "")),
+            "offset": int(c.get("offset", 0)),
+        })
+    return conns
+
+
 @dataclass
 class MapInfo:
     map_g: int
@@ -49,7 +78,11 @@ class MapInfo:
     width: int
     height: int
     collision: list[list[int]] = field(default_factory=list)  # [y][x] 0=walkable
-    connections: dict[str, dict] = field(default_factory=dict)  # "up": {"map_name":..., "offset":...}
+    # direction -> LIST of connections. A map can connect to more than one
+    # neighbour on the same side (Route111 left = Route113 offset0 + Route112
+    # offset20; Route124 right = Route125 + MossdeepCity). A dict[direction]
+    # dropped all but the last, losing Route113 -> the Fallarbor route (07-17).
+    connections: dict[str, list[dict]] = field(default_factory=dict)  # {"up": [{"map_name":..,"offset":..}, ...]}
     warps: list[dict] = field(default_factory=list)  # [{x,y,dest_map,dest_warp_id}]
     object_events: list[dict] = field(default_factory=list)  # [{x,y,script,flag}]
 
@@ -222,25 +255,7 @@ class MapCache:
                 b = struct.unpack_from("<H", data, off)[0]
                 row.append((b >> 10) & 0x3)
             collision.append(row)
-        conns: dict[str, dict] = {}
-        def _norm(s: str) -> str:
-            parts = s.replace("MAP_", "").split("_")
-            out: list[str] = []
-            for p in parts:
-                if not p:
-                    continue
-                if p[0].isalpha():
-                    out.append(p[0].upper() + p[1:].lower())
-                else:
-                    out.append(p)
-            return "".join(out)
-        for c in map_json.get("connections") or []:
-            d = c.get("direction")
-            if d:
-                conns[d] = {
-                    "map_name": _norm(c.get("map", "")),
-                    "offset": int(c.get("offset", 0)),
-                }
+        conns = _parse_connections(map_json.get("connections"))
         warps_raw = map_json.get("warp_events") or []
         def _safe_int(v) -> int:
             try:
@@ -251,7 +266,7 @@ class MapCache:
             {
                 "x": _safe_int(w.get("x", 0)),
                 "y": _safe_int(w.get("y", 0)),
-                "dest_map": _norm(str(w.get("dest_map", ""))),
+                "dest_map": _norm_map_name(str(w.get("dest_map", ""))),
                 "dest_warp_id": _safe_int(w.get("dest_warp_id", 0)),
             }
             for w in warps_raw
@@ -349,9 +364,10 @@ class MapCache:
         if info is None:
             return set()
         out: set[str] = set()
-        for d, conn in info.connections.items():
-            if conn["map_name"]:
-                out.add(conn["map_name"])
+        for conns in info.connections.values():
+            for conn in conns:
+                if conn["map_name"]:
+                    out.add(conn["map_name"])
         for w in info.warps:
             if w["dest_map"]:
                 out.add(w["dest_map"])
@@ -377,11 +393,21 @@ class MapCache:
         self, start_g: int, start_n: int,
         target_g: int, target_n: int,
         max_hops: int = 8,
+        banned_first_hops: set[str] | None = None,
     ) -> list[tuple[int, int]] | None:
         """Graph BFS over (connection + warp) neighbors. Returns list of
-        intermediate maps from start (exclusive) to target (inclusive)."""
+        intermediate maps from start (exclusive) to target (inclusive).
+
+        `banned_first_hops` (normalized map names) blocks expansion of the START
+        node into those neighbours only — used when a first hop turns out to be a
+        connection-lie (an edge that is all-wall on this side) or physically
+        unreachable, so the router re-plans through a different neighbour. Deeper
+        hops are NOT banned: a lie edge from A is valid when entered from another
+        side, and the ban re-applies once the agent actually stands on that map.
+        """
         if (start_g, start_n) == (target_g, target_n):
             return []
+        banned = {b.replace("_", "").lower() for b in (banned_first_hops or set())}
         q: deque[tuple[tuple[int, int], list[tuple[int, int]]]] = deque([
             ((start_g, start_n), [])
         ])
@@ -391,6 +417,8 @@ class MapCache:
             if len(path) >= max_hops:
                 continue
             for nbr_name in self.neighbor_maps(*cur):
+                if not path and nbr_name.replace("_", "").lower() in banned:
+                    continue  # ban applies to first hop from start only
                 nbr_pos = self.find_map_by_name(nbr_name)
                 if nbr_pos is None or nbr_pos in visited:
                     continue
@@ -435,27 +463,42 @@ class MapCache:
 
     def exit_tiles_toward(
         self, map_g: int, map_n: int, direction: str,
+        dest_name: str | None = None,
     ) -> set[tuple[int, int]]:
         """Boundary tiles in this map that walking `direction` will cross
-        into the connected map."""
+        into a connected map.
+
+        A side may hold several connections (Route111 left = Route113 + Route112);
+        their edge-strips are disjoint (offset-separated). Pass `dest_name` to get
+        only the strip for that neighbour — the router MUST do this, else the union
+        of strips would let BFS aim at the wrong neighbour's edge. Omitting it
+        returns the union (legacy callers / diagnostics).
+        """
         # Prefer empirical override when available (catches canon-game
-        # walkable mismatches like Route 104 → Rustboro).
+        # walkable mismatches like Route 104 → Rustboro). Keyed by direction
+        # only; today's single override is on a single-connection side.
         key = (map_g, map_n, direction)
-        if key in self._EMPIRICAL_EXIT_TILES:
+        if key in self._EMPIRICAL_EXIT_TILES and dest_name is None:
             return set(self._EMPIRICAL_EXIT_TILES[key])
         info = self.get(map_g, map_n)
         if info is None or direction not in info.connections:
             return set()
-        conn = info.connections[direction]
+        want = (dest_name or "").replace("_", "").lower()
+        out: set[tuple[int, int]] = set()
+        for conn in info.connections[direction]:
+            if want and conn.get("map_name", "").replace("_", "").lower() != want:
+                continue
+            out |= self._exit_strip_for(info, direction, conn)
+        return out
+
+    def _exit_strip_for(
+        self, info: "MapInfo", direction: str, conn: dict,
+    ) -> set[tuple[int, int]]:
+        """Walkable edge tiles for ONE connection. A tile only warps if both
+        sides are walkable and it lies in the offset-overlap of the dest map
+        (Route106 down->Dewford offset 60: only x60-79 overlap). Dest
+        unresolvable offline -> whole walkable edge (old behaviour)."""
         offset = int(conn.get("offset", 0))
-        # A tile only warps across a connection if BOTH sides are walkable and
-        # it lies in the stretch of the edge that overlaps the destination map
-        # (offset..offset+dest_span-1). Route106 down->DewfordTown (offset 60)
-        # is 80 wide but only x60-79 overlap Dewford, and of those only the
-        # ones landing on a walkable Dewford tile actually warp — returning the
-        # whole edge (or the whole overlap) made the planner aim at a
-        # non-warping tile like (62,19) and press Down forever. When the dest
-        # map can't be resolved offline, fall back to the whole walkable edge.
         dest = self._info_of(conn.get("map_name", ""))
 
         def dest_ok(src_along: int, dest_edge_is_far: bool, horizontal: bool) -> bool:

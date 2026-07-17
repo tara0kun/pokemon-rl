@@ -422,8 +422,10 @@ class MapKnowledgeStore:
             pass
         # Exits per direction from canon connections (no empirical fix here;
         # heur or map_data layer can override at decision time).
-        for direction, conn in info.connections.items():
-            offset = conn.get("offset", 0) if isinstance(conn, dict) else 0
+        # Coarse per-direction exit hint = whole walkable edge (offset/dest
+        # filtering happens in map_data.exit_tiles_toward, not here). A side
+        # may hold >1 connection now; the whole-edge union is the right hint.
+        for direction in info.connections:
             tiles: set[tuple[int, int]] = set()
             if direction == "up":
                 y_edge = 0
@@ -439,7 +441,6 @@ class MapKnowledgeStore:
                 tiles = {(x_edge, y) for y in range(info.height) if info.walkable(x_edge, y)}
             if tiles:
                 mk.exits[direction] = tiles
-            _ = offset
         mk.canon_loaded = True
 
     def all_maps(self) -> list[tuple[int, int]]:

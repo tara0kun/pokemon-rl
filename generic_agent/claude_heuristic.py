@@ -463,10 +463,16 @@ def heuristic_button(
                         # on_goal_warp check + reason string below.
                         next_hop_name = region_hop or next_hop_name
                     else:
-                        for direction, conn in cur_info.connections.items():
-                            if conn["map_name"] == next_hop_name:
+                        for direction, conns in cur_info.connections.items():
+                            if any(
+                                c["map_name"] == next_hop_name for c in conns
+                            ):
+                                # dest_name: a side can hold >1 connection
+                                # (Route111 left = Route113 + Route112); take
+                                # ONLY next_hop's strip, not the union.
                                 target_tiles |= mc.exit_tiles_toward(
                                     gs.map_group, gs.map_num, direction,
+                                    dest_name=next_hop_name,
                                 )
                         if not target_tiles:
                             target_tiles |= mc.warp_tiles_for(
