@@ -798,6 +798,26 @@ def heuristic_button(
                             gs.map_group, gs.map_num, gs.x, gs.y,
                         )
                         if step_btn is not None:
+                            # Just STEPPED ONTO a walkable warp tile this turn
+                            # (same_pos_streak==0): a step-onto warp (Fiery Path
+                            # entry (11,36)) already fired from the step, so the
+                            # read is a mid-fade transient. Pressing warp_step
+                            # here injected an extra move into the fade and
+                            # bounced the agent straight back out (Route112 ->
+                            # Fiery Path -> Route112, never crossing). Settle one
+                            # turn with B (harmless during a fade); if we're still
+                            # on the warp next turn it's a Woods-style
+                            # press-through and warp_step fires then.
+                            _on_warp = any(
+                                w.get("x") == gs.x and w.get("y") == gs.y
+                                for w in getattr(cur_info, "warps", []) or []
+                            )
+                            if (
+                                _on_warp
+                                and cur_info.walkable(gs.x, gs.y)
+                                and same_pos_streak == 0
+                            ):
+                                return "B", "warp_settle"
                             # Consumed step-on pad: if we warped in and landed ON
                             # a walkable warp tile that IS the goal target (Fiery
                             # Path north pad (26,4)), warp_step_direction's door
