@@ -205,6 +205,34 @@ pixel heuristic と RAM が食い違う時(例: battle_menu=True かつ in_battl
 群を一般解に置換できる。H-cb2(battle CB2 whitelist)も VLM tiebreaker で代替可能。
 → **次の実装候補**(hot loop に VLM を差すのでコスト設計を user 確認してから)。
 
+## H12. Mauville⇄Route111 南バウンス(2026-07-17 未解決・次の起点)
+
+回復パーティが Fallarbor へ向かえず Mauville⇄Route111 南(y130-139)で往復。全修正
+(nav A+B+C1 / wild-faint / VLM tiebreaker / badge latch)込みでも継続。
+
+**切り分け済み(全部 offline で反証)**:
+- tile_map 汚染: 否定(Route111 は 3+blocked が 4 タイルのみ)
+- blocked set: seal/water/warps/**elevation/ledges 全部込みでも BFS は Route112 strip
+  (0,66-71)に到達(dist 89、start (19,130)/(133)/(137) 全部 reach)
+- Part B probe: offline は (19,133) 等から正しく Route113 のみ ban、chain=[Route112,
+  Route113, Fallarbor]
+- **FRESH path_memory + tile_map で実 `heuristic_button` を呼ぶと Up(北・正解)を返す**
+  (reward_pick:Up@north_outdoor 経由)。→ **live の path_memory バウンス履歴が
+  toward_exit:Down / path_memory_exit:Down を自己強化**して南へ引く
+
+**未解明(offline 再現不能・live instrumentation 要)**:
+- live turn4 で `mapbfs:Down->MauvilleCity` = probe が **Route112 も** ban(offline は
+  しない)。両 hop ban で map_path が MauvilleCity(南)を最短に選ぶ。live/offline の
+  probe 差の原因が不明(seal は canon 10 triggers で一致するはず)
+- primary mapbfs が大半の turn で何も返さず fallback(path_memory→reward_pick)に落ちる
+
+**次の一手**: heuristic_button の mapbfs block に env-gate した debug print を足し
+(map_path chain / banned_hops / target_tiles / bfs_path を Route111 で dump)、1 run で
+live の probe が何を ban しているか・BFS が何故 None かを確定する。その上で
+(a) probe の live/offline 差を潰す or (b) path_memory fallback に anti-bounce
+(直前 map へ戻る exit を抑制)を入れる。**reward_pick は正しく北を指すので、
+path_memory が南を強制しなければ抜けられる**はず。
+
 ## 記録規則
 
 仮説を検証したら結果をこのファイルに追記(棄却/確定/部分確定 + 日付 + 証拠)。新しい chronic stuck は必ず「decisions.jsonl の src 分布」を証拠にしてから仮説化する。
