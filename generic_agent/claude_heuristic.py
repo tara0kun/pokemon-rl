@@ -50,6 +50,7 @@ from . import (
     knn_explorer as knn_mod,
     llm_advisor as llm_mod,
     map_data as map_data_mod,
+    map_knowledge as mk_mod,
     memory,
     path_memory as path_memory_mod,
     preprocess,
@@ -378,10 +379,70 @@ def heuristic_button(
             cur_info = None
             mc = None
         if cur_info and mc is not None:
+            # Part B (hop-fallback): map_path returns the SHORTEST map chain,
+            # which is often a first hop we can't actually take -- a
+            # connection-lie (an all-wall edge -> no exit tiles, e.g.
+            # Route112->Route113 up) or an edge that is physically sealed from
+            # here (Route111 south -> the Route113 strip is behind the
+            # sandstorm triggers). The BFS below then finds no path and the
+            # agent wanders (the 5595-turn Route112 stall). So first BAN the
+            # dead first hops and let map_path re-route (Route111 -> Route112 ->
+            # Route113 -> Fallarbor). The probe BFS blocks only permanent walls
+            # + sandstorm triggers -- the most permissive reachability, so it
+            # bans a hop only when it is GENUINELY sealed, never a merely
+            # water-/npc-crossable one (those still resolve in the main BFS
+            # fallbacks). Interact-on-target-map goals aim at a tile, not a map
+            # boundary, so they skip this.
+            banned_hops: set[str] = set()
+            _is_interact_here = (
+                current_goal is not None
+                and getattr(current_goal, "target_pos", None) is not None
+                and (gs.map_group, gs.map_num) == current_goal.target_map
+            )
+            if not _is_interact_here and cur_info.walkable(gs.x, gs.y):
+                try:
+                    _mkp = mk_mod.get_store().get(gs.map_group, gs.map_num)
+                    _seal = (
+                        mc.permanent_blocked(gs.map_group, gs.map_num)
+                        | getattr(_mkp, "blocked_triggers", set())
+                    )
+                except Exception:
+                    _seal = set()
+                for _hop_try in range(3):
+                    _pchain = mc.map_path(
+                        gs.map_group, gs.map_num,
+                        effective_goal_map[0], effective_goal_map[1],
+                        max_hops=8, banned_first_hops=banned_hops,
+                    )
+                    if not _pchain or _pchain[0] == effective_goal_map:
+                        break  # no path, or first hop IS the goal map (nothing to ban)
+                    _hop = mc.name_for(*_pchain[0])
+                    if not _hop:
+                        break
+                    _pt: set[tuple[int, int]] = set()
+                    for _d, _cs in cur_info.connections.items():
+                        if any(c["map_name"] == _hop for c in _cs):
+                            _pt |= mc.exit_tiles_toward(
+                                gs.map_group, gs.map_num, _d, dest_name=_hop,
+                            )
+                    if not _pt:
+                        _pt |= mc.warp_tiles_for(
+                            gs.map_group, gs.map_num, _hop,
+                        )
+                    if not _pt:
+                        banned_hops.add(_hop)  # (i) connection-lie: no exit
+                        continue
+                    if mc.bfs_to_tile(
+                        gs.map_group, gs.map_num, (gs.x, gs.y), _pt,
+                        blocked_tiles=_seal - _pt,
+                    ) is None:
+                        banned_hops.add(_hop)  # (ii) sealed from here
+                        continue
+                    break  # reachable first hop found
             mh_chain = mc.map_path(
                 gs.map_group, gs.map_num,
                 effective_goal_map[0], effective_goal_map[1],
-                max_hops=8,
+                max_hops=8, banned_first_hops=banned_hops,
             )
             if mh_chain is None:
                 mh_chain = pm.find_path_to_map(
