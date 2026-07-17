@@ -122,7 +122,22 @@ teach_rock_smash が繰り返し失敗(前セッション 53/59 turn 費やし k
    (overworld なら Start で開く / メニュー中は Start 禁止、hm_teach.py)。
 2. **修正後も VLM は 240x160 の GBA メニューを読めない**。reason が幻覚だらけ
    ("CRY OF SHADOWISH"、"Nuzleaf Shroomish"、"VU meter")。カーソル位置も画面種別も
-   当てずっぽう。**この精密メニュー操作に VLM は根本的に不向き**。
+   当てずっぽう。**この精密メニュー操作に VLM は根本的に不向き** ← **2026-07-17 一部訂正(下記)**。
+
+### ★ 2026-07-17 訂正: 「VLM が読めない」は画像が原因だった([[vlm-image-resolution]])
+真因は VLM の能力でなく、送っていた画像が **240x160 の q70 JPEG** で潰れていたこと。
+`preprocess` を **拡大3x(nearest)+PNG** に変えたら(commit d5ae95e20)、Haiku ですら
+bag/party/context を正読するようになった。teach 経路(rescue_brain._call_haiku)の replay:
+- **読解 hallucination は解消**。onrs/ctx/party3/plist2 で正しい画面認識・判断。
+- **プロンプトに移動知識**(party 左→右は Right、CLOSE BAG から Up 等)を足して party3(YES→A)
+  と plist2(Grovyle 回避 Right)も修正。
+- **残存**: bagp(cursor=CLOSE BAG)で「ROCK SMASH が選択中」と**期待バイアスの誤認**。
+  → 曖昧なカーソル状態では VLM はまだ取りこぼす。self-correcting ループ(誤押下→bag 閉→
+  cb2 で再オープン)が吸収するが、**精密な一度きり操作は決定論(下記)の方が依然安全**。
+
+**結論の更新**: 「VLM は精密操作に不向き」は言い過ぎ。正しくは「**読解は画像修正で解決。
+精密な固定操作は VLM 単独より VLM+RAM検証/決定論のハイブリッドが確実**」。VLM の真価は
+ambiguous/一般判断(navigate/rescue)側。次はそこを再測定(task #2)。
 
 ### ★ 実機で手動完遂した検証済み決定論シーケンス(これを hm_teach に焼くべき)
 - **最重要教訓: 単発・遅め(frames≈10-12, sleep≈0.6s)なら入力は確実。速い連打はアニメ中に

@@ -37,7 +37,16 @@ SYSTEM_PROMPT_TEACH_HM = (
     "(4) If asked 'Forget a move?' / which move to delete, pick the FIRST move. "
     "(5) LOOK at the screenshot and describe the CURRENT screen in your reason "
     "(overworld / start-menu / bag / party-list / dialog) so you don't repeat a "
-    "button that isn't working."
+    "button that isn't working. "
+    "NAVIGATION FACTS (this game): "
+    "- The SELECTED bag item is the one with the ► arrow AND whose description "
+    "shows in the bottom-left box. If the arrow is on CLOSE BAG, press Up to "
+    "reach the items (HM06 ROCK SMASH sits just above CLOSE BAG). "
+    "- On the party list, slot0 (GROVYLE) is the big box on the LEFT; the "
+    "POOCHYENA are the RIGHT column. From GROVYLE press RIGHT to enter the right "
+    "column (Down on the left just goes to CANCEL). Then Up/Down to pick a "
+    "POOCHYENA. "
+    "- On a YES/NO prompt, A confirms YES."
 )
 
 
