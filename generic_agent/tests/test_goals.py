@@ -359,6 +359,25 @@ class TestDewfordChain(GoalsTestBase):
         self.assertEqual(g.name, "smash_route111_rock")
         self.assertEqual(g.target_pos, (19, 100))
 
+    def test_fiery_path_cross_fires_on_route112_south(self) -> None:
+        # Route112 south blob (holds the higher-y Fiery Path warp) can only
+        # reach Fallarbor across Fiery Path -> fiery_path_cross, NOT
+        # reach_fallarbor (which would ping-pong Route111<->Route112). Uses the
+        # real Route112 collision from the map cache to resolve the component.
+        base = dict(map_group=0, map_num=27, badge_count=3,
+                    flag_steven_letter_delivered=True,
+                    flag_dock_rejected_devon=True,
+                    flag_devon_goods_delivered=True,
+                    flag_rock_smash_hm=True,        # HM06 received + taught, so the
+                    party_moves=[[249, 0, 0, 0]])   # Rock Smash chain is retired
+        gs_south = make_gs(x=26, y=44, **base)   # the 5595-turn stall tile
+        self.assertEqual(goals_mod.current_goal(gs_south).name,
+                         "fiery_path_cross")
+        # North blob (after crossing) -> reach_fallarbor takes over.
+        gs_north = make_gs(x=22, y=10, **base)
+        self.assertEqual(goals_mod.current_goal(gs_north).name,
+                         "reach_fallarbor")
+
     def test_badge4_retires_lavaridge_arc(self) -> None:
         # Once Flannery is beaten (FLAG_BADGE04_GET) the Lavaridge arc retires
         # (Petalburg/Norman is the next unimplemented step -> None).

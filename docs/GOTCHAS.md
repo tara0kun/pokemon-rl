@@ -19,6 +19,9 @@
 - map.bin の寸法が layouts.json と合わないことがある → 幅候補から因数分解で推定するフォールバックあり(map_data.py:171-180)
 - pokeemerald からの map データは**初回アクセス時にネットワーク DL**(map_data.py:106-111)。オフラインだと BFS 系が None を返し、heuristic は素の探索に落ちる(設計上のフォールバック)
 - **battler slot は敵味方交互(0/2=自分、1/3=敵)**。`active_hp()` は slot 0 のみ = **ダブルでは自分の2体目(slot 2)のひんしが構造的に見えない**。Route111 Twins で 900 turn 停止した真因(07-16 fix)。ダブルの自分側は `battle_moves.player_battler_hps(double=True)` で両方読む
+- **connection は direction 毎に複数あり得る**(全 518 map 中 Route111 left / Route124 right の 2 件)。`connections` は `dict[direction] -> list[conn]`。単一 dict にすると clobber(Route111→Route113 消失で Fallarbor 直通不可、07-17 fix)。exit_tiles_toward は必ず `dest_name` を渡して1接続の strip だけ取る(union は誤 map の edge を狙う)
+- **connection の存在 ≠ 交差可能**。Route112→Route113 up は static 全壁の connection-lie(exit_tiles=∅)、Route112→Lavaridge left は別 walkable component のみ。map_path は最短の嘘 hop を選ぶので、exit_tiles ∅ / BFS 不達の first-hop は Part B が ban して再計画する(claude_heuristic の hop-probe)
+- **Route112 は Mt.Chimney で2 blob に分断**(Fiery Path のみで接続)。map graph は map を1 node に潰すので Route112→FieryPath→Route112 の再入を表現できず ping-pong する。`fiery_path_cross` goal(南 blob = 高y Fiery warp と同 component の時だけ発火)で横断を明示。同型の Lavaridge SW pocket(cid27)は Segment3 で要対応
 - **タマゴは hp>0 だが出せない**。HP だけで「控えがいる」と数えると、開いていないパーティリストを操作し続ける。`is_egg`(暗号化 M substruct の IV word bit30)で除外する。Lavaridge の Wynaut タマゴは NPC の YES/NO を dialog の A 連打が YES と答えて受け取るので、放っておくと必ず踏む(07-16、verifier 指摘)
 
 ## vision(screen_features)

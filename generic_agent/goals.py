@@ -48,6 +48,40 @@ def _peeko_done(gs) -> bool:
     return False
 
 
+# Route112 (0,27) is one map split by Mt.Chimney into two walkable blobs that
+# only connect through the Fiery Path cave. The SOUTH blob (entered from
+# Route111) can reach Fallarbor ONLY by crossing Fiery Path; the NORTH blob
+# reaches it via Route111 north -> Route113. The map graph collapses a map to
+# one node, so it can't express "Route112 -> Fiery Path -> Route112" and the
+# router ping-pongs Route111<->Route112. fiery_path_cross fixes that: while in
+# the south blob it routes to Fiery Path. "South blob" = the component holding
+# the higher-y Fiery Path warp (derived from map data, not a hardcoded tile).
+_ROUTE112 = (0, 27)
+
+
+def _in_route112_fiery_south(gs) -> bool:
+    if (getattr(gs, "map_group", None), getattr(gs, "map_num", None)) != _ROUTE112:
+        return False
+    try:
+        from . import map_data as _md
+        mc = _md.get_cache()
+        info = mc.get(*_ROUTE112)
+        if info is None:
+            return False
+        fiery = [
+            (w["x"], w["y"]) for w in (info.warps or [])
+            if "Fiery" in str(w.get("dest_map", ""))
+        ]
+        if not fiery:
+            return False
+        south_warp = max(fiery, key=lambda t: t[1])  # higher y = south side
+        tile2cid, _ = mc._components(*_ROUTE112)
+        south_cid = tile2cid.get(south_warp)
+        return south_cid is not None and tile2cid.get((gs.x, gs.y)) == south_cid
+    except (OSError, RuntimeError, KeyError, AttributeError):
+        return False
+
+
 LETTER_DONE_MARKER = config.MEMORY_DIR / "steven_letter_done.marker"
 DEVON_DELIVERED_MARKER = config.MEMORY_DIR / "devon_delivered.marker"
 
@@ -559,13 +593,27 @@ class Goal:
                 (nx, ny) == (19, 100)
                 for (nx, ny, _g) in getattr(gs, "npcs_on_map", []) or []
             )
+        if c == "fiery_path_cross":
+            # On Route112 SOUTH, the only way to Fallarbor is across Fiery Path
+            # (the map graph can't route Route112->FieryPath->Route112, so
+            # reach_fallarbor + hop-fallback ping-pongs Route111<->Route112).
+            # Fire here to route to the Fiery Path warp; deactivates once we
+            # cross into the north blob (reach_fallarbor then takes over via
+            # Route111 north -> Route113). Same Badge4-arc gate as below.
+            return (
+                gs.badge_count >= 3
+                and not gs.flag_badge04_get
+                and not gs.flag_route112_magma_cleared
+                and _in_route112_fiery_south(gs)
+            )
         if c == "reach_fallarbor":
             # First leg of the Lavaridge arc: Mauville -> Route111 -> Route112
-            # (SE) -> [Fiery Path warp, region-aware nav] -> Route112 (N) ->
-            # Route113 -> Fallarbor. Route112 is one map split by Mt.Chimney
-            # (multi-warp-component True), so the crossing goes through Fiery
-            # Path. Gated to the pre-Fallarbor maps so meteor_falls_theft takes
-            # over once we're at/past Fallarbor.
+            # SOUTH -> [fiery_path_cross routes across Fiery Path] -> Route112
+            # NORTH -> Route111 north -> Route113 -> Fallarbor. Route112 is one
+            # map split by Mt.Chimney into two blobs joined only by Fiery Path;
+            # the crossing is handled by the higher-priority fiery_path_cross
+            # goal, not the map graph. Gated to the pre-Fallarbor maps so
+            # meteor_falls_theft takes over once we're at/past Fallarbor.
             return (
                 gs.badge_count >= 3
                 and not gs.flag_badge04_get
@@ -844,6 +892,14 @@ GOAL_TABLE: list[Goal] = [
         target_pos=(19, 100),     # east-lane BREAKABLE_ROCK (approach from (19,101))
         condition="smash_route111_rock",
         desc="Route111 (19,100) の岩を Rock Smash で砕いて北へ",
+    ),
+    Goal(
+        # Higher priority than reach_fallarbor: on Route112 south, cross Fiery
+        # Path first (the map graph can't route the two-Route112 crossing).
+        name="fiery_path_cross",
+        target_map=(24, 14),      # FieryPath (region nav routes to the in-blob warp)
+        condition="fiery_path_cross",
+        desc="Route112 南で Fiery Path を横断して北 blob へ (Fallarbor 手前)",
     ),
     Goal(
         name="reach_fallarbor",

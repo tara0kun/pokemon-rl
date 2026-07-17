@@ -145,6 +145,27 @@ teach_rock_smash が繰り返し失敗(前セッション 53/59 turn 費やし k
 - 完成後の live テストは「次の HM(Strength/Surf 等)」でのみ可能(Rock Smash は習得済で
   run_teach_subtask が即 True を返すため再テスト不可)
 
+## H10. connections clobber → Fallarbor 直通不可(2026-07-17 ✅ RESOLVED A+B+C1)
+
+8000turn 完走で Route112(26,44)に 5595turn stuck。真因 = `map_data` が connections を
+`dict[direction]` に変換していたため、Route111 の **left 接続2つ**(Route113 offset0 /
+Route112 offset20)のうち **Route113 が Route112 に上書きされて消失** → BFS が
+Route111→Route113→Fallarbor 直通を知らず遠回りで詰まった。
+
+- **Part A(123cb3073)**: `dict[str, list[dict]]` に変更。全 518 map 監査で clobber は
+  Route111 left / Route124 right の 2 件のみ(Route124 は post-Surf で顕在化)。
+- **Part B(7be859742)**: A 単独は Route111 南で regression(Route113 strip は sandstorm
+  trigger で南から封鎖)。map_path の最短 hop が「connection-lie(Route112→Route113 up=
+  全壁)」や「南から封鎖」の時、hop-probe(permanent+trigger のみ block した BFS)で
+  ban して re-plan。
+- **Part C1**: A+B だけだと Route111⇄Route112 ping-pong(map graph が Route112→FieryPath→
+  Route112 の再入不能)。`fiery_path_cross` goal で Route112 南 blob(高y Fiery warp と同
+  component)から Fiery Path 横断を明示。
+- **検証済み全区間**(offline BFS): Route111南→(left y66-71)Route112南→[Fiery Path]→
+  Route112北→(right)Route111北(y28-31)→(left y7-10)Route113→Fallarbor。
+- **残 follow-up**: C2(region graph に connection edge 追加, Segment3 の Lavaridge SW
+  pocket で必要) / Route124 clobber の live 確認(Badge7 頃)。
+
 ## 記録規則
 
 仮説を検証したら結果をこのファイルに追記(棄却/確定/部分確定 + 日付 + 証拠)。新しい chronic stuck は必ず「decisions.jsonl の src 分布」を証拠にしてから仮説化する。
