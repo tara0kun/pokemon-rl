@@ -159,6 +159,20 @@ CB2_MENU_SET = frozenset({0x080BB775})
 BATTLE_TYPE_TRAINER = 0x0008
 MOVE_ROCK_SMASH = 249  # MOVE_ROCK_SMASH (moves.h)
 
+# Monotonic badge latch, immune to the SaveBlock1 DMA drop-flicker: a
+# relocation-time read intermittently returns 0 for a badge flag that IS set,
+# which dips badge_count below its true value for a frame and fires stale
+# pre-badge goals (mauville_gym_wattson / enter_rustboro_gym / reach_mauville
+# fired ~4% of Route111 turns). Badges are never un-earned, so once a badge bit
+# is seen True keep it True. Process-lifetime; a fresh valid read re-latches
+# after a restart. Safe as a "genuinely-True past event" latch (NOT a
+# future-event `not X` gate). reset_flag_latches() is for tests.
+_BADGE_BITS_LATCHED: set[int] = set()
+
+
+def reset_flag_latches() -> None:
+    _BADGE_BITS_LATCHED.clear()
+
 # Pokemon substruct order by personality % 24 (Gen 3 box-mon encryption).
 _SUBSTRUCT_PERMS = [
     "GAEM", "GAME", "GEAM", "GEMA", "GMAE", "GMEA",
@@ -465,6 +479,8 @@ def read_state(client: MGBAClient) -> GameState:
             _fn = 0x867 + _bi
             _fb = client.read8(ptr + SB1_FLAGS_OFFSET + _fn // 8)
             if (_fb >> (_fn % 8)) & 1:
+                _BADGE_BITS_LATCHED.add(_bi)  # earned -> never drops (DMA flicker)
+            if _bi in _BADGE_BITS_LATCHED:
                 badges += 1
         flag_byte_birch = client.read8(ptr + SB1_FLAGS_OFFSET + (0x52 // 8))
         flag_birch = bool(flag_byte_birch & (1 << (0x52 % 8)))

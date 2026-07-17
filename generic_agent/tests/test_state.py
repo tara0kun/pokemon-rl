@@ -142,5 +142,40 @@ class TestMGBAClientParsing(unittest.TestCase):
             c.tap("X")
 
 
+class BadgeLatchTest(unittest.TestCase):
+    """The badge latch must never let a SaveBlock1 DMA drop-flicker (a frame
+    that reads 0 for a set badge flag) reduce the earned badge count."""
+
+    def setUp(self) -> None:
+        import generic_agent.state as st
+        self.st = st
+        st.reset_flag_latches()
+
+    def tearDown(self) -> None:
+        self.st.reset_flag_latches()
+
+    def _count(self, bits_true: set[int]) -> int:
+        # mirrors the read_state badge loop exactly
+        st = self.st
+        badges = 0
+        for bi in range(8):
+            if bi in bits_true:
+                st._BADGE_BITS_LATCHED.add(bi)
+            if bi in st._BADGE_BITS_LATCHED:
+                badges += 1
+        return badges
+
+    def test_drop_flicker_does_not_lower_count(self) -> None:
+        self.assertEqual(self._count({0, 1, 2}), 3)   # Badge 3 earned
+        self.assertEqual(self._count(set()), 3)       # DMA flicker -> still 3
+        self.assertEqual(self._count({0, 1, 2, 3}), 4)  # Badge 4 earned
+        self.assertEqual(self._count(set()), 4)       # still 4, never dips
+
+    def test_reset_clears_latch(self) -> None:
+        self._count({0, 1, 2})
+        self.st.reset_flag_latches()
+        self.assertEqual(self._count(set()), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
