@@ -181,6 +181,30 @@ Route111→Route113→Fallarbor 直通を知らず遠回りで詰まった。
 - **残 follow-up**: C2(region graph に connection edge 追加, Segment3 の Lavaridge SW
   pocket で必要) / Route124 clobber の live 確認(Badge7 頃)。
 
+## H11. VLM 画面分類 >> pixel heuristic(screen_features)(2026-07-17 実測、Option1 task#2)
+
+拡大PNG化([[vlm-image-resolution]])後、脆い `screen_features`(白比率)を VLM で置換できるか
+実測。ground-truth 5 フレームで比較(同一 Haiku 経路):
+
+| frame | 正解 | screen_features | VLM |
+|---|---|---|---|
+| Pokedex list | MENU | **battle_menu=True(誤)** | region_map/pokedex ✓ |
+| region map | MENU | all False(誤) | region_map/pokedex ✓ |
+| double戦 party選択 | BATTLE | all False(誤) | party_select ✓ |
+| 戦闘前 dialog | BATTLE | letter_entry(誤) | pre-battle dialog ✓ |
+| overworld(PC内) | OVERWORLD | **dialog=True(誤)** | overworld ✓ |
+
+**VLM 5/5 正解 vs screen_features 1/5**。`battle_menu` false-positive(Pokedex)がまさに
+4000turn stall の元凶で、その対策に入れた cb2-guard + ram_battle_recent + menu-CB2 hardcode
+(0x080BB775)は全部この脆い heuristic を patch していたもの。
+
+**移行方針(patch tower 脱却)**: screen_features を毎ターン VLM 置換はコスト不可($0.0005/call ×
+数千turn)。正しくは **FrameCache(frame_hash)でキャッシュした VLM 分類を tiebreaker** に使う:
+pixel heuristic と RAM が食い違う時(例: battle_menu=True かつ in_battle stale)だけ VLM に
+「これは本当に battle か?」を確認させる。稀 & キャッシュ効くのでコスト無視でき、hardcode CB2
+群を一般解に置換できる。H-cb2(battle CB2 whitelist)も VLM tiebreaker で代替可能。
+→ **次の実装候補**(hot loop に VLM を差すのでコスト設計を user 確認してから)。
+
 ## 記録規則
 
 仮説を検証したら結果をこのファイルに追記(棄却/確定/部分確定 + 日付 + 証拠)。新しい chronic stuck は必ず「decisions.jsonl の src 分布」を証拠にしてから仮説化する。
