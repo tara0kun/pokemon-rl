@@ -181,6 +181,12 @@ _GOAL_BYPASS_VISITED = {
     "heal_at_slateport",
     # Mauville PC: re-targetable for every heal cycle through the Wattson gym.
     "heal_at_mauville",
+    # Fiery Path is a CROSSING, not a one-shot waypoint: FieryPath (24,14) gets
+    # marked visited the instant the agent steps in, but it must keep routing
+    # there (and back in on each pass) until it exits into Route112's NORTH
+    # blob. Without the bypass, one visit disabled fiery_path_cross and the
+    # agent fell to reach_fallarbor, oscillating Route111<->Route112 south.
+    "fiery_path_cross",
 }
 
 

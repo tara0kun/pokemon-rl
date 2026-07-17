@@ -378,6 +378,23 @@ class TestDewfordChain(GoalsTestBase):
         self.assertEqual(goals_mod.current_goal(gs_north).name,
                          "reach_fallarbor")
 
+    def test_fiery_path_cross_survives_visited_suppression(self) -> None:
+        # Fiery Path is a CROSSING: FieryPath (24,14) is marked visited the
+        # instant we step in, but fiery_path_cross must keep firing (it's in
+        # _GOAL_BYPASS_VISITED) until we exit into the north blob. Without the
+        # bypass, one visit dropped it to reach_fallarbor and the agent
+        # oscillated Route111<->Route112 south for 1000+ turns (07-17).
+        goals_mod.record_map_visit(24, 14)   # FieryPath now "visited"
+        base = dict(map_group=0, map_num=27, badge_count=3,
+                    flag_steven_letter_delivered=True,
+                    flag_dock_rejected_devon=True,
+                    flag_devon_goods_delivered=True,
+                    flag_rock_smash_hm=True,
+                    party_moves=[[249, 0, 0, 0]])
+        gs_south = make_gs(x=38, y=46, **base)  # a live oscillation tile
+        self.assertEqual(goals_mod.current_goal(gs_south).name,
+                         "fiery_path_cross")
+
     def test_badge4_retires_lavaridge_arc(self) -> None:
         # Once Flannery is beaten (FLAG_BADGE04_GET) the Lavaridge arc retires
         # (Petalburg/Norman is the next unimplemented step -> None).
