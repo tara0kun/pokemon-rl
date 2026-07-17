@@ -1626,7 +1626,22 @@ def run(
                 enemy_cur_hp = battle_moves_mod.enemy_hp(client)[0]
             except (OSError, RuntimeError, EmulatorError):
                 enemy_cur_hp = -1
-            if enemy_cur_hp == 0:
+            try:
+                our_active_hp = battle_moves_mod.active_hp(client)
+            except (OSError, RuntimeError, EmulatorError):
+                our_active_hp = -1
+            if our_active_hp == 0:
+                # OUR active mon just fainted in a WILD battle -> the game opens
+                # the party list to pick a replacement. The trainer path had
+                # SEND_OUT_SEQ for this; the wild path did NOT, so the agent
+                # looped the low-HP RUN sequence at hp0 forever (Route112: lead
+                # fainted, 33 wild_run_lowhp@hp0 presses, no progress). active_hp
+                # is gBattleMons[0] = the CURRENT active battler, so it reflects
+                # a just-sent replacement (not the still-fainted party slot 0).
+                # SEND_OUT_SEQ navigates to a usable mon; if the whole party is
+                # down its A presses ride the whiteout text out to the Center.
+                battle_move_queue = list(SEND_OUT_SEQ)
+            elif enemy_cur_hp == 0:
                 # Wild enemy fainted -> the battle is ending and post-KO text
                 # plays: XP, and at L29 "Grovyle wants to learn LEAF BLADE /
                 # delete a move?". Mash A: it advances the text AND answers the
