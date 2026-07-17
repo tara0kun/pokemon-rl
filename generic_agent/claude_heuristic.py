@@ -602,7 +602,12 @@ def heuristic_button(
                         gs.map_group, gs.map_num,
                     )
                     try:
-                        from . import map_knowledge as mk_mod
+                        # NB: mk_mod is the module-level import. A local
+                        # `from . import map_knowledge as mk_mod` here made
+                        # mk_mod a function-local, so the Part B probe's earlier
+                        # use of mk_mod raised UnboundLocalError -> its seal was
+                        # silently empty -> it never banned the sandstorm-sealed
+                        # Route113 hop and the agent bounced Mauville<->Route111.
                         mk = mk_mod.get_store().get(
                             gs.map_group, gs.map_num,
                         )
