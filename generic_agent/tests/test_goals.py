@@ -525,6 +525,9 @@ class TestLavaridgeArc(GoalsTestBase):
         base = dict(
             badge_count=3, party_count=5,
             party0_hp=100, party0_max_hp=128,
+            # Assume already stocked so the nav/routing tests aren't diverted by
+            # buy_potions; the shop/heal tests override bag_heal_qty explicitly.
+            bag_heal_qty=10, money=20000,
             flag_steven_letter_delivered=True,
             flag_dock_rejected_devon=True,
             flag_devon_goods_delivered=True,
@@ -613,6 +616,50 @@ class TestLavaridgeArc(GoalsTestBase):
             map_group=0, map_num=12, x=5, y=10, flag_badge04_get=True,
             flag_route112_magma_cleared=True,
             flag_mtchimney_magma_defeated=True)))
+
+    def test_buy_potions_fires_low_stock_before_cable_car(self) -> None:
+        # H14: post-theft at Mauville with few restores + money -> stock up at
+        # the Mart BEFORE heading to the cable car (buy_potions is above
+        # ride_cable_car in the table).
+        g = goals_mod.current_goal(self._gs(
+            map_group=0, map_num=2, flag_route112_magma_cleared=True,
+            bag_heal_qty=0, money=20000))
+        self.assertEqual(g.name, "buy_potions")
+        self.assertEqual(g.target_map, (10, 7))
+        self.assertEqual(g.target_pos, (2, 3))
+
+    def test_buy_potions_retires_when_stocked(self) -> None:
+        # Enough restores -> skip the shop, proceed to the cable car.
+        self.assertEqual(
+            self._name(map_group=0, map_num=2, flag_route112_magma_cleared=True,
+                       bag_heal_qty=10, money=20000),
+            "ride_cable_car")
+
+    def test_buy_potions_no_fire_when_broke(self) -> None:
+        # Confirmed-broke wallet (0..699) can't buy -> don't detour to the Mart.
+        self.assertEqual(
+            self._name(map_group=0, map_num=2, flag_route112_magma_cleared=True,
+                       bag_heal_qty=0, money=300),
+            "ride_cable_car")
+
+    def test_field_heal_fires_low_hp_with_potions(self) -> None:
+        # On Mt.Chimney, low HP + restores in bag -> heal before the next
+        # trainer (field_heal_potion is above mtchimney_defeat_magma).
+        M = dict(flag_route112_magma_cleared=True)
+        self.assertEqual(
+            self._name(map_group=24, map_num=12, x=17, y=37,
+                       party0_hp=50, party0_max_hp=131, bag_heal_qty=5, **M),
+            "field_heal_potion")
+        # No restores left -> fall through to fighting (anti-loop guard).
+        self.assertEqual(
+            self._name(map_group=24, map_num=12, x=17, y=37,
+                       party0_hp=50, party0_max_hp=131, bag_heal_qty=0, **M),
+            "mtchimney_defeat_magma")
+        # Full HP -> no heal, fight.
+        self.assertEqual(
+            self._name(map_group=24, map_num=12, x=17, y=37,
+                       party0_hp=131, party0_max_hp=131, bag_heal_qty=5, **M),
+            "mtchimney_defeat_magma")
 
     def test_theft_latch_survives_flag_flicker(self) -> None:
         # Once 0x333 has read True, a later frame reading it False must NOT

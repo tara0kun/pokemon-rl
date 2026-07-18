@@ -45,8 +45,10 @@ from . import (
     battle_moves as battle_moves_mod,
     config,
     curriculum as curr_mod,
+    field_heal,
     goals as goals_mod,
     hm_teach,
+    shop as shop_mod,
     knn_explorer as knn_mod,
     llm_advisor as llm_mod,
     map_data as map_data_mod,
@@ -1334,6 +1336,8 @@ def run(
     battle_trainer_latch = False
     last_ram_battle_turn = -999
     teach_cooldown_until = 0
+    shop_cooldown_until = 0
+    heal_cooldown_until = 0
     rs = reward_state_mod.RewardState()
     rs.load()
     checkpoint_target: tuple[int, int, int, int] | None = None
@@ -1624,6 +1628,50 @@ def run(
             if not ok:
                 teach_cooldown_until = turn + 30
             last_action = "teach_rock_smash"
+            continue
+
+        # Shop sub-task hook (H14): buy_potions fires inside the Mauville Mart.
+        # The VLM driver walks to the counter, talks to the clerk, and buys Super
+        # Potions. Fires the moment we're in the Mart (before the interact backstop
+        # A-mashes the clerk). Short cooldown so a give-up doesn't hammer it.
+        if (
+            cur_goal is not None
+            and cur_goal.name == "buy_potions"
+            and (gs.map_group, gs.map_num) == (10, 7)
+            and gs.saveblock1_valid
+            and not gs.in_battle
+            and turn >= shop_cooldown_until
+        ):
+            print(f"  [shop] turn {turn}: buying Super Potions via VLM…")
+            try:
+                ok = shop_mod.run_shop_subtask(client, log=print)
+            except Exception as _exc:  # noqa: BLE001 — never crash the loop
+                print(f"  [shop] error: {_exc}")
+                ok = False
+            if not ok:
+                shop_cooldown_until = turn + 15
+            last_action = "buy_potions"
+            continue
+
+        # Field-heal sub-task hook (H14): field_heal_potion (target_map=None) uses
+        # a Super Potion on the lead between gauntlet trainers / in the gym. Out of
+        # battle only, so the battle_move machinery is untouched.
+        if (
+            cur_goal is not None
+            and cur_goal.name == "field_heal_potion"
+            and gs.saveblock1_valid
+            and not gs.in_battle
+            and turn >= heal_cooldown_until
+        ):
+            print(f"  [field_heal] turn {turn}: healing lead via VLM…")
+            try:
+                ok = field_heal.run_heal_subtask(client, log=print)
+            except Exception as _exc:  # noqa: BLE001 — never crash the loop
+                print(f"  [field_heal] error: {_exc}")
+                ok = False
+            if not ok:
+                heal_cooldown_until = turn + 25
+            last_action = "field_heal_potion"
             continue
 
         # Part B — trainer-battle decision, driven by RAM not vision.

@@ -260,6 +260,10 @@ _GOAL_BYPASS_VISITED = {
     # (target_map != cur) can't apply (same as exit_fiery_path_north).
     "ride_cable_car", "mtchimney_defeat_magma", "descend_jagged_pass",
     "heal_at_lavaridge", "lavaridge_gym_flannery", "reach_lavaridge",
+    # The Mauville Mart is marked visited on first entry, but buy_potions must
+    # stay re-targetable to restock (a whiteout back to Mauville, or before the
+    # Flannery gym). field_heal_potion has target_map=None so it never needs it.
+    "buy_potions",
 }
 
 
@@ -819,6 +823,44 @@ class Goal:
                 and not gs.flag_badge04_get
                 and _mtchimney_done(gs)
             )
+        if c == "buy_potions":
+            # H14: before the Mt.Chimney Team Magma gauntlet (no PC, ~10-13 mons
+            # back-to-back), stock Super Potions at the Mauville Mart. Fire when
+            # heal items run low AND we can afford at least one (money -1 =
+            # unreadable still fires; only a confirmed 0..699 wallet stops it,
+            # since whiteout halves money and buying is the whole point). cur-set
+            # is Mauville + Route111/112 so it can pull the agent back from the
+            # arc approach, never from Fiery/Lavaridge. Retires when heal >= 6
+            # (bought) or the wallet drops below one Super Potion.
+            return (
+                gs.badge_count >= 3
+                and not gs.flag_badge04_get
+                and _theft_done(gs)
+                and not _mtchimney_done(gs)   # only pre-Magma; (0,27) is also the
+                # post-Jagged SW pocket, and post-0x8B whiteout re-homes to
+                # Lavaridge (heal_at_lavaridge), never Mauville -- so restocking
+                # there is unreachable and firing at the pocket would yank the
+                # agent all the way back to Mauville instead of into Lavaridge.
+                and gs.bag_heal_qty < 6
+                and not (0 <= gs.money < 700)
+                and cur in {(0, 2), (10, 5), (10, 7), (0, 26), (0, 27)}
+            )
+        if c == "field_heal_potion":
+            # H14: heal the lead with a Super Potion BETWEEN gauntlet trainers /
+            # in the Lavaridge gym (no PC on Mt.Chimney). Fires only with a
+            # restore in the bag (empty -> falls through to fight / PC heal, the
+            # anti-loop guard), out of battle, below 65% (so a full-HP entry
+            # survives Maxie's worst turn). target_map None = UI sub-task, like
+            # teach_rock_smash. Placed above mtchimney_defeat_magma / the gym goal.
+            return (
+                gs.badge_count >= 3
+                and not gs.flag_badge04_get
+                and gs.party0_max_hp > 0
+                and gs.party0_hp_frac < 0.65
+                and gs.bag_heal_qty > 0
+                and not gs.in_battle
+                and cur in {(24, 12), (24, 13), (4, 1), (4, 2)}
+            )
         return False
 
 
@@ -1085,6 +1127,18 @@ GOAL_TABLE: list[Goal] = [
         desc="HM06 を Poochyena に教える (bag/party UI, VLM 委譲)",
     ),
     Goal(
+        # H14: stock Super Potions at the Mauville Mart before the Mt.Chimney
+        # gauntlet. target_pos (2,3) = the counter tile in front of the clerk
+        # (1,3); the interact machinery stands the agent at (3,3) and faces Left
+        # + A over the MB_COUNTER (nurse-counter geometry). The shop VLM sub-task
+        # takes over on arrival.
+        name="buy_potions",
+        target_map=(10, 7),       # MauvilleCity_Mart
+        target_pos=(2, 3),
+        condition="buy_potions",
+        desc="Mt.Chimney gauntlet 用に Mauville Mart で Super Potion 購入 (VLM shop)",
+    ),
+    Goal(
         name="smash_route111_rock",
         target_map=(0, 26),       # Route111
         target_pos=(19, 100),     # east-lane BREAKABLE_ROCK (approach from (19,101))
@@ -1148,6 +1202,17 @@ GOAL_TABLE: list[Goal] = [
         target_pos=(6, 6),        # attendant NPC (interact -> YES -> ride)
         condition="ride_cable_car",
         desc="Badge4 arc leg3: Route112 cable car で Mt.Chimney へ",
+    ),
+    Goal(
+        # H14: heal the lead between gauntlet trainers (Mt.Chimney has no PC).
+        # target_map None = VLM UI sub-task (field_heal.py), like teach_rock_smash.
+        # Placed above mtchimney_defeat_magma so a low-HP frame heals before the
+        # next trainer, and above the Lavaridge gym goal so it heals in-place
+        # rather than leaving to the PC (which resets the hot-spring puzzle).
+        name="field_heal_potion",
+        target_map=None,
+        condition="field_heal_potion",
+        desc="戦間に Super Potion で lead 回復 (Mt.Chimney gauntlet / Lavaridge gym)",
     ),
     Goal(
         name="mtchimney_defeat_magma",

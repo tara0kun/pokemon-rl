@@ -292,6 +292,9 @@ class GameState:
     bag_pokeball_count: int = 0
     bag_first_item_id: int = 0
     bag_first_item_qty: int = 0
+    bag_heal_qty: int = 0          # HP restores in the Items pocket (H14)
+    bag_super_potion_qty: int = 0  # SUPER_POTION only
+    money: int = -1               # -1 = unreadable
     badge_count: int = 0
     total_event_flags: int = 0  # PWhiddy-style: sum of set bits across all flags
     event_flag_bytes_hex: str = ""  # PWhiddy v2 obs: full 300 bytes = 2400 bits
@@ -498,6 +501,9 @@ def read_state(client: MGBAClient) -> GameState:
     pokeballs = 0
     first_item_id = 0
     first_item_qty = 0
+    bag_heal_qty = 0
+    bag_super_potion_qty = 0
+    money = -1
     badges = 0
     total_flags = 0
     flag_hex = ""
@@ -596,6 +602,30 @@ def read_state(client: MGBAClient) -> GameState:
     except EmulatorError:
         pass
 
+    # Heal-item counts + money (H14: buy_potions / field_heal_potion gates).
+    # Items pocket 0x560 x30 slots; count HP restores {POTION 13, FULL_RESTORE
+    # 19, MAX_POTION 20, HYPER_POTION 21, SUPER_POTION 22}. Money = SB1+0x490 XOR
+    # the FULL 32-bit SaveBlock2 key (item qty uses only the low 16). Independent
+    # try so a failure here never voids the flag/party reads below.
+    try:
+        sb2p = client.read32(0x03005D90)
+        key = client.read32(sb2p + 0xAC)
+        for slot in range(30):
+            sid = client.read16(ptr + SB1_BAG_ITEMS + slot * 4)
+            if sid == 0:
+                break
+            if sid in (13, 19, 20, 21, 22):
+                q = client.read16(ptr + SB1_BAG_ITEMS + slot * 4 + 2) ^ (
+                    key & 0xFFFF)
+                if 0 < q <= 99:  # stack cap 99; DMA-garbage guard
+                    bag_heal_qty += q
+                    if sid == 22:
+                        bag_super_potion_qty += q
+        m = client.read32(ptr + 0x490) ^ key
+        money = m if 0 <= m <= 999999 else -1
+    except EmulatorError:
+        pass
+
     # 34 fix (06-29): Independent try block for flag bytes read.
     # Previously bundled with bag/party reads — when any earlier read
     # raised EmulatorError, flag_hex stayed empty silently.
@@ -646,6 +676,9 @@ def read_state(client: MGBAClient) -> GameState:
         bag_pokeball_count=pokeballs,
         bag_first_item_id=first_item_id,
         bag_first_item_qty=first_item_qty,
+        bag_heal_qty=bag_heal_qty,
+        bag_super_potion_qty=bag_super_potion_qty,
+        money=money,
         badge_count=badges,
         total_event_flags=total_flags,
         event_flag_bytes_hex=flag_hex,
