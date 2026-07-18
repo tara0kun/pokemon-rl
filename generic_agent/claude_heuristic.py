@@ -1344,6 +1344,7 @@ def run(
     catch_seq_queue: list[str] = []
     battle_move_queue: list[str] = []
     battle_trainer_latch = False
+    battle_double_latch = False
     last_ram_battle_turn = -999
     teach_cooldown_until = 0
     shop_cooldown_until = 0
@@ -1481,9 +1482,24 @@ def run(
                 object.__setattr__(
                     gs, "battle_flags", gs.battle_flags | 0x8,
                 )
+            # Double-battle latch (BATTLE_TYPE_DOUBLE = 0x1): the SAME DMA-read-0
+            # false-negative hits the double bit on the move-select screen. When
+            # 0x1 drops mid-turn the double branch is skipped and control falls to
+            # the single-battle move_select_sequence, which cannot answer the
+            # double target-select prompt and cycles back to the command menu
+            # forever (a Jagged Pass double vs Shroomish+Magnemite froze 25 min at
+            # full-cursor, 07-19). Once the double bit is seen in THIS battle, keep
+            # it set for the rest of the battle so the double handler stays live.
+            if gs.battle_flags & 0x1:
+                battle_double_latch = True
+            if battle_double_latch:
+                object.__setattr__(
+                    gs, "battle_flags", gs.battle_flags | 0x1,
+                )
         else:
             battle_turn = 0
             battle_trainer_latch = False
+            battle_double_latch = False
 
         if turn > 1 and gs.saveblock1_valid:
             r_battle = rs.record_battle_event(
