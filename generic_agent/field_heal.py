@@ -97,6 +97,18 @@ def run_heal_subtask(
     if _healed(client):
         return True
 
+    # Clear any overworld dialog before opening the menu: field_heal can fire the
+    # instant the agent bumps an NPC, and a dialog box swallows the Start opener
+    # (a Jagged Pass biker's "my bicycle bounced..." line left the VLM floundering
+    # between the dialog and a mis-navigated START menu, 07-19). B advances/closes
+    # a dialog and is a harmless no-op in the clean overworld, so pre-tapping it is
+    # always safe here.
+    for _ in range(2):
+        try:
+            client.tap("B", frames=10)
+        except EmulatorError:
+            return False
+        time.sleep(0.35)
     try:
         client.tap("Start", frames=15)
     except EmulatorError:

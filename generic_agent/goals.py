@@ -856,12 +856,13 @@ class Goal:
                 gs.badge_count >= 3
                 and not gs.flag_badge04_get
                 and gs.party0_max_hp > 0
-                # 0.80 (was 0.65): field_heal only fires BETWEEN battles, never
-                # mid-fight, so the lead must enter the Maxie boss (Camerupt hits
-                # a Grass Sceptile 2x, no mid-battle heal) at ~full. A 71%-HP
-                # entry lost it; heal to full at Maxie's tile first (this goal
-                # sits above mtchimney_defeat_magma, so it heals before talking).
-                and gs.party0_hp_frac < 0.80
+                # 0.50 (was 0.80 for the now-cleared Maxie boss): on the Jagged
+                # Pass descent the lead takes constant chip damage, and firing at
+                # <80% churned — a heal sub-task after every trainer that barely
+                # dented it, each one pausing the descent. The Lavaridge PC
+                # (heal_at_lavaridge) tops the lead to full before Flannery, so
+                # here field_heal only needs to prevent a faint: fire on real dips.
+                and gs.party0_hp_frac < 0.50
                 and gs.bag_heal_qty > 0
                 and not gs.in_battle
                 and cur in {(24, 12), (24, 13), (4, 1), (4, 2)}
