@@ -197,6 +197,10 @@ _GOAL_BYPASS_VISITED = {
     # blob. Without the bypass, one visit disabled fiery_path_cross and the
     # agent fell to reach_fallarbor, oscillating Route111<->Route112 south.
     "fiery_path_cross",
+    # Meteor Falls gets marked visited the instant the agent steps in, but the
+    # theft cutscene may not have fired yet (it's mid-room); keep re-targeting
+    # the event zone until FLAG 0x333 flips.
+    "meteor_falls_theft",
 }
 
 
@@ -651,6 +655,21 @@ class Goal:
                 # (10,0)/(10,5) = the Mauville gym / PC we exit after Wattson.
                 and cur in {(0, 2), (10, 0), (10, 5), (0, 26), (0, 27), (0, 28)}
             )
+        if c == "meteor_falls_theft":
+            # Badge4 arc leg 2. Once at/past Fallarbor (reach_fallarbor's
+            # cur-set no longer matches, so this takes over), Prof. Cozmo is at
+            # Meteor Falls studying the meteorite; Team Magma takes it and
+            # leaves. In Emerald this is a cutscene only (no battle here) that
+            # sets FLAG_HIDE_ROUTE_112_TEAM_MAGMA (0x333), clearing the grunt
+            # that blocks the Route112 cable car. Nav brings us into the event
+            # zone (target_pos); the A-mash dialog brain plays the cutscene.
+            # Retire is the flag flip, not reaching the tile. Ungated on cur so
+            # it stays live across Fallarbor / Route114 / Meteor Falls' rooms.
+            return (
+                gs.badge_count >= 3
+                and not gs.flag_badge04_get
+                and not gs.flag_route112_magma_cleared
+            )
         return False
 
 
@@ -946,6 +965,18 @@ GOAL_TABLE: list[Goal] = [
         target_map=(0, 13),       # FallarborTown (via Route111->112->[FieryPath]->113)
         condition="reach_fallarbor",
         desc="Badge4 arc leg1: Mauville→Route112(Fiery Path横断)→Route113→Fallarbor",
+    ),
+    Goal(
+        # Badge4 arc leg2: enter Meteor Falls (Route114 warp (8,63)) and walk
+        # west into the Team Magma / Cozmo cluster (Magma at (12,20)/(14,21),
+        # Cozmo at (13,23)); target_pos (16,20) is a walkable tile just east of
+        # them so the approach path crosses the coord_event trip-wire. Cutscene
+        # sets FLAG_HIDE_ROUTE_112_TEAM_MAGMA (0x333), which retires the goal.
+        name="meteor_falls_theft",
+        target_map=(24, 0),       # MeteorFalls1F1R
+        target_pos=(16, 20),
+        condition="meteor_falls_theft",
+        desc="Badge4 arc leg2: Meteor Falls で Team Magma 隕石強奪 cutscene (0x333 set)",
     ),
 ]
 

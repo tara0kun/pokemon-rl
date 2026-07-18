@@ -428,6 +428,38 @@ class TestDewfordChain(GoalsTestBase):
                     if g.name == "exit_fiery_path_north")
         self.assertEqual(goal.target_pos, north)
 
+    def test_meteor_falls_theft_fires_past_fallarbor(self) -> None:
+        # Once at/past Fallarbor (reach_fallarbor's cur-set no longer matches),
+        # the arc's leg 2 takes over: enter Meteor Falls for the Team Magma
+        # theft cutscene. Route114 (0,29) is past Fallarbor and in no cur-set.
+        base = dict(badge_count=3,
+                    flag_steven_letter_delivered=True,
+                    flag_dock_rejected_devon=True,
+                    flag_devon_goods_delivered=True,
+                    flag_rock_smash_hm=True, party_moves=[[249, 0, 0, 0]])
+        gs = make_gs(map_group=0, map_num=29, **base)   # Route114
+        g = goals_mod.current_goal(gs)
+        self.assertEqual(g.name, "meteor_falls_theft")
+        self.assertEqual(g.target_map, (24, 0))         # MeteorFalls1F1R
+        self.assertEqual(g.target_pos, (16, 20))
+        # Inside Meteor Falls the goal stays live (visited-bypass) until 0x333.
+        gs_inside = make_gs(map_group=24, map_num=0, x=20, y=18, **base)
+        goals_mod.record_map_visit(24, 0)
+        self.assertEqual(goals_mod.current_goal(gs_inside).name,
+                         "meteor_falls_theft")
+
+    def test_meteor_falls_theft_retires_on_flag(self) -> None:
+        # The theft cutscene sets FLAG_HIDE_ROUTE_112_TEAM_MAGMA (0x333). Once
+        # set, leg 2 retires; the cable-car leg (goal 5) is not implemented yet
+        # so the chain currently falls through to None.
+        gs = make_gs(map_group=0, map_num=29, badge_count=3,
+                     flag_steven_letter_delivered=True,
+                     flag_dock_rejected_devon=True,
+                     flag_devon_goods_delivered=True,
+                     flag_rock_smash_hm=True, party_moves=[[249, 0, 0, 0]],
+                     flag_route112_magma_cleared=True)
+        self.assertIsNone(goals_mod.current_goal(gs))
+
     def test_badge4_retires_lavaridge_arc(self) -> None:
         # Once Flannery is beaten (FLAG_BADGE04_GET) the Lavaridge arc retires
         # (Petalburg/Norman is the next unimplemented step -> None).
