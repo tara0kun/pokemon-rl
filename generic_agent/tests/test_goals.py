@@ -35,6 +35,8 @@ class GoalsTestBase(unittest.TestCase):
             goals_mod.LETTER_DONE_MARKER,
             goals_mod.DEVON_DELIVERED_MARKER,
             goals_mod.ROCK_SMASH_TAUGHT_MARKER,
+            goals_mod.THEFT_DONE_MARKER,
+            goals_mod.MTCHIMNEY_DONE_MARKER,
         )
         goals_mod.GOALS_FILE = tmp / "goal_notes.jsonl"
         goals_mod.VISITED_MAPS_FILE = tmp / "visited_maps.json"
@@ -42,6 +44,8 @@ class GoalsTestBase(unittest.TestCase):
         goals_mod.LETTER_DONE_MARKER = tmp / "steven_letter_done.marker"
         goals_mod.DEVON_DELIVERED_MARKER = tmp / "devon_delivered.marker"
         goals_mod.ROCK_SMASH_TAUGHT_MARKER = tmp / "rock_smash_taught.marker"
+        goals_mod.THEFT_DONE_MARKER = tmp / "meteor_theft_done.marker"
+        goals_mod.MTCHIMNEY_DONE_MARKER = tmp / "mtchimney_done.marker"
 
     def tearDown(self) -> None:
         (
@@ -51,6 +55,8 @@ class GoalsTestBase(unittest.TestCase):
             goals_mod.LETTER_DONE_MARKER,
             goals_mod.DEVON_DELIVERED_MARKER,
             goals_mod.ROCK_SMASH_TAUGHT_MARKER,
+            goals_mod.THEFT_DONE_MARKER,
+            goals_mod.MTCHIMNEY_DONE_MARKER,
         ) = self._orig
         self._tmp.cleanup()
 
@@ -450,17 +456,17 @@ class TestDewfordChain(GoalsTestBase):
         self.assertEqual(goals_mod.current_goal(gs_inside).name,
                          "meteor_falls_theft")
 
-    def test_meteor_falls_theft_retires_on_flag(self) -> None:
+    def test_meteor_falls_theft_advances_to_cable_car(self) -> None:
         # The theft cutscene sets FLAG_HIDE_ROUTE_112_TEAM_MAGMA (0x333). Once
-        # set, leg 2 retires; the cable-car leg (goal 5) is not implemented yet
-        # so the chain currently falls through to None.
+        # set (latched), leg 2 retires and the cable-car leg (3) takes over: from
+        # Route114 the agent heads back to the Route112 cable-car station.
         gs = make_gs(map_group=0, map_num=29, badge_count=3,
                      flag_steven_letter_delivered=True,
                      flag_dock_rejected_devon=True,
                      flag_devon_goods_delivered=True,
                      flag_rock_smash_hm=True, party_moves=[[249, 0, 0, 0]],
                      flag_route112_magma_cleared=True)
-        self.assertIsNone(goals_mod.current_goal(gs))
+        self.assertEqual(goals_mod.current_goal(gs).name, "ride_cable_car")
 
     def test_meteor_falls_target_is_west_of_canon_trigger(self) -> None:
         # No hardcoded-coord drift: target_pos must sit immediately WEST of the
@@ -502,6 +508,123 @@ class TestDewfordChain(GoalsTestBase):
         south = make_gs(map_group=0, map_num=19, y=40, badge_count=1)
         self.assertEqual(goals_mod.current_goal(north).name, "dewford_to_woods")
         self.assertEqual(goals_mod.current_goal(south).name, "dewford_to_briney")
+
+
+class TestLavaridgeArc(GoalsTestBase):
+    """Badge4 (Lavaridge/Flannery) arc goal chain, gated by the two latched
+    story flags: theft (0x333) and Mt.Chimney (0x8B). Peeko/letter/devon are
+    long done by badge 3, so their markers are pre-written."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        for m in (goals_mod.PEEKO_DONE_MARKER, goals_mod.LETTER_DONE_MARKER,
+                  goals_mod.DEVON_DELIVERED_MARKER):
+            m.write_text("1", encoding="utf-8")
+
+    def _gs(self, **kw):
+        base = dict(
+            badge_count=3, party_count=5,
+            party0_hp=100, party0_max_hp=128,
+            flag_steven_letter_delivered=True,
+            flag_dock_rejected_devon=True,
+            flag_devon_goods_delivered=True,
+            flag_rock_smash_hm=True, party_moves=[[249, 0, 0, 0]],
+        )
+        base.update(kw)
+        return make_gs(**base)
+
+    def _name(self, **kw):
+        g = goals_mod.current_goal(self._gs(**kw))
+        return g.name if g else None
+
+    # --- pre-theft (0x333 == 0): the four earlier goals still own the map ---
+    def test_pre_theft_route114_is_theft_goal(self) -> None:
+        self.assertEqual(
+            self._name(map_group=0, map_num=29, x=19, y=20),
+            "meteor_falls_theft")
+
+    def test_pre_theft_fiery_heads_north(self) -> None:
+        self.assertEqual(
+            self._name(map_group=24, map_num=14, x=26, y=20),
+            "exit_fiery_path_north")
+
+    # --- post-theft (0x333 == 1, 0x8B == 0): cable-car leg ---
+    def test_theft_done_routes_to_cable_car(self) -> None:
+        # North blob and south blob both drive to the station (region nav
+        # crosses Fiery southward for the north one).
+        T = dict(flag_route112_magma_cleared=True)
+        for (x, y) in ((22, 10), (26, 36)):
+            g = goals_mod.current_goal(
+                self._gs(map_group=0, map_num=27, x=x, y=y, **T))
+            self.assertEqual(g.name, "ride_cable_car")
+            self.assertEqual(g.target_pos, (6, 6))
+
+    def test_theft_done_fiery_flips_south(self) -> None:
+        # The SAME FieryPath tile that pre-theft routed north now routes south.
+        g = goals_mod.current_goal(self._gs(
+            map_group=24, map_num=14, x=26, y=20,
+            flag_route112_magma_cleared=True))
+        self.assertEqual(g.name, "exit_fiery_path_south")
+        self.assertEqual(g.target_pos, (26, 36))
+
+    def test_at_mtchimney_fights_magma_not_cable_car(self) -> None:
+        # ride_cable_car goes silent on the Mt.Chimney maps so the battle goal
+        # wins there.
+        g = goals_mod.current_goal(self._gs(
+            map_group=24, map_num=12, x=17, y=37,
+            flag_route112_magma_cleared=True))
+        self.assertEqual(g.name, "mtchimney_defeat_magma")
+        self.assertEqual(g.target_pos, (13, 6))
+
+    # --- magma-done (0x8B == 1): descend, heal, gym ---
+    def test_magma_done_descends_then_reaches_lavaridge(self) -> None:
+        M = dict(flag_route112_magma_cleared=True,
+                 flag_mtchimney_magma_defeated=True)
+        self.assertEqual(
+            self._name(map_group=24, map_num=12, x=17, y=37, **M),
+            "descend_jagged_pass")
+        # In the SW pocket ride/descend/flannery are all silent -> reach_lavaridge
+        self.assertEqual(
+            self._name(map_group=0, map_num=27, x=7, y=47, **M),
+            "reach_lavaridge")
+
+    def test_lavaridge_gym_and_heal_priority(self) -> None:
+        M = dict(flag_route112_magma_cleared=True,
+                 flag_mtchimney_magma_defeated=True)
+        # Full HP in town -> straight to Flannery.
+        g = goals_mod.current_goal(
+            self._gs(map_group=0, map_num=12, x=5, y=10, **M))
+        self.assertEqual(g.name, "lavaridge_gym_flannery")
+        self.assertEqual(g.target_pos, (13, 9))
+        # Low HP -> heal first (heal sits above the gym goal).
+        self.assertEqual(
+            self._name(map_group=0, map_num=12, x=5, y=10,
+                       party0_hp=40, **M),
+            "heal_at_lavaridge")
+        # Dropped into gym B1F mid-puzzle -> gym goal persists (target 1F).
+        self.assertEqual(
+            self._name(map_group=4, map_num=2, x=5, y=5, **M),
+            "lavaridge_gym_flannery")
+
+    def test_badge04_retires_entire_arc(self) -> None:
+        # Heat Badge won -> every Lavaridge-arc goal retires (next step
+        # unimplemented -> None), even standing in Lavaridge.
+        self.assertIsNone(goals_mod.current_goal(self._gs(
+            map_group=0, map_num=12, x=5, y=10, flag_badge04_get=True,
+            flag_route112_magma_cleared=True,
+            flag_mtchimney_magma_defeated=True)))
+
+    def test_theft_latch_survives_flag_flicker(self) -> None:
+        # Once 0x333 has read True, a later frame reading it False must NOT
+        # revert to the pre-theft goal (the DMA-flicker north-yank guard).
+        at = dict(map_group=24, map_num=14, x=26, y=20)
+        self.assertEqual(  # observe theft -> latches marker
+            self._name(flag_route112_magma_cleared=True, **at),
+            "exit_fiery_path_south")
+        self.assertTrue(goals_mod.THEFT_DONE_MARKER.exists())
+        self.assertEqual(  # flicker back to False -> still south (latched)
+            self._name(flag_route112_magma_cleared=False, **at),
+            "exit_fiery_path_south")
 
 
 if __name__ == "__main__":
