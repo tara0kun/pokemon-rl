@@ -441,7 +441,9 @@ class TestDewfordChain(GoalsTestBase):
         g = goals_mod.current_goal(gs)
         self.assertEqual(g.name, "meteor_falls_theft")
         self.assertEqual(g.target_map, (24, 0))         # MeteorFalls1F1R
-        self.assertEqual(g.target_pos, (16, 20))
+        # (13,18) = west neighbour of the (14,18) theft coord_event, so BFS from
+        # the east stops on the trigger (step-on fires the cutscene).
+        self.assertEqual(g.target_pos, (13, 18))
         # Inside Meteor Falls the goal stays live (visited-bypass) until 0x333.
         gs_inside = make_gs(map_group=24, map_num=0, x=20, y=18, **base)
         goals_mod.record_map_visit(24, 0)
@@ -459,6 +461,21 @@ class TestDewfordChain(GoalsTestBase):
                      flag_rock_smash_hm=True, party_moves=[[249, 0, 0, 0]],
                      flag_route112_magma_cleared=True)
         self.assertIsNone(goals_mod.current_goal(gs))
+
+    def test_meteor_falls_target_is_west_of_canon_trigger(self) -> None:
+        # No hardcoded-coord drift: target_pos must sit immediately WEST of the
+        # canon theft coord_event so the eastward approach steps onto it. Read
+        # the trigger from the cached map.json (MagmaStealsMeteoriteScene).
+        import json
+        from generic_agent import config
+        p = config.MEMORY_DIR / "map_cache" / "MeteorFalls_1F_1R.map.json"
+        ce = [e for e in json.loads(p.read_text(encoding="utf-8")).get(
+            "coord_events", []) if "MagmaSteals" in str(e.get("script", ""))]
+        self.assertEqual(len(ce), 1)
+        trig = (ce[0]["x"], ce[0]["y"])
+        goal = next(g for g in goals_mod.GOAL_TABLE
+                    if g.name == "meteor_falls_theft")
+        self.assertEqual(goal.target_pos, (trig[0] - 1, trig[1]))  # west nbr
 
     def test_badge4_retires_lavaridge_arc(self) -> None:
         # Once Flannery is beaten (FLAG_BADGE04_GET) the Lavaridge arc retires

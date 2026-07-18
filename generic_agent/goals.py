@@ -967,16 +967,21 @@ GOAL_TABLE: list[Goal] = [
         desc="Badge4 arc leg1: Mauville→Route112(Fiery Path横断)→Route113→Fallarbor",
     ),
     Goal(
-        # Badge4 arc leg2: enter Meteor Falls (Route114 warp (8,63)) and walk
-        # west into the Team Magma / Cozmo cluster (Magma at (12,20)/(14,21),
-        # Cozmo at (13,23)); target_pos (16,20) is a walkable tile just east of
-        # them so the approach path crosses the coord_event trip-wire. Cutscene
-        # sets FLAG_HIDE_ROUTE_112_TEAM_MAGMA (0x333), which retires the goal.
+        # Badge4 arc leg2: enter Meteor Falls (Route114 warp (8,63)→ land ~
+        # (27,18)) and walk WEST along the y=18 corridor. The theft is a single
+        # coord_event at (14,18) (MagmaStealsMeteoriteScene, VAR_METEOR_FALLS_
+        # STATE==0) that fires on STEP-ON, not on A. target_pos is (13,18), the
+        # trigger's WEST neighbour: the interact machinery adds the target's
+        # neighbours to the BFS set, so approaching from the east it stops on
+        # (14,18) (the nearest set member) — a guaranteed step onto the trigger.
+        # Targeting (14,18) itself would stop one tile EAST (15,18) and A-mash
+        # without stepping on. Cutscene sets FLAG_HIDE_ROUTE_112_TEAM_MAGMA
+        # (0x333), which retires the goal and clears the cable-car grunt.
         name="meteor_falls_theft",
         target_map=(24, 0),       # MeteorFalls1F1R
-        target_pos=(16, 20),
+        target_pos=(13, 18),
         condition="meteor_falls_theft",
-        desc="Badge4 arc leg2: Meteor Falls で Team Magma 隕石強奪 cutscene (0x333 set)",
+        desc="Badge4 arc leg2: Meteor Falls (14,18) coord_event で隕石強奪 (0x333 set)",
     ),
 ]
 
