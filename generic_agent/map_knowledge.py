@@ -81,17 +81,9 @@ WATER_BEHAVIORS = {
 # to (dx, dy) direction the agent jumps when stepping onto the tile.
 # Ledges are 1-way edges: stepping onto a JUMP tile from the OPPOSITE
 # direction lands the agent on (x+dx, y+dy) regardless of the next
-# tile's elevation.
-LEDGE_JUMP_BEHAVIORS = {
-    0x38: (1, 0),    # JUMP_EAST
-    0x39: (-1, 0),   # JUMP_WEST
-    0x3A: (0, -1),   # JUMP_NORTH
-    0x3B: (0, 1),    # JUMP_SOUTH
-    0x3C: (1, -1),   # JUMP_NORTHEAST
-    0x3D: (-1, -1),  # JUMP_NORTHWEST
-    0x3E: (1, 1),    # JUMP_SOUTHEAST
-    0x3F: (-1, 1),   # JUMP_SOUTHWEST
-}
+# tile's elevation. Canonical table lives in map_data (also used for the
+# region graph's ledge component edges); aliased here for existing users.
+LEDGE_JUMP_BEHAVIORS = md.LEDGE_JUMP_BEHAVIORS
 
 # LOS direction deltas. trainer_los expansion walks `sight` cells in
 # the trainer's facing direction(s).

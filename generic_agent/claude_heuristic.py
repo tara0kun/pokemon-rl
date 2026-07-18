@@ -538,9 +538,24 @@ def heuristic_button(
                     if mc.has_multiple_warp_components(
                         gs.map_group, gs.map_num
                     ):
+                        # Aim the region router at the COMPONENT holding the
+                        # goal tile when the goal names one (Lavaridge gym
+                        # hole/geyser nav: an any-component landing bounces
+                        # between floors but never into Flannery's walled
+                        # room). Cross-map any-component stays as fallback.
+                        _goal_tpos = None
+                        if (
+                            current_goal is not None
+                            and getattr(current_goal, "target_pos", None)
+                            is not None
+                            and tuple(current_goal.target_map)
+                            == tuple(effective_goal_map)
+                        ):
+                            _goal_tpos = current_goal.target_pos
                         region_tiles, region_hop = mc.region_route_targets(
                             gs.map_group, gs.map_num, (gs.x, gs.y),
                             effective_goal_map, mh_chain,
+                            target_tile=_goal_tpos,
                         )
                     if region_tiles:
                         target_tiles |= region_tiles
@@ -774,6 +789,44 @@ def heuristic_button(
                             blocked_tiles=bfs_blocked,
                             ledge_jumps=knowledge_ledges,
                         )
+                    # Same-map hole/geyser fallback (Segment 4b, Lavaridge
+                    # Gym): the goal tile sits in a walkable component that
+                    # NO amount of walking reaches — only riding same-map
+                    # warp pairs (1F holes <-> B1F geysers) and one-way
+                    # ledges gets there, so every tile-BFS above failed.
+                    # Ask the region router for the first-hop warp toward
+                    # the goal's component and BFS to that warp instead;
+                    # stepping on it fires the warp (pokeemerald step-on
+                    # trigger) and the next turn re-plans from the landing.
+                    if (
+                        not bfs_path
+                        and interact_target is not None
+                        and mc.has_multiple_warp_components(
+                            gs.map_group, gs.map_num
+                        )
+                    ):
+                        _rt, _rh = mc.region_route_targets(
+                            gs.map_group, gs.map_num, (gs.x, gs.y),
+                            (gs.map_group, gs.map_num), None,
+                            target_tile=interact_target,
+                        )
+                        if _rt:
+                            bfs_path = mc.bfs_to_tile(
+                                gs.map_group, gs.map_num,
+                                (gs.x, gs.y), _rt,
+                                blocked_tiles=bfs_blocked - _rt,
+                                tile_elevation=knowledge_elev,
+                                ledge_jumps=knowledge_ledges,
+                            )
+                            if not bfs_path and knowledge_elev:
+                                # elevation-relax mirror (same rationale as
+                                # the goal-BFS fallback above)
+                                bfs_path = mc.bfs_to_tile(
+                                    gs.map_group, gs.map_num,
+                                    (gs.x, gs.y), _rt,
+                                    blocked_tiles=bfs_blocked - _rt,
+                                    ledge_jumps=knowledge_ledges,
+                                )
                     if bfs_path:
                         next_btn = bfs_path[0]
                         delta = {

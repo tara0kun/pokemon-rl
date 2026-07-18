@@ -39,6 +39,21 @@ MAP_GROUPS_URL = f"{POKEEMERALD_RAW}/data/maps/map_groups.json"
 # layouts.json fetch.
 _DEFAULT_DIM = (20, 20)
 
+# Ledge JUMP behavior byte -> jump (dx, dy) (pokeemerald
+# metatile_behaviors.h MB_JUMP_*). Canonical definition lives here so both
+# map_data (region component edges) and map_knowledge (per-tile ledge
+# seeding) read ONE table; map_knowledge aliases it.
+LEDGE_JUMP_BEHAVIORS: dict[int, tuple[int, int]] = {
+    0x38: (1, 0),    # JUMP_EAST
+    0x39: (-1, 0),   # JUMP_WEST
+    0x3A: (0, -1),   # JUMP_NORTH
+    0x3B: (0, 1),    # JUMP_SOUTH
+    0x3C: (1, -1),   # JUMP_NORTHEAST
+    0x3D: (-1, -1),  # JUMP_NORTHWEST
+    0x3E: (1, 1),    # JUMP_SOUTHEAST
+    0x3F: (-1, 1),   # JUMP_SOUTHWEST
+}
+
 
 def _tileset_dirname(label: str) -> str:
     """gTileset_MeteorFalls -> "meteor_falls" (pokeemerald data/tilesets dir).
@@ -166,6 +181,14 @@ class MapCache:
         self._components_cache: dict[tuple[int, int], tuple[dict, list]] = {}
         self._multicomp_cache: dict[tuple[int, int], bool] = {}
         self._indoor_cache: dict[tuple[int, int], bool] = {}
+        # Segment 4b (Lavaridge hole/geyser nav): per-map metatile behavior
+        # grid + directed ledge edges between walkable components. Memoized.
+        self._behavior_grid_cache: dict[
+            tuple[int, int], dict[tuple[int, int], int]
+        ] = {}
+        self._ledge_edge_cache: dict[
+            tuple[int, int], list[tuple[int, int]]
+        ] = {}
 
     def is_indoor(self, map_g: int, map_n: int) -> bool:
         """True if the map is a building interior (MAP_TYPE_INDOOR).
@@ -620,6 +643,101 @@ class MapCache:
         return None
 
     # --- Region-aware routing (H4a) ------------------------------------------
+    def behavior_grid(
+        self, map_g: int, map_n: int,
+    ) -> dict[tuple[int, int], int]:
+        """(x,y) -> metatile behavior byte for every tile of the map, read
+        from the layout's OWN primary/secondary metatile_attributes tables
+        (same per-layout resolution as map_knowledge._load_behavior_table;
+        duplicated here because map_knowledge imports map_data). Returns {}
+        when map.bin or the tileset pair can't be resolved (synthetic test
+        maps, offline) — callers must treat a MISSING tile as
+        behavior-UNKNOWN, never as MB_NORMAL. Memoized per map."""
+        key = (map_g, map_n)
+        cached = self._behavior_grid_cache.get(key)
+        if cached is not None:
+            return cached
+        grid: dict[tuple[int, int], int] = {}
+        try:
+            info = self.get(map_g, map_n)
+            pair = layout_tilesets(info.layout_id) if info else None
+            bin_path = CACHE_DIR / f"{info.name}.map.bin" if info else None
+            if info and pair and bin_path and bin_path.exists():
+                beh: dict[int, int] = {}
+                pp = tileset_attr_path("primary", pair[0])
+                if pp is not None:
+                    pd = pp.read_bytes()
+                    for m in range(min(0x200, len(pd) // 2)):
+                        beh[m] = struct.unpack_from("<H", pd, m * 2)[0] & 0xFF
+                sp = tileset_attr_path("secondary", pair[1])
+                if sp is not None:
+                    sd = sp.read_bytes()
+                    for i in range(len(sd) // 2):
+                        beh[0x200 + i] = (
+                            struct.unpack_from("<H", sd, i * 2)[0] & 0xFF
+                        )
+                raw = bin_path.read_bytes()
+                for y in range(info.height):
+                    for x in range(info.width):
+                        off = (y * info.width + x) * 2
+                        if off + 2 > len(raw):
+                            continue
+                        meta = struct.unpack_from("<H", raw, off)[0] & 0x3FF
+                        bv = beh.get(meta)
+                        if bv is not None:
+                            grid[(x, y)] = bv
+        except (OSError, struct.error):
+            grid = {}
+        self._behavior_grid_cache[key] = grid
+        return grid
+
+    def _warp_active(self, map_g: int, map_n: int, w: dict) -> bool:
+        """False iff this warp_event provably NEVER fires: its tile's
+        metatile behavior is KNOWN and MB_NORMAL (0). pokeemerald
+        TryStartWarpEventScript gates every warp on IsWarpMetatileBehavior,
+        so a behavior-0 warp_event is inert data. Audited 2026-07-19 over
+        861 cached warps: the 65 behavior-0 ones are all (a) Lavaridge Gym
+        hole/geyser LANDING pads (the pair's passive half), (b) event-gated
+        hidden entrances (Terra/Altering Cave, Steven's Cave), or
+        (c) script-opened doors still closed in the static map (Petalburg
+        Gym rooms, Trick House, E4 halls) — no always-active door/stair
+        warp reads 0. Unknown behavior (attr data missing) keeps the warp
+        (legacy behavior)."""
+        beh = self.behavior_grid(map_g, map_n).get((w.get("x"), w.get("y")))
+        return beh != 0
+
+    def _ledge_component_edges(
+        self, map_g: int, map_n: int,
+    ) -> list[tuple[int, int]]:
+        """Directed (from_cid, to_cid) edges between walkable components of
+        ONE map created by ledge jumps: entering a JUMP tile in its jump
+        direction vaults the (usually non-walkable) tile and lands 2 tiles
+        out, so a component can spill one-way into another. Lavaridge Gym
+        B1F is the motivating case: the geyser room that pops up in front
+        of Flannery is fully walled in raw collision — the jump row above
+        it is its ONLY entrance. bfs_to_tile already walks these edges
+        (ledge_jumps param); the region graph must model them too or it
+        under-connects such maps. Memoized; sorted for determinism."""
+        key = (map_g, map_n)
+        cached = self._ledge_edge_cache.get(key)
+        if cached is not None:
+            return cached
+        edges: set[tuple[int, int]] = set()
+        grid = self.behavior_grid(map_g, map_n)
+        if grid:
+            tile2cid, _ = self._components(map_g, map_n)
+            for (x, y), bv in grid.items():
+                d = LEDGE_JUMP_BEHAVIORS.get(bv)
+                if d is None:
+                    continue
+                ca = tile2cid.get((x - d[0], y - d[1]))
+                cl = tile2cid.get((x + d[0], y + d[1]))
+                if ca is not None and cl is not None and ca != cl:
+                    edges.add((ca, cl))
+        result = sorted(edges)
+        self._ledge_edge_cache[key] = result
+        return result
+
     def _components(
         self, map_g: int, map_n: int,
     ) -> tuple[dict[tuple[int, int], int], list[set[tuple[int, int]]]]:
@@ -712,14 +830,20 @@ class MapCache:
         if info is None:
             return []
         tile2cid, _ = self._components(map_g, map_n)
+        # Inert warp_events (KNOWN behavior MB_NORMAL — Lavaridge landing
+        # pads etc., see _warp_active) never fire in-game, so they are NOT
+        # region-graph edges; keeping them made the router aim at tiles
+        # that do nothing.
         return [
             w for w in info.warps
             if tile2cid.get((w["x"], w["y"])) == cid
+            and self._warp_active(map_g, map_n, w)
         ]
 
     def region_route_targets(
         self, map_g: int, map_n: int, pos: tuple[int, int],
         goal_map: tuple[int, int], mh_chain: list[tuple[int, int]] | None,
+        target_tile: tuple[int, int] | None = None,
     ) -> tuple[set[tuple[int, int]], str | None]:
         """First-hop warp tile(s) on the CURRENT map, and that warp's dest map
         name, to reach `goal_map` when the current map is split into components.
@@ -728,8 +852,14 @@ class MapCache:
         primary target = the final goal_map (NOT mh_chain's next hop: following
         the map-level next hop re-enters the entrance component and ping-pongs).
         secondary = mh_chain's next hop (keeps cross-map exits like the heal PC
-        routable). Returns (set(), None) when no warp-graph route exists so the
-        caller uses legacy connection/warp routing unchanged."""
+        routable). `target_tile` (the goal's target_pos on goal_map) narrows
+        the primary target to the COMPONENT holding that tile — required for
+        hole/geyser gyms where any-component landing bounces the agent around
+        the right map but never into the goal's walled-off room; an
+        any-component fallback is kept for cross-map goals in case the exact
+        component can't be reached. Returns (set(), None) when no warp-graph
+        route exists so the caller uses legacy connection/warp routing
+        unchanged."""
         info = self.get(map_g, map_n)
         if info is None:
             return set(), None
@@ -738,10 +868,31 @@ class MapCache:
         if start_cid is None:
             return set(), None
         next_hop = mh_chain[0] if mh_chain else None
-        for target in (goal_map, next_hop):
-            if target is None:
-                continue
-            res = self._region_bfs(map_g, map_n, start_cid, tuple(target))
+        # Component of the goal tile on the goal map (the tile itself or a
+        # walkable 4-neighbour — an NPC target may sit on a blocked tile).
+        goal_cid: int | None = None
+        if target_tile is not None:
+            gt2c, _ = self._components(*tuple(goal_map))
+            tx, ty = target_tile
+            for cand in ((tx, ty), (tx, ty + 1), (tx, ty - 1),
+                         (tx - 1, ty), (tx + 1, ty)):
+                goal_cid = gt2c.get(cand)
+                if goal_cid is not None:
+                    break
+        same_map_goal = tuple(goal_map) == (map_g, map_n)
+        attempts: list[tuple[tuple[int, int], int | None]] = []
+        if goal_cid is not None and not (
+            same_map_goal and goal_cid == start_cid
+        ):
+            attempts.append((tuple(goal_map), goal_cid))
+        # Any-component match on the CURRENT map is vacuous (any warp that
+        # lands back here "succeeds") — only offer it for cross-map goals.
+        if not same_map_goal:
+            attempts.append((tuple(goal_map), None))
+        if next_hop is not None:
+            attempts.append((tuple(next_hop), None))
+        for target, tcid in attempts:
+            res = self._region_bfs(map_g, map_n, start_cid, target, tcid)
             if res is not None:
                 return res
         return set(), None
@@ -749,39 +900,55 @@ class MapCache:
     def _region_bfs(
         self, map_g: int, map_n: int, start_cid: int,
         target_map: tuple[int, int],
+        target_cid: int | None = None,
     ) -> tuple[set[tuple[int, int]], str] | None:
-        """Shortest region path from (map_g,map_n,start_cid) to any component of
-        target_map; returns (first-hop warp tiles on the start map, first-hop
-        dest map name) or None. Warps are iterated in canonical order so the
-        result is deterministic."""
+        """Shortest region path from (map_g,map_n,start_cid) to target_map —
+        any component, or ONE component when target_cid is given. Edges:
+        firing warps (_warps_in_component filters inert ones) plus one-way
+        ledge jumps between components of a single map. Returns (first-hop
+        warp tiles on the start map, first-hop dest map name) or None.
+
+        The payload is the FIRST WARP on the path. Ledge hops taken before
+        it stay on the start map, so bfs_to_tile (which walks ledges) can
+        still reach that warp on foot. A ledge-only path to the target
+        carries no payload and is NOT returned — the plain tile BFS covers
+        it. Warps iterate in canonical order and ledge edges are sorted, so
+        the result is deterministic."""
         start = (map_g, map_n, start_cid)
         visited: set[tuple[int, int, int]] = {start}
-        queue: deque[tuple[tuple[int, int, int], set[tuple[int, int]], str]] = (
-            deque()
-        )
-        # Seed with the start component's warps, remembering the first hop.
-        for w in self._warps_in_component(map_g, map_n, start_cid):
-            land = self._warp_landing(w)
-            if land is None:
-                continue
-            first_tiles = {(w["x"], w["y"])}
-            first_dest = w["dest_map"]
-            if (land[0], land[1]) == target_map:
-                return first_tiles, first_dest
-            if land not in visited:
-                visited.add(land)
-                queue.append((land, first_tiles, first_dest))
+        queue: deque[
+            tuple[
+                tuple[int, int, int],
+                tuple[set[tuple[int, int]], str] | None,
+            ]
+        ] = deque([(start, None)])
         while queue:
-            (ng, nn, ncid), first_tiles, first_dest = queue.popleft()
+            (ng, nn, ncid), first = queue.popleft()
             for w in self._warps_in_component(ng, nn, ncid):
                 land = self._warp_landing(w)
                 if land is None:
                     continue
-                if (land[0], land[1]) == target_map:
-                    return set(first_tiles), first_dest
+                nfirst = first or ({(w["x"], w["y"])}, w["dest_map"])
+                if (land[0], land[1]) == target_map and (
+                    target_cid is None or land[2] == target_cid
+                ):
+                    return set(nfirst[0]), nfirst[1]
                 if land not in visited:
                     visited.add(land)
-                    queue.append((land, first_tiles, first_dest))
+                    queue.append((land, nfirst))
+            for ca, cl in self._ledge_component_edges(ng, nn):
+                if ca != ncid:
+                    continue
+                nxt = (ng, nn, cl)
+                if (
+                    first is not None
+                    and (ng, nn) == target_map
+                    and (target_cid is None or cl == target_cid)
+                ):
+                    return set(first[0]), first[1]
+                if nxt not in visited:
+                    visited.add(nxt)
+                    queue.append((nxt, first))
         return None
 
     def warp_tiles_for(
@@ -795,6 +962,8 @@ class MapCache:
         for w in info.warps:
             if w["dest_map"].replace("_", "").lower() != target_key:
                 continue
+            if not self._warp_active(map_g, map_n, w):
+                continue  # inert landing pad / closed scripted door
             wx, wy = w["x"], w["y"]
             # Interior door warps (Gym/PC/Mart/house entrances) sit on a
             # tile the collision map marks NON-walkable, so bfs_to_tile can
