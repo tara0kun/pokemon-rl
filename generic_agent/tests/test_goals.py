@@ -524,9 +524,10 @@ class TestLavaridgeArc(GoalsTestBase):
     def _gs(self, **kw):
         base = dict(
             badge_count=3, party_count=5,
-            party0_hp=100, party0_max_hp=128,
-            # Assume already stocked so the nav/routing tests aren't diverted by
-            # buy_potions; the shop/heal tests override bag_heal_qty explicitly.
+            # Full HP + stocked by default so nav/routing tests aren't diverted
+            # by field_heal_potion (<80%) or buy_potions; the shop/heal tests
+            # override party0_hp / bag_heal_qty explicitly.
+            party0_hp=128, party0_max_hp=128,
             bag_heal_qty=10, money=20000,
             flag_steven_letter_delivered=True,
             flag_dock_rejected_devon=True,
