@@ -3,6 +3,46 @@
 > Last verified: 2026-07-06。各仮説に「これを実行してこうなれば棄却」を付す。
 > 実行前に RESUME.md で現在地を確認。診断の第一手は常に `logs/decisions_*.jsonl` の grep。
 
+## H13. overworld の elevation-barrier を BFS が越えられず徘徊 — ⚠️ OPEN (2026-07-18、現行 blocker)
+
+**症状**: Route114 で agent が (21,57) から南進不可。BFS は Down(→(21,58))を出し続けるが
+game-block で動けず、`front_blocked_pivot` と `hidden_battle_probe`(A)を交互に ~130 turn、
+最後は北へ逃げて warp(8,63、南)から遠ざかる。decisions trace で goal は一貫
+meteor_falls_theft、mapbfs dest も MeteorFalls のみ（**oscillation ではない**、H12/badge
+修正で goal flicker は根治済）。
+
+**真因（実測確定）**: **elevation 差**。(21,57)=elev3 / (21,58)=elev4。map.bin collision は
+両方 0(walkable)で標高を encode しない。map_knowledge: Route114 **ledges=0**（未検出）だが
+`tile_elevation` は 3200 tiles populated。→ ledge でなく **elevation が壁**。
+
+**なぜ BFS が越える**: `bfs_to_tile`(map_data.py:350-355)の **elevation-mismatch check が
+意図的に無効化**。コメント曰く「28 fix で入れ、31 fix(behavior-based grass)で無効化。
+canon-walkable な **elev 3→1** 遷移が実在するため。(24,16) Down 200-fail の empirical
+direction-edge accumulation が実 blocked 遷移を処理する」。→ empirical 頼みだが、
+pocket の2タイル(21,57)/(22,57)に fail が分散して 200-fail(または 30-fail の 3-blocked)
+閾値に達せず、脱出が極めて遅い/不安定。
+
+**難所**: 単純な「異なる非ゼロ標高間ブロック」ルールは、コメントの canon-walkable な
+elev 3→1 を over-block し既存 traversal を壊す（badge3 まで到達した経路が動かなくなる）。
+Emerald の elevation セマンティクス（elev 0 = transition/inherit、15 = multi-level、
+tileset 依存の behavior）を踏まえ、**どの遷移が本物の壁か data 由来のノイズか**を
+判別する必要がある。
+
+**次の一手（棄却/確定条件付き）**:
+1. まず反証: (21,57)→(21,58) が本当に elevation で不可か、制御タップで確認
+   （Down 連打で動かない ↔ 別ルートなら動く）。→ elevation 説の確定。
+2. Emerald 正ルール `blocked if cur_e!=0 and next_e!=0 and cur_e!=next_e` を bfs に
+   **試験的に**再有効化し、**offline で既存踏破済みの複数 map（Route104/110/116/Fiery/
+   Route112）の代表 start→goal が依然 path を返すか**を一括検証（返さなくなる map が
+   あれば over-block 確定 → tileset 依存の elevation-data 精度が真因）。
+3. over-block するなら architect にて: (a) tileset ごとの正しい elevation/behavior ロード
+   （map_knowledge の primary_general+secondary_rustboro 全 map 適用を修正）、または
+   (b) elev-0/15 を transition として許容する緩和ルール + empirical の per-edge 学習を
+   高速化（front_blocked 即時 edge 記録）。
+- **これが直れば Lavaridge arc goal chain（実装・offline 検証済）を live で
+  theft→cable car→…→Flannery まで通し検証できる。** それまで agent は overworld route を
+  確実には traverse できない。
+
 ## H1. Dewford Town で Gym door 手前振動 — ✅ RESOLVED (2026-07-06)
 
 **症状(だった)**: agent が (6-7,18-19) で振動し、door approach (8,18) → door (8,17) の最終ステップに乗れない。mapbfs の dist が 2→4 に増える。
