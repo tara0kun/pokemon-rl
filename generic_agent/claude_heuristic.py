@@ -325,7 +325,18 @@ def heuristic_button(
         and current_goal.name.startswith(
             ("dewford", "peeko", "rescue_peeko", "reach",
              "grind", "heal", "deliver", "sail", "mauville",
-             "get_rock_smash", "smash_")
+             "get_rock_smash", "smash_",
+             # Badge4 (Lavaridge) arc. Without these the same_map_streak>=200
+             # explore hijack overrides the goal with a nearer unexplored map:
+             # meteor_falls_theft (target MeteorFalls, a WARP not a connection)
+             # got yanked to FallarborTown (dist 65 < 68) on Route114 and the
+             # agent oscillated (19,56)<->(19,57), net-zero progress. reach_*
+             # goals were already directed (that's why reach_fallarbor worked);
+             # these have no target_pos on the approach map so only directed_
+             # goal protects them. "fiery_path"/"exit_fiery" retrofit the same
+             # guard for the southbound Fiery re-cross to the cable car.
+             "meteor_falls", "fiery_path", "exit_fiery",
+             "ride_", "mtchimney", "descend_", "lavaridge_")
         )
     )
     # H4b: Mr.Briney's Dewford->Slateport sail multichoice (Petalburg=case 0 /
