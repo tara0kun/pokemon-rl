@@ -40,6 +40,63 @@ MAP_GROUPS_URL = f"{POKEEMERALD_RAW}/data/maps/map_groups.json"
 _DEFAULT_DIM = (20, 20)
 
 
+def _tileset_dirname(label: str) -> str:
+    """gTileset_MeteorFalls -> "meteor_falls" (pokeemerald data/tilesets dir).
+
+    CamelCase label from layouts.json to the snake_case directory that holds
+    metatile_attributes.bin. Verified against general / rustboro / fallarbor /
+    meteor_falls / lavaridge / mauville / petalburg (all download OK)."""
+    s = label.replace("gTileset_", "")
+    out: list[str] = []
+    for i, ch in enumerate(s):
+        if ch.isupper() and i > 0 and (s[i - 1].islower() or s[i - 1].isdigit()):
+            out.append("_")
+        out.append(ch.lower())
+    return "".join(out)
+
+
+def layout_tilesets(layout_id: str) -> tuple[str, str] | None:
+    """(primary_tileset, secondary_tileset) labels for a layout id.
+
+    Read from the cached layouts.json (already downloaded by MapCache on
+    first map fetch). None when the file or the entry is missing — callers
+    fall back to the General-primary-only table."""
+    try:
+        ly = json.loads(
+            (CACHE_DIR / "layouts.json").read_text(encoding="utf-8")
+        )
+        for lay in ly.get("layouts") or ly:
+            if isinstance(lay, dict) and lay.get("id") == layout_id:
+                p = lay.get("primary_tileset")
+                s = lay.get("secondary_tileset")
+                return (p, s) if p and s else None
+    except (OSError, json.JSONDecodeError):
+        pass
+    return None
+
+
+def tileset_attr_path(kind: str, tileset_label: str) -> Path | None:
+    """Cached metatile_attributes.bin for one tileset, downloading on first
+    use. kind: "primary" | "secondary". Cache filename {kind}_{dir}_attr.bin
+    matches the two files that predate this helper (primary_general_attr.bin,
+    secondary_rustboro_attr.bin) so they are reused, not re-fetched."""
+    dirname = _tileset_dirname(tileset_label)
+    dest = CACHE_DIR / f"{kind}_{dirname}_attr.bin"
+    if dest.exists():
+        return dest
+    url = f"{POKEEMERALD_RAW}/data/tilesets/{kind}/{dirname}/metatile_attributes.bin"
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "pokemon-rl-cache/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=30) as r:  # noqa: S310
+            dest.write_bytes(r.read())
+        return dest
+    except (urllib.error.URLError, OSError):
+        return None
+
+
 def _norm_map_name(s: str) -> str:
     """MAP_ROUTE_111 -> Route111 (connection/warp normalized form)."""
     out: list[str] = []
@@ -318,43 +375,67 @@ class MapCache:
         blocked = blocked_tiles or set()
         elev = tile_elevation or {}
         ledges = ledge_jumps or {}
-        q: deque[tuple[tuple[int, int], list[str]]] = deque([(start, [])])
-        visited: set[tuple[int, int]] = {start}
+
+        # Game-accurate elevation gating (pokeemerald GetCollisionAtCoords ->
+        # IsElevationMismatchAt + ObjectEventUpdateElevation). The elevation
+        # nibble means: 0 = transition (enter from any level, then you carry
+        # 0 = wildcard), 15 = multi-level/bridge (enter from any level, carry
+        # is PRESERVED across it), any other value must EQUAL the player's
+        # carried elevation to enter. The carried value becomes the entered
+        # tile's elevation except across 15-tiles. This is stateful — a
+        # stateless e1==e2-with-{0,15}-wildcards edge rule mis-blocks/allows
+        # 0- and 15-mediated chains — so BFS state is (x, y, carried_e).
+        # Route114 (21,57)e3 -> Down (21,58)e4 is the motivating hard block
+        # (collision 0, behavior MB_MOUNTAIN_TOP, i.e. NOT a ledge: only the
+        # elevation rule blocks it; the agent burned ~130 turns pressing into
+        # it). Tiles missing from tile_elevation read 0 (wildcard), so legacy
+        # callers that pass no elevation keep collision-only behavior.
+        def _e(x: int, y: int) -> int:
+            return elev.get((x, y), 0)
+
+        e0 = _e(*start)
+        if e0 == 15:
+            e0 = 0  # standing on a bridge: carry history unknown -> wildcard
+        first = (start[0], start[1], e0)
+        q: deque[tuple[tuple[int, int, int], list[str]]] = deque([(first, [])])
+        visited: set[tuple[int, int, int]] = {first}
         dirs = [(0, -1, "Up"), (0, 1, "Down"), (-1, 0, "Left"), (1, 0, "Right")]
         while q:
-            (x, y), path = q.popleft()
+            (x, y, e), path = q.popleft()
             if (x, y) in targets:
                 return path
-            cur_e = elev.get((x, y))
             for dx, dy, btn in dirs:
                 nx, ny = x + dx, y + dy
-                # Ledge: pressing into a wall-collision tile that has
-                # ledge_jumps behavior makes agent JUMP over it.
-                # press direction must match jump direction.
+                # Ledge (JUMP_* behavior tile): pressing its jump direction
+                # vaults it and lands 2 tiles out (the jump preempts the
+                # tile's own collision, pokeemerald CheckForObjectEvent-
+                # Collision). Any OTHER approach direction never enters a
+                # jump tile in-game (they carry the wall collision bit /
+                # elevation of the upper side), so skip instead of walking on.
                 jump = ledges.get((nx, ny))
-                if jump is not None and (dx, dy) == jump:
-                    final = (nx + jump[0], ny + jump[1])
-                    if final in visited or not _walk(*final):
-                        continue
-                    if final in blocked:
-                        continue
-                    visited.add(final)
-                    q.append((final, path + [btn]))
+                if jump is not None:
+                    if (dx, dy) == jump:
+                        fx, fy = nx + jump[0], ny + jump[1]
+                        if _walk(fx, fy) and (fx, fy) not in blocked:
+                            fe = _e(fx, fy)
+                            ne = e if (fe == 15 or _e(x, y) == 15) else fe
+                            st = (fx, fy, ne)
+                            if st not in visited:
+                                visited.add(st)
+                                q.append((st, path + [btn]))
                     continue
                 if not _walk(nx, ny):
                     continue
                 if (nx, ny) in blocked:
                     continue
-                if (nx, ny) in visited:
-                    continue
-                # NOTE: elev mismatch BFS check temporarily disabled
-                # (was 28 fix). Real grass (behavior-based, 31 fix)
-                # requires elev=3 → elev=1 transitions in canon-walkable
-                # tiles. (24, 16) Down 200 fail empirical via tile_map
-                # direction-edge accumulation handles the actual blocked
-                # transitions; let BFS find canon-walkable paths.
-                visited.add((nx, ny))
-                q.append(((nx, ny), path + [btn]))
+                me = _e(nx, ny)
+                if e != 0 and me not in (0, 15) and me != e:
+                    continue  # COLLISION_ELEVATION_MISMATCH
+                ne = e if (me == 15 or _e(x, y) == 15) else me
+                st = (nx, ny, ne)
+                if st not in visited:
+                    visited.add(st)
+                    q.append((st, path + [btn]))
         return None
 
     def neighbor_maps(self, map_g: int, map_n: int) -> set[str]:

@@ -734,6 +734,34 @@ def heuristic_button(
                                 ledge_jumps=knowledge_ledges,
                                 extra_walkable=extra_w,
                             )
+                            # A live-opened barrier must not strand behind an
+                            # unmodeled elevation edge: retry the SAME live
+                            # overrides elevation-relaxed (see fallback below).
+                            if not bfs_path and knowledge_elev:
+                                bfs_path = mc.bfs_to_tile(
+                                    gs.map_group, gs.map_num,
+                                    (gs.x, gs.y), target_tiles,
+                                    blocked_tiles=(
+                                        (bfs_blocked | extra_b) - extra_w
+                                    ),
+                                    ledge_jumps=knowledge_ledges,
+                                    extra_walkable=extra_w,
+                                )
+                    # Elevation-relax fallback (mirrors the water one above):
+                    # the elevation-carry BFS models on-foot movement only; if
+                    # a goal is reachable in-game through something it can't
+                    # see (scripted/forced movement, an unmodeled mechanic, or
+                    # bad canon elevation), NO path would strand the agent.
+                    # Retrying without elevation restores the pre-elevation
+                    # behavior as the floor; a genuinely game-blocked step is
+                    # then caught by tile_map empirical learning as before.
+                    if not bfs_path and knowledge_elev:
+                        bfs_path = mc.bfs_to_tile(
+                            gs.map_group, gs.map_num,
+                            (gs.x, gs.y), target_tiles,
+                            blocked_tiles=bfs_blocked,
+                            ledge_jumps=knowledge_ledges,
+                        )
                     if bfs_path:
                         next_btn = bfs_path[0]
                         delta = {
