@@ -856,7 +856,12 @@ class Goal:
                 gs.badge_count >= 3
                 and not gs.flag_badge04_get
                 and gs.party0_max_hp > 0
-                and gs.party0_hp_frac < 0.65
+                # 0.80 (was 0.65): field_heal only fires BETWEEN battles, never
+                # mid-fight, so the lead must enter the Maxie boss (Camerupt hits
+                # a Grass Sceptile 2x, no mid-battle heal) at ~full. A 71%-HP
+                # entry lost it; heal to full at Maxie's tile first (this goal
+                # sits above mtchimney_defeat_magma, so it heals before talking).
+                and gs.party0_hp_frac < 0.80
                 and gs.bag_heal_qty > 0
                 and not gs.in_battle
                 and cur in {(24, 12), (24, 13), (4, 1), (4, 2)}
