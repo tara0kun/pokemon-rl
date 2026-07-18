@@ -198,25 +198,37 @@ class RiseConfirmTest(unittest.TestCase):
 
     def test_single_true_not_confirmed(self) -> None:
         # One True, or True interrupted by a False, never confirms.
-        self.assertFalse(self.st._rise_confirmed("k", True))   # 1
-        self.assertFalse(self.st._rise_confirmed("k", False))  # reset
-        self.assertFalse(self.st._rise_confirmed("k", True))   # 1
-        self.assertFalse(self.st._rise_confirmed("k", True))   # 2
+        self.assertFalse(self.st._rise_confirmed("k", True, True))   # 1
+        self.assertFalse(self.st._rise_confirmed("k", False, True))  # reset
+        self.assertFalse(self.st._rise_confirmed("k", True, True))   # 1
+        self.assertFalse(self.st._rise_confirmed("k", True, True))   # 2
 
     def test_n_consecutive_true_confirms(self) -> None:
         res = False
         for _ in range(self.st._RISE_CONFIRM_N):
-            res = self.st._rise_confirmed("k", True)
+            res = self.st._rise_confirmed("k", True, True)
         self.assertTrue(res)
         # stays confirmed while True
-        self.assertTrue(self.st._rise_confirmed("k", True))
+        self.assertTrue(self.st._rise_confirmed("k", True, True))
         # a False resets it (state read; goals._latched holds the disk latch)
-        self.assertFalse(self.st._rise_confirmed("k", False))
+        self.assertFalse(self.st._rise_confirmed("k", False, True))
+
+    def test_unstable_frame_never_confirms(self) -> None:
+        # The cable-car false-latch: a garbage True across cutscene frames
+        # (stable=False) must never accumulate, and it resets any progress.
+        for _ in range(self.st._RISE_CONFIRM_N + 3):
+            self.assertFalse(self.st._rise_confirmed("k", True, False))
+        # even mixing in a couple of stable Trues can't reach N if cutscene
+        # frames keep resetting it
+        self.st._rise_confirmed("k", True, True)   # 1
+        self.st._rise_confirmed("k", True, True)   # 2
+        self.st._rise_confirmed("k", True, False)  # reset
+        self.assertFalse(self.st._rise_confirmed("k", True, True))  # back to 1
 
     def test_flags_are_independent(self) -> None:
         for _ in range(self.st._RISE_CONFIRM_N):
-            self.st._rise_confirmed("a", True)
-        self.assertFalse(self.st._rise_confirmed("b", True))
+            self.st._rise_confirmed("a", True, True)
+        self.assertFalse(self.st._rise_confirmed("b", True, True))
 
 
 if __name__ == "__main__":

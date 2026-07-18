@@ -178,11 +178,21 @@ _BADGE_BITS_LATCHED: set[int] = set()
 # _RISE_CONFIRM_N CONSECUTIVE True reads; a genuinely-set flag reads True for
 # many turns so the guard costs nothing real. Counter is per-flag, in-process.
 _RISE_CONFIRM: dict[str, int] = {}
-_RISE_CONFIRM_N = 3
+_RISE_CONFIRM_N = 5
 
 
-def _rise_confirmed(key: str, raw: bool) -> bool:
-    if raw:
+def _rise_confirmed(key: str, raw: bool, stable: bool) -> bool:
+    """Confirm a future-event gate flag rise only across STABLE overworld frames.
+
+    N=3 was defeated once already: during the Route112 cable-car RIDE (a scripted
+    cutscene, cb2 != CB2_Overworld) 0x8B read a garbage True for 3+ consecutive
+    read_state calls and false-latched mtchimney_done, skipping the Team Magma
+    battle (07-18). The garbage correlates with cutscene/transition frames, so a
+    non-stable frame (cb2 not CB2_Overworld: battle, menu, cable car, warp fade)
+    RESETS the counter — only a run of N genuine overworld True reads latches. The
+    real flag is set in the overworld right after its event and holds True for
+    hundreds of turns, so N=5 stable confirmations cost nothing."""
+    if raw and stable:
         _RISE_CONFIRM[key] = _RISE_CONFIRM.get(key, 0) + 1
     else:
         _RISE_CONFIRM[key] = 0
@@ -531,12 +541,15 @@ def read_state(client: MGBAClient) -> GameState:
         flag_byte_dr = client.read8(ptr + SB1_FLAGS_OFFSET + (0x94 // 8))
         flag_dock_rejected = bool(flag_byte_dr & (1 << (0x94 % 8)))
         # Lavaridge arc gates
+        # Rise-confirm the two future-event gates only on stable overworld
+        # frames (cb2 == CB2_Overworld) -- cutscene/transition reads are garbage.
+        _cb2_stable = cb2 in CB2_OVERWORLD_SET
         flag_byte_r112m = client.read8(ptr + SB1_FLAGS_OFFSET + (0x333 // 8))
         flag_r112_magma = _rise_confirmed(
-            "r112_magma", bool(flag_byte_r112m & (1 << (0x333 % 8))))
+            "r112_magma", bool(flag_byte_r112m & (1 << (0x333 % 8))), _cb2_stable)
         flag_byte_mtc = client.read8(ptr + SB1_FLAGS_OFFSET + (0x8B // 8))
         flag_mtc_defeated = _rise_confirmed(
-            "mtc_defeated", bool(flag_byte_mtc & (1 << (0x8B % 8))))
+            "mtc_defeated", bool(flag_byte_mtc & (1 << (0x8B % 8))), _cb2_stable)
         flag_byte_b4 = client.read8(ptr + SB1_FLAGS_OFFSET + (0x86A // 8))
         flag_badge4 = bool(flag_byte_b4 & (1 << (0x86A % 8)))
         flag_byte_rs = client.read8(ptr + SB1_FLAGS_OFFSET + (0x6B // 8))
