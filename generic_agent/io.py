@@ -98,14 +98,31 @@ class MGBAClient:
     def current_frame(self) -> int:
         return int(self._send("core.currentFrame,").text)
 
+    # mGBA key indices (must match the lua keyValues table).
+    _KEY_INDEX = {
+        "A": 0, "B": 1, "Select": 2, "Start": 3, "Right": 4,
+        "Left": 5, "Up": 6, "Down": 7, "R": 8, "L": 9,
+    }
+
     def tap(self, button: str, frames: int = 15) -> None:
-        if button not in {
-            "A", "B", "Start", "Select",
-            "Up", "Down", "Left", "Right",
-            "L", "R",
-        }:
+        """Press-release a button with a CLEAN edge.
+
+        The old mgba-http.button.hold path enqueues a timed key event; on rapid
+        same-button taps (a battle A-mash queues ["A"] every turn) the events
+        OVERLAP, so the key stayed continuously held and no release edge ever
+        fired. Level-triggered movement still worked, but edge-triggered battle
+        text did not advance -- a double-battle "Foe fainted!" froze the loop for
+        898 turns (07-18). The raw addKey/clearKey path gives a guaranteed
+        press-then-release edge every call (verified live: it drained the frozen
+        battle where button.hold could not).
+        """
+        key = self._KEY_INDEX.get(button)
+        if key is None:
             raise ValueError(f"invalid button: {button}")
-        self._send(f"mgba-http.button.hold,{button},{int(frames)}")
+        self._send(f"core.clearKey,{key}")   # ensure released -> the edge
+        self._send(f"core.addKey,{key}")      # press
+        time.sleep(max(int(frames), 6) / 60.0)  # hold ~frames at 60fps
+        self._send(f"core.clearKey,{key}")    # release
 
     def _parse_int(self, raw: str, op: str, addr: int) -> int:
         t = (raw or "").strip()
