@@ -45,6 +45,18 @@ def _read(client: MGBAClient):
         return None
 
 
+def _has_heal(client: MGBAClient) -> bool:
+    """True if the bag holds a restore. bag_heal_qty flickers to 0 under
+    button-press load (a slot-id read returning garbage, like the badge/flag
+    flicker), so a single 0 read once false-stopped field_heal ("bag empty" with
+    6 Super Potions actually present, 07-19). Confirm a 0 with two more reads."""
+    for _ in range(3):
+        gs = _read(client)
+        if gs and gs.bag_heal_qty > 0:
+            return True
+    return False
+
+
 def _healed(client: MGBAClient) -> bool:
     gs = _read(client)
     return bool(gs and gs.party0_max_hp > 0
@@ -68,9 +80,8 @@ def run_heal_subtask(
             except Exception:  # noqa: BLE001 — logging must never abort the heal
                 pass
 
-    gs0 = _read(client)
-    if gs0 is None or gs0.bag_heal_qty <= 0:
-        return False  # nothing to heal with
+    if not _has_heal(client):
+        return False  # nothing to heal with (confirmed, flicker-robust)
     if _healed(client):
         return True
 
@@ -92,8 +103,9 @@ def run_heal_subtask(
             _log(f"field_heal: SUCCESS (step {step})")
             return True
         gs = _read(client)
-        # bag emptied mid-way (used the last one but still < 90%) -> stop.
-        if gs and gs.bag_heal_qty <= 0:
+        # bag emptied mid-way (used the last one but still < 90%) -> stop. Use
+        # the flicker-robust check so a load-induced 0 read doesn't false-stop.
+        if not _has_heal(client):
             for _ in range(4):
                 try:
                     client.tap("B", frames=12)
