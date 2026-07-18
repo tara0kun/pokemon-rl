@@ -85,6 +85,7 @@ def _in_route112_fiery_south(gs) -> bool:
 
 LETTER_DONE_MARKER = config.MEMORY_DIR / "steven_letter_done.marker"
 DEVON_DELIVERED_MARKER = config.MEMORY_DIR / "devon_delivered.marker"
+ROCK_SMASH_TAUGHT_MARKER = config.MEMORY_DIR / "rock_smash_taught.marker"
 
 
 def _latched(gs, attr: str, marker) -> bool:
@@ -111,6 +112,14 @@ def _letter_done(gs) -> bool:
 
 def _devon_delivered(gs) -> bool:
     return _latched(gs, "flag_devon_goods_delivered", DEVON_DELIVERED_MARKER)
+
+
+def _rock_smash_taught(gs) -> bool:
+    """Latched 'a party mon knows Rock Smash'. party_moves reads empty on a DMA
+    flicker frame -> knows_rock_smash False -> teach_rock_smash re-fires and
+    hm_teach re-opens the bag/teach menu long after it was taught (a Route114
+    'Teach which POKeMON?' stall, 07-18). Once taught it never un-learns."""
+    return _latched(gs, "knows_rock_smash", ROCK_SMASH_TAUGHT_MARKER)
 
 
 _GOAL_ORDER_WEIGHT = {
@@ -579,7 +588,7 @@ class Goal:
                 gs.badge_count >= 3
                 and not gs.flag_badge04_get
                 and gs.flag_rock_smash_hm
-                and not gs.knows_rock_smash
+                and not _rock_smash_taught(gs)
                 and not gs.in_battle
             )
         if c == "smash_route111_rock":
