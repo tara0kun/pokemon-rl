@@ -155,21 +155,28 @@ class BadgeLatchTest(unittest.TestCase):
         self.st.reset_flag_latches()
 
     def _count(self, bits_true: set[int]) -> int:
-        # mirrors the read_state badge loop exactly
+        # mirrors the read_state badge loop: latch the bits read set this frame,
+        # then count from the latch (decoupled from the reads, so a mid-loop
+        # read failure can't drop the count).
         st = self.st
-        badges = 0
         for bi in range(8):
             if bi in bits_true:
                 st._BADGE_BITS_LATCHED.add(bi)
-            if bi in st._BADGE_BITS_LATCHED:
-                badges += 1
-        return badges
+        return len(st._BADGE_BITS_LATCHED)
 
     def test_drop_flicker_does_not_lower_count(self) -> None:
         self.assertEqual(self._count({0, 1, 2}), 3)   # Badge 3 earned
         self.assertEqual(self._count(set()), 3)       # DMA flicker -> still 3
         self.assertEqual(self._count({0, 1, 2, 3}), 4)  # Badge 4 earned
         self.assertEqual(self._count(set()), 4)       # still 4, never dips
+
+    def test_read_failure_frame_keeps_latched_count(self) -> None:
+        # The real bug: a corrupted badge read8 raised mid-loop under button-
+        # press load, aborting the loop with a PARTIAL count even though the
+        # latch held {0,1,2}. Counting from len(latch) makes an all-fail frame
+        # (no bits read this frame) still report the full earned count.
+        self.assertEqual(self._count({0, 1, 2}), 3)
+        self.assertEqual(self._count(set()), 3)  # every read failed -> still 3
 
     def test_reset_clears_latch(self) -> None:
         self._count({0, 1, 2})

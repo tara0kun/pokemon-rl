@@ -394,11 +394,15 @@ def read_state(client: MGBAClient) -> GameState:
 
     ptr = _read_saveblock1_ptr(client)
     if ptr is None:
+        # An invalid-pointer frame must still report the badges earned so far
+        # (from the latch), not 0 -- else a badge-gated goal (reach_mauville:
+        # badge_count < 3) fires on the flicker frame.
         return GameState(
             0, 0, 0, 0,
             saveblock1_valid=False,
             in_battle=in_battle,
             battle_flags=flags,
+            badge_count=len(_BADGE_BITS_LATCHED),
         )
 
     try:
@@ -412,6 +416,7 @@ def read_state(client: MGBAClient) -> GameState:
             saveblock1_valid=False,
             in_battle=in_battle,
             battle_flags=flags,
+            badge_count=len(_BADGE_BITS_LATCHED),
         )
 
     try:
@@ -474,14 +479,25 @@ def read_state(client: MGBAClient) -> GameState:
         # Previously `badges` stayed hardcoded 0, so badge_count always read
         # 0 even after earning a badge (Stone Badge won 07-01 but reported
         # as 0). Count the set badge flags.
-        badges = 0
         for _bi in range(8):
             _fn = 0x867 + _bi
-            _fb = client.read8(ptr + SB1_FLAGS_OFFSET + _fn // 8)
+            try:
+                _fb = client.read8(ptr + SB1_FLAGS_OFFSET + _fn // 8)
+            except EmulatorError:
+                # Under button-press load a badge read8 intermittently returns a
+                # corrupted/non-numeric reply (~5% of reads observed 07-18). It
+                # must NOT drop a latched badge, and it must NOT abort this loop:
+                # the count used to be coupled to the read (badges += 1 inside
+                # the loop), so a mid-loop raise jumped to the outer except with
+                # badges partial (0) EVEN THOUGH the latch held {0,1,2} -- which
+                # dipped badge_count below 3 and re-fired reach_mauville, yanking
+                # the agent back toward Mauville on Route114 (goal oscillation).
+                continue
             if (_fb >> (_fn % 8)) & 1:
                 _BADGE_BITS_LATCHED.add(_bi)  # earned -> never drops (DMA flicker)
-            if _bi in _BADGE_BITS_LATCHED:
-                badges += 1
+        # Count from the latch, decoupled from the per-bit reads above: badge_count
+        # is now len(latched bits), immune to any single frame's read failures.
+        badges = len(_BADGE_BITS_LATCHED)
         flag_byte_birch = client.read8(ptr + SB1_FLAGS_OFFSET + (0x52 // 8))
         flag_birch = bool(flag_byte_birch & (1 << (0x52 % 8)))
         flag_byte_starter = client.read8(ptr + SB1_FLAGS_OFFSET + (0x55 // 8))
