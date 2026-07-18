@@ -3,7 +3,45 @@
 > Last verified: 2026-07-06。各仮説に「これを実行してこうなれば棄却」を付す。
 > 実行前に RESUME.md で現在地を確認。診断の第一手は常に `logs/decisions_*.jsonl` の grep。
 
-## H13. overworld の elevation-barrier を BFS が越えられず徘徊 — ⚠️ OPEN (2026-07-18、現行 blocker)
+## H14. Mt.Chimney の Team Magma ガントレットで弱パーティが whiteout ループ — ⚠️ OPEN (2026-07-18、現行 blocker)
+
+**症状**: Lavaridge arc の nav/goal/latch は全て機能し、agent は elevation fix 後に
+Route114→Meteor Falls→theft(0x333)→cable car 乗車→Mt.Chimney まで **live で到達**。だが
+`mtchimney_defeat_magma`(Tabitha+grunts+Maxie)で敗北 → **Mauville(0,2)へ whiteout →
+arc 全行程(700+ turn)を再ナビ → また敗北**の無限ループ。
+
+**真因(実測)**: party = **Sceptile L40 単騎 + dead-weight 4匹**(Poochyena/Mightyena×3 +
+Lotad、全て Tackle/Bite/Absorb)。Sceptile の moves は Rock Smash/Leer/**Crunch(80)**/Quick
+Attack で **強 Grass STAB(Leaf Blade)を失っている**。pokeballs=0、回復アイテム=0。
+Mt.Chimney は PC 無し・trainer 連戦(7-8匹)を**回復なし**で抜ける必要があり、131 HP の
+Sceptile 単騎では総被弾に attrition 負け(特に Maxie の Camerupt=Fire で Sceptile 2x 被弾)。
+whiteout 先は最後の PC=Mauville(heal_at_lavaridge は 0x8B gate で circular、到達前は効かない)。
+
+**これは nav でなく戦力の問題**。arc の infra(H13 elevation, false-latch guard ×2, goal
+chain)は完成・検証済で、ここが唯一の残 blocker。
+
+**対策候補(要方針決定)**:
+1. **回復アイテム**: Mart で Potion/Super Potion を購入 → Magma 連戦の間に使用。
+   → **shopping 機構**(Mart で買う)+ **battle 中 item 使用**の2新機能が要る。連戦 attrition の
+   直接対処。最有力だが実装量中。
+2. **Water 捕獲**: Route111/117 等で Marill 捕獲 → Azumarill(Water、Camerupt=Fire/Ground に
+   4x)。→ pokeballs 購入(shopping)+ catch 機構 + 育成。Flannery(炎)にも有効。実装量大。
+3. **Sceptile grind**: L40→L50+ で bulk 増。既存 grind 機構で可能だが、回復なし連戦の
+   attrition は level では根本解決しない(HP 上限が上がるだけ)。補助的。
+4. **Leaf Blade 再習得** + dead-weight を sacrifice 順に配置(fodder で Sceptile の HP 温存)。
+   party 並べ替え + move 管理 + 交代戦術 = battle-handling 拡張。
+
+**推奨**: (1) shopping + Potion 使用が連戦 attrition への最短対処。捕獲(2)は Flannery も
+見据えるなら並行価値大。まず shopping 機構(Mart 入店→Poke Mart 店員 interact→購入 UI)を
+実装し、Potion を数個買って Magma 戦・Flannery 戦を回復で支える。
+
+## H13. overworld の elevation-barrier を BFS が越えられず徘徊 — ✅ RESOLVED (2026-07-18)
+
+**解決**: architect が per-tileset behavior loading(secondary tileset の
+metatile_attributes を per-map で正しくロード、Route114 ledge 0→51)+ game-accurate な
+elevation-carry BFS((x,y,carried_e) state、0=transition/15=bridge)を実装。**live 検証**:
+Route114 を dist 123→42 で両方向 traverse、標高境界を合法地点で越え Meteor Falls 到達。
+commit 4c601aa1b。詳細は daily 2026-07-18。以下は解決前の記録。
 
 **症状**: Route114 で agent が (21,57) から南進不可。BFS は Down(→(21,58))を出し続けるが
 game-block で動けず、`front_blocked_pivot` と `hidden_battle_probe`(A)を交互に ~130 turn、
