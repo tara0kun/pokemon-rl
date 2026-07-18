@@ -30,25 +30,32 @@ SYSTEM_PROMPT_SHOP = (
     "You are operating a Pokemon Emerald POKE MART to BUY SUPER POTIONs. Reply "
     'with ONLY a JSON object: {"button": "<A|B|Up|Down|Left|Right>", '
     '"reason": "<short>"}. '
-    "You are already standing at the shop counter facing the clerk. The flow: "
-    "press A to talk -> a menu BUY / SELL / SEE YA appears (cursor starts on "
-    "BUY) -> press A on BUY -> the item list opens. In the list the order is "
-    "POKE BALL, GREAT BALL, SUPER POTION, ... so press Down TWICE to reach SUPER "
-    "POTION, then A. A quantity screen shows x01 and a price -> press RIGHT ONCE "
-    "to raise it by 10 (the game caps it at what you can afford), then A. On "
-    "'That'll be $ ... OK?' press A (YES). On 'Here you are!' / 'Thank you' press "
-    "A. When you are back on the item list, press B, then B again (or choose SEE "
-    "YA) to leave the shop. "
-    "HARD RULES: (1) NEVER output 'Start' or 'Select'. "
-    "(2) NEVER choose SELL. (3) Buy ONLY SUPER POTION — never Poke Balls or "
-    "anything else; if the cursor is on the wrong item, move to SUPER POTION "
-    "first. (4) On any YES/NO, A is YES. (5) If a 'not enough money' message "
-    "appears, press A then lower the quantity (Left) and confirm what you can "
-    "afford. (6) If RIGHT does not change the quantity, press Up to raise it "
-    "instead. (7) LOOK at the screenshot and describe the CURRENT screen in your "
-    "reason (overworld / clerk-menu / item-list / quantity / dialog) so you do "
-    "not repeat a button that is not working. If the screen looks like the plain "
-    "overworld with no menu, press A (you are facing the clerk)."
+    "You are already standing at the shop counter facing the clerk. Flow: press "
+    "A to talk -> a BUY / SELL / SEE YA menu appears (cursor on BUY) -> A -> the "
+    "item list opens on the RIGHT. The list order is fixed: (1) POKE BALL $200, "
+    "(2) GREAT BALL $600, (3) SUPER POTION $700, (4) ANTIDOTE, ... The little "
+    "TRIANGLE ARROW on the left of a row is the cursor = the SELECTED row. It "
+    "STARTS on POKE BALL (the TOP row). You want SUPER POTION = the THIRD row. "
+    "Move the arrow DOWN to it, then A. A quantity screen (x01 and a price) "
+    "opens -> press RIGHT once to raise the count by 10 (auto-capped at what you "
+    "can afford) -> A -> on 'That'll be $... OK?' press A (YES) -> on 'Here you "
+    "are!'/'Thank you' press A -> back on the list, press B twice to leave. "
+    "CRITICAL ITEM-SELECTION RULES: "
+    "- NEVER press A while the arrow is on POKE BALL or GREAT BALL (rows 1-2). "
+    "Only press A on the item list when the arrow is clearly on the 'SUPER "
+    "POTION' text (row 3). "
+    "- From the top of the list, SUPER POTION is 2 rows down: press Down, Down. "
+    "- If you are NOT SURE which row the arrow is on, press Down (moving toward "
+    "SUPER POTION from the top is always safe). Do NOT gamble an A. "
+    "- If a 'How many would you like?' dialog names POKE BALL / GREAT BALL / "
+    "ANTIDOTE (anything except SUPER POTION), you picked the WRONG item: press B "
+    "to cancel, then Down until the arrow is on SUPER POTION, then A. "
+    "OTHER HARD RULES: NEVER output 'Start' or 'Select'. NEVER choose SELL. Buy "
+    "ONLY SUPER POTION. On any YES/NO, A is YES. If 'not enough money' shows, "
+    "press A then Left to lower the count and confirm what you can afford. If "
+    "RIGHT does not change the quantity, press Up instead. ALWAYS describe the "
+    "CURRENT screen AND which row the arrow is on in your reason. If the screen "
+    "is the plain overworld with no menu, press A (you face the clerk)."
 )
 
 
@@ -173,6 +180,19 @@ def run_shop_subtask(
             btn, reason = "B", f"haiku-err:{exc}"
         if btn in ("Start", "Select"):
             btn, reason = "B", f"{btn}-forbidden(was:{reason[:32]})"
+        # Wrong-item A/B oscillation breaker: the VLM mis-reads the list cursor,
+        # A-selects POKE BALL, B-cancels the quantity screen, repeat. If the last
+        # 4 buttons alternate A/B and nothing has been bought yet, force a Down to
+        # walk the cursor down toward SUPER POTION (safe from the top of the list).
+        recent = last_btns[-4:]
+        oscillating = (
+            len(recent) >= 4
+            and all(recent[i] in ("A", "B") and recent[i] != recent[i + 1]
+                    for i in range(3))
+        )
+        if oscillating and btn in ("A", "B") and gs and \
+                gs.bag_heal_qty == start_heal:
+            btn, reason = "Down", f"osc-break(was:{reason[:24]})"
         _log(f"shop[{step}]: {btn} ({reason})")
         try:
             client.tap(btn, frames=12)

@@ -81,6 +81,16 @@ RUN_CYCLE = ("B", "A", "Down", "Right", "A", "A")
 # "Do what" (cursor on SEND OUT); A confirms. Used ONLY when the active
 # battler's HP is 0 — never at the FIGHT menu (that thrash was H6a).
 SEND_OUT_SEQ = ("A", "B", "Down", "A", "A")
+# Double-battle drive cycle. Plain "A" mashing takes FIGHT->move->default target
+# for both mons and advances most turns, but it STALLS when a step needs a
+# non-A input: a directional to re-pick a live TARGET once one foe has fainted
+# (the default target is the KO'd slot), and B to advance the trainer's victory
+# text (a Mt.Chimney Team Magma double stalled 133 turns on "...what do you mean
+# I lost?", A-mash inert, cleared only by B + a directional). So cycle A with
+# target directionals and a B: A confirms/attacks, Right/Left re-pick the target,
+# Down reaches the second mon, B advances stuck dialog / backs out a mis-opened
+# menu (the next A re-enters FIGHT). Self-correcting, like move_select_sequence.
+DOUBLE_BATTLE_SEQ = ("A", "A", "Right", "A", "Down", "A", "Left", "B")
 # Flee a wild battle: B,B backs out of any submenu, Up,Up,Left resets the cursor
 # to FIGHT (top-left), then Right,Down -> RUN (bottom-right), A selects it. Used
 # to leave any wild battle we don't want to fight (traversal, or no damaging
@@ -1719,7 +1729,8 @@ def run(
             except (OSError, RuntimeError, EmulatorError):
                 needs_send_out = False
             battle_move_queue = (
-                list(SEND_OUT_SEQ) if needs_send_out else ["A"]
+                list(SEND_OUT_SEQ) if needs_send_out
+                else list(DOUBLE_BATTLE_SEQ)
             )
         elif not battle_move_queue and gs.in_battle and gs.is_trainer_battle:
             try:
