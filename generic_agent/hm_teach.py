@@ -29,8 +29,10 @@ SYSTEM_PROMPT_TEACH_HM = (
     "TMs & HMs pocket (press Right/Left to change pocket), scroll to HM06 ROCK "
     "SMASH, press A, choose USE, then on the party screen move the cursor to a "
     "POOCHYENA and press A to teach it. "
-    "HARD RULES: (1) NEVER output 'Start' — it CLOSES the menu and breaks the task. "
-    "Never emit Start under any circumstance. "
+    "HARD RULES: (1) The START menu should ALREADY be open — press A when the "
+    "arrow is on BAG. Only if you see PURELY the overworld field (your character "
+    "on the map) with NO menu list should you press Start ONCE to open it. NEVER "
+    "press Start while any menu, list, or dialog box is visible — it closes it. "
     "(2) NEVER teach it to GROVYLE (the grass starter) — if a Summary or 'teach to "
     "GROVYLE?' screen appears, press B to cancel and pick a POOCHYENA instead. "
     "(3) On the party list, confirm the cursor is on a POOCHYENA before A. "
@@ -105,24 +107,15 @@ def run_teach_subtask(
                 time.sleep(0.3)
             _log(f"teach_hm: SUCCESS (step {step})")
             return True
-        # Menu-state guard via gMain.callback2. The VLM has no state memory and
-        # kept re-emitting Start, which TOGGLES the menu shut -> every later step
-        # ran in the overworld while the model hallucinated a party screen (the
-        # whole 145-turn teach failure). So: if the menu is closed (overworld),
-        # the only correct move is to (re)open it with Start; while a menu is
-        # open, Start is forbidden entirely (it would close it), and the VLM
-        # drives. cb2 flips instantly, unlike the stale battle flag.
-        gs = _read(client)
-        in_overworld = bool(gs and gs.game_cb2 in state_mod.CB2_OVERWORLD_SET)
-        if in_overworld:
-            _log(f"teach_hm[{step}]: Start (reopen-menu; cb2=overworld)")
-            try:
-                client.tap("Start", frames=15)
-            except EmulatorError:
-                break
-            last_btns.append("Start")
-            time.sleep(_STEP_SLEEP)
-            continue
+        # NB (verified live 07-19): the START menu is an overworld OVERLAY —
+        # game_cb2 stays == the overworld callback while it is open. So cb2 CANNOT
+        # tell "field, no menu" from "field, Start-menu open"; the old guard
+        # (cb2==overworld -> press Start) toggled the just-opened menu shut every
+        # step (the earlier belief that "cb2 flips instantly" was wrong). Fully
+        # vision-driven now: the opener above raised the menu, we always screenshot
+        # and let the VLM read the real screen, and the toggle-breaker below blocks
+        # a mistaken 2nd Start. (The POKEMON party screen does change cb2, but we
+        # no longer depend on that to drive the menu.)
         try:
             client.screenshot(_SCREEN)
         except EmulatorError:
@@ -142,12 +135,15 @@ def run_teach_subtask(
             btn, reason = rescue_brain._parse_response(raw)
         except Exception as exc:  # noqa: BLE001 — API/parse failure -> back out
             btn, reason = "B", f"haiku-err:{exc}"
-        # Hard filter: Start while a menu is open would close it. The model is
-        # told never to emit Start, but enforce it regardless — drop to B, which
-        # backs out one level and self-corrects (over-backing lands in the
-        # overworld, which the guard above reopens next step).
-        if btn == "Start":
-            btn, reason = "B", f"start-forbidden(was:{reason[:40]})"
+        # Start keeps cb2=overworld even with the menu open, so we can't read the
+        # menu state from RAM. Block only a 2nd consecutive Start (which would
+        # toggle the just-opened menu shut); a single Start is allowed so the VLM
+        # can reopen the menu if it truly closed. If the menu is in fact open, A
+        # advances toward the party screen.
+        if btn == "Select":
+            btn, reason = "B", f"Select-forbidden(was:{reason[:24]})"
+        elif btn == "Start" and last_btns and last_btns[-1] == "Start":
+            btn, reason = "A", f"Start-toggle-guard(was:{reason[:24]})"
         _log(f"teach_hm[{step}]: {btn} ({reason})")
         try:
             client.tap(btn, frames=12)

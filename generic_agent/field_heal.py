@@ -14,7 +14,7 @@ from . import config, rescue_brain, state as state_mod
 from .io import EmulatorError, MGBAClient
 
 _HEAL_TARGET_FRAC = 0.90     # done once the lead is healed to >= this
-_MAX_STEPS = 40
+_MAX_STEPS = 22              # a clean heal is ~7 steps; cap wasted budget on a miss
 _STEP_SLEEP = 0.7
 _SCREEN = config.MEMORY_DIR / "field_heal_screen.png"
 
@@ -24,17 +24,29 @@ SYSTEM_PROMPT_HEAL = (
     'object: {"button": "<A|B|Up|Down|Left|Right>", "reason": "<short>"}. '
     "The START menu is ALREADY OPEN when you begin — do NOT try to open it. "
     "The path: choose BAG (A on BAG) -> the ITEMS pocket (press Left/Right to "
-    "change pocket if you are not on ITEMS) -> move the cursor to SUPER POTION "
-    "-> A -> choose USE -> on the party screen put the cursor on SCEPTILE (the "
-    "big box on the LEFT, slot 0) and press A. After the 'HP restored' message, "
-    "if SCEPTILE is still not full you may use another; otherwise back out. "
-    "HARD RULES: (1) NEVER output 'Start' — it CLOSES the menu and breaks the "
-    "task. Never emit Start. (2) Use SUPER POTION only, on SCEPTILE only (the "
-    "LEFT big box); do NOT waste it on the weak POOCHYENA/LOTAD. (3) On a YES/NO, "
-    "A confirms YES. (4) If the arrow is on CLOSE BAG press Up to reach the "
-    "items. (5) LOOK at the screenshot and describe the CURRENT screen in your "
-    "reason (overworld / start-menu / bag / party-list / dialog) so you do not "
-    "repeat a button that is not working."
+    "change pocket if you are not on ITEMS) -> SUPER POTION is NOT the first item; "
+    "press Down to scroll the list until the highlighted row shows quantity x6 "
+    "(SUPER POTION — you hold exactly 6; every other item shows x1) -> A -> choose "
+    "USE -> the party screen opens with the cursor ALREADY on SCEPTILE (top-left, "
+    "the only Pokemon with a non-full HP bar): press A immediately, do NOT move the "
+    "cursor. After the 'HP restored' message, if SCEPTILE is still not full you may "
+    "use another; otherwise back out. "
+    "HARD RULES: (1) The START menu (a vertical list POKEDEX/POKEMON/BAG/POKENAV/"
+    "SAVE/OPTION/EXIT) should ALREADY be open — press A when the arrow is on BAG. "
+    "BAG is the 3rd row (below POKEDEX and POKEMON, ABOVE POKENAV). If pressing A "
+    "opened a HOENN MAP / CONDITION / MATCH CALL submenu, you were on POKENAV, not "
+    "BAG: press B to go back, then Up once to land on BAG, then A. "
+    "Only if you see PURELY the overworld field (your character on the map) with "
+    "NO menu list, press Start ONCE to open it. NEVER press Start while any menu, "
+    "list, or dialog box is visible — it would close it. (2) The 'It won't have "
+    "any effect' message means you used a WRONG item (a x1 item, not SUPER "
+    "POTION) — press B back to the ITEMS pocket and press Down until the "
+    "highlighted row shows x6, then A. Do NOT keep pressing A on the top item. "
+    "The x6 row is the ONLY correct item. (3) On a "
+    "YES/NO, A confirms YES. (4) If the arrow is on CLOSE BAG press Up to reach "
+    "the items. (5) LOOK at the screenshot and describe the CURRENT screen in "
+    "your reason (overworld / start-menu / bag / party-list / dialog) so you do "
+    "not repeat a button that is not working."
 )
 
 
@@ -114,18 +126,14 @@ def run_heal_subtask(
                 time.sleep(0.3)
             _log("field_heal: bag empty, stop")
             return _healed(client)
-        # Menu-state guard (hm_teach pattern): overworld -> (re)open with Start;
-        # a menu is open -> Start forbidden, the VLM drives.
-        in_overworld = bool(gs and gs.game_cb2 in state_mod.CB2_OVERWORLD_SET)
-        if in_overworld:
-            _log(f"field_heal[{step}]: Start (reopen-menu; cb2=overworld)")
-            try:
-                client.tap("Start", frames=15)
-            except EmulatorError:
-                break
-            last_btns.append("Start")
-            time.sleep(_STEP_SLEEP)
-            continue
+        # NB: the START menu is an overworld OVERLAY — game_cb2 stays == the
+        # overworld callback while it is open (verified live 07-19: after one
+        # Start, the POKEDEX/BAG/... list is on screen yet cb2 is unchanged). So
+        # cb2 CANNOT tell "field, no menu" from "field, Start-menu open"; the old
+        # guard (cb2==overworld -> press Start) toggled the menu shut every step
+        # and never healed. This sub-task is fully vision-driven: always screenshot
+        # and let the VLM read the actual screen. The opener above already opened
+        # the menu; the toggle-breaker below stops a mistaken 2nd Start.
         try:
             client.screenshot(_SCREEN)
         except EmulatorError:
@@ -145,8 +153,14 @@ def run_heal_subtask(
             btn, reason = rescue_brain._parse_response(raw)
         except Exception as exc:  # noqa: BLE001 — API/parse failure -> back out
             btn, reason = "B", f"haiku-err:{exc}"
-        if btn in ("Start", "Select"):
-            btn, reason = "B", f"{btn}-forbidden(was:{reason[:32]})"
+        if btn == "Select":
+            btn, reason = "B", f"Select-forbidden(was:{reason[:24]})"
+        elif btn == "Start" and last_btns and last_btns[-1] == "Start":
+            # Start keeps cb2=overworld even with the menu open, so we can't read
+            # the menu state from RAM; block a 2nd consecutive Start so we never
+            # toggle the just-opened menu shut. If the menu is in fact open, A
+            # advances into BAG; if it truly failed to open, next step re-Starts.
+            btn, reason = "A", f"Start-toggle-guard(was:{reason[:24]})"
         _log(f"field_heal[{step}]: {btn} ({reason})")
         try:
             client.tap(btn, frames=12)
