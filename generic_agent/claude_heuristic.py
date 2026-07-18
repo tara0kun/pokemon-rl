@@ -81,16 +81,19 @@ RUN_CYCLE = ("B", "A", "Down", "Right", "A", "A")
 # "Do what" (cursor on SEND OUT); A confirms. Used ONLY when the active
 # battler's HP is 0 — never at the FIGHT menu (that thrash was H6a).
 SEND_OUT_SEQ = ("A", "B", "Down", "A", "A")
-# Double-battle drive cycle. Plain "A" mashing takes FIGHT->move->default target
-# for both mons and advances most turns, but it STALLS when a step needs a
-# non-A input: a directional to re-pick a live TARGET once one foe has fainted
-# (the default target is the KO'd slot), and B to advance the trainer's victory
-# text (a Mt.Chimney Team Magma double stalled 133 turns on "...what do you mean
-# I lost?", A-mash inert, cleared only by B + a directional). So cycle A with
-# target directionals and a B: A confirms/attacks, Right/Left re-pick the target,
-# Down reaches the second mon, B advances stuck dialog / backs out a mis-opened
-# menu (the next A re-enters FIGHT). Self-correcting, like move_select_sequence.
-DOUBLE_BATTLE_SEQ = ("A", "A", "Right", "A", "Down", "A", "Left", "B")
+# Double-battle drive cycle. The command menu defaults its cursor to FIGHT at the
+# START of every turn, and both mons' moves are chosen BEFORE any executes, so
+# during selection every target is still alive: 6 plain A's take FIGHT->move->
+# (default, live) target for BOTH mons and commit the turn (verified live — a
+# Jagged Pass L41-vs-L21 double fell to pure A-mash). The earlier cycle that
+# threaded in "Down"/"Left" to reach the 2nd mon / re-pick a target instead
+# DRIFTED the command cursor off FIGHT onto POKEMON, where A opens the switch
+# menu and the turn never commits — a Lavaridge B1F double froze 268 turns at the
+# command menu on exactly that (07-19). The trailing B advances victory/faint
+# text (or is a no-op at a command menu — B cannot flee a trainer battle). A mon
+# fainting is handled separately: double_battle_needs_send_out() -> SEND_OUT_SEQ
+# fires BEFORE this, so this cycle only ever runs the no-faint case.
+DOUBLE_BATTLE_SEQ = ("A", "A", "A", "A", "A", "A", "B")
 # Flee a wild battle: B,B backs out of any submenu, Up,Up,Left resets the cursor
 # to FIGHT (top-left), then Right,Down -> RUN (bottom-right), A selects it. Used
 # to leave any wild battle we don't want to fight (traversal, or no damaging
