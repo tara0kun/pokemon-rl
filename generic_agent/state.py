@@ -169,9 +169,29 @@ MOVE_ROCK_SMASH = 249  # MOVE_ROCK_SMASH (moves.h)
 # future-event `not X` gate). reset_flag_latches() is for tests.
 _BADGE_BITS_LATCHED: set[int] = set()
 
+# Rise-flicker guard for future-event GATE flags (0x333 theft, 0x8B Mt.Chimney).
+# Unlike the past-event latches, a spurious True on these advances the goal PAST
+# an event that has not happened: a single garbage/crossed read of 0x333 (under
+# multi-loop socket contention, 07-18) reported theft=True, goals._latched wrote
+# meteor_theft_done.marker, and the agent skipped Meteor Falls straight to the
+# (grunt-blocked) cable car. So read_state reports these True only after
+# _RISE_CONFIRM_N CONSECUTIVE True reads; a genuinely-set flag reads True for
+# many turns so the guard costs nothing real. Counter is per-flag, in-process.
+_RISE_CONFIRM: dict[str, int] = {}
+_RISE_CONFIRM_N = 3
+
+
+def _rise_confirmed(key: str, raw: bool) -> bool:
+    if raw:
+        _RISE_CONFIRM[key] = _RISE_CONFIRM.get(key, 0) + 1
+    else:
+        _RISE_CONFIRM[key] = 0
+    return _RISE_CONFIRM[key] >= _RISE_CONFIRM_N
+
 
 def reset_flag_latches() -> None:
     _BADGE_BITS_LATCHED.clear()
+    _RISE_CONFIRM.clear()
 
 # Pokemon substruct order by personality % 24 (Gen 3 box-mon encryption).
 _SUBSTRUCT_PERMS = [
@@ -512,9 +532,11 @@ def read_state(client: MGBAClient) -> GameState:
         flag_dock_rejected = bool(flag_byte_dr & (1 << (0x94 % 8)))
         # Lavaridge arc gates
         flag_byte_r112m = client.read8(ptr + SB1_FLAGS_OFFSET + (0x333 // 8))
-        flag_r112_magma = bool(flag_byte_r112m & (1 << (0x333 % 8)))
+        flag_r112_magma = _rise_confirmed(
+            "r112_magma", bool(flag_byte_r112m & (1 << (0x333 % 8))))
         flag_byte_mtc = client.read8(ptr + SB1_FLAGS_OFFSET + (0x8B // 8))
-        flag_mtc_defeated = bool(flag_byte_mtc & (1 << (0x8B % 8)))
+        flag_mtc_defeated = _rise_confirmed(
+            "mtc_defeated", bool(flag_byte_mtc & (1 << (0x8B % 8))))
         flag_byte_b4 = client.read8(ptr + SB1_FLAGS_OFFSET + (0x86A // 8))
         flag_badge4 = bool(flag_byte_b4 & (1 << (0x86A % 8)))
         flag_byte_rs = client.read8(ptr + SB1_FLAGS_OFFSET + (0x6B // 8))

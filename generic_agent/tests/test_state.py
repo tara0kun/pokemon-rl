@@ -184,5 +184,40 @@ class BadgeLatchTest(unittest.TestCase):
         self.assertEqual(self._count(set()), 0)
 
 
+class RiseConfirmTest(unittest.TestCase):
+    """Future-event gate flags (0x333/0x8B) must survive a spurious single True:
+    a garbage read once false-latched the theft and skipped Meteor Falls."""
+
+    def setUp(self) -> None:
+        import generic_agent.state as st
+        self.st = st
+        st.reset_flag_latches()
+
+    def tearDown(self) -> None:
+        self.st.reset_flag_latches()
+
+    def test_single_true_not_confirmed(self) -> None:
+        # One True, or True interrupted by a False, never confirms.
+        self.assertFalse(self.st._rise_confirmed("k", True))   # 1
+        self.assertFalse(self.st._rise_confirmed("k", False))  # reset
+        self.assertFalse(self.st._rise_confirmed("k", True))   # 1
+        self.assertFalse(self.st._rise_confirmed("k", True))   # 2
+
+    def test_n_consecutive_true_confirms(self) -> None:
+        res = False
+        for _ in range(self.st._RISE_CONFIRM_N):
+            res = self.st._rise_confirmed("k", True)
+        self.assertTrue(res)
+        # stays confirmed while True
+        self.assertTrue(self.st._rise_confirmed("k", True))
+        # a False resets it (state read; goals._latched holds the disk latch)
+        self.assertFalse(self.st._rise_confirmed("k", False))
+
+    def test_flags_are_independent(self) -> None:
+        for _ in range(self.st._RISE_CONFIRM_N):
+            self.st._rise_confirmed("a", True)
+        self.assertFalse(self.st._rise_confirmed("b", True))
+
+
 if __name__ == "__main__":
     unittest.main()

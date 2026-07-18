@@ -89,11 +89,14 @@ ROCK_SMASH_TAUGHT_MARKER = config.MEMORY_DIR / "rock_smash_taught.marker"
 
 
 def _latched(gs, attr: str, marker) -> bool:
-    """Monotonic story-flag latch, immune to the SaveBlock1 DMA flicker. Once
-    the flag has been observed True, a disk marker keeps it True forever — the
-    flag reading False for a single frame otherwise flips the goal (e.g. the
-    Steven-letter flag flicker flipped the goal between the Dewford sail and the
-    deep-cave letter, churning the agent in place). Mirrors _peeko_done."""
+    """Monotonic story-flag latch, immune to the SaveBlock1 DMA drop-flicker.
+    Once the flag has been observed True, a disk marker keeps it True forever —
+    the flag reading False for a single frame otherwise flips the goal (e.g. the
+    Steven-letter flicker flipped the goal between the Dewford sail and the
+    deep-cave letter). RISE-flicker protection (a spurious True must not
+    false-latch) lives in state.read_state for the future-event gate flags 0x333
+    /0x8B, which is where a single garbage read once wrote meteor_theft_done.
+    marker and skipped the theft. Mirrors _peeko_done."""
     if marker.exists():
         return True
     if bool(getattr(gs, attr, False)):
