@@ -802,8 +802,16 @@ def heuristic_button(
                     # the goal's component and BFS to that warp instead;
                     # stepping on it fires the warp (pokeemerald step-on
                     # trigger) and the next turn re-plans from the landing.
+                    # `bfs_path is None` (genuinely unreachable), NOT `not
+                    # bfs_path`: an EMPTY path means the agent is already standing
+                    # on an interact target tile (a walkable neighbour of the
+                    # NPC), and must fall through to the face+A interact below.
+                    # `not bfs_path` also caught [] and re-routed to a warp — so
+                    # at Flannery's tile the agent walked off to a geyser instead
+                    # of starting the gym battle, frozen 500+ turns at (14,9)
+                    # (07-19). Only a true None means "no walk reaches it".
                     if (
-                        not bfs_path
+                        bfs_path is None
                         and interact_target is not None
                         and mc.has_multiple_warp_components(
                             gs.map_group, gs.map_num
