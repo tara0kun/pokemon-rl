@@ -42,6 +42,7 @@ from collections import deque
 from pathlib import Path
 
 from . import (
+    battle_heal as battle_heal_mod,
     battle_moves as battle_moves_mod,
     config,
     curriculum as curr_mod,
@@ -1405,6 +1406,7 @@ def run(
     teach_cooldown_until = 0
     shop_cooldown_until = 0
     heal_cooldown_until = 0
+    battle_heal_cooldown_until = 0
     rs = reward_state_mod.RewardState()
     rs.load()
     checkpoint_target: tuple[int, int, int, int] | None = None
@@ -1835,6 +1837,40 @@ def run(
                     # attack while it is genuinely our turn (Fable F4).
                     battle_move_queue = ["B"]
                 else:
+                    # Mid-battle heal (H16, Flannery): Overheat (140, 2x vs
+                    # grass, Sun-boosted, ~85-128 dmg) out-paces Rock Tomb
+                    # unless the lead out-heals it — live runs whiteout with
+                    # move selection alone. On OUR turn, if the lead is under
+                    # the threshold and the bag holds a restore, spend the
+                    # turn on a Super Potion instead of a move. should_heal
+                    # requires enemy_cur_hp > 0 (the ==0 faint transition is
+                    # B-mash territory — spec guard — and -1 means unread),
+                    # and the cooldown keeps a failed VLM run from re-firing
+                    # every turn and starving the battle of attacks. Above
+                    # the threshold / no potion, behavior is byte-identical
+                    # to before.
+                    if battle_heal_mod.should_heal(
+                        gs, enemy_cur_hp, turn, battle_heal_cooldown_until,
+                    ):
+                        print(
+                            f"  [battle_heal] turn {turn}: lead "
+                            f"{gs.party0_hp}/{gs.party0_max_hp}"
+                            f" ({gs.party0_hp_frac:.0%}) <"
+                            f" {battle_heal_mod.HEAL_TRIGGER_FRAC:.0%},"
+                            f" restores={gs.bag_heal_qty}"
+                            " -> Super Potion via VLM"
+                        )
+                        try:
+                            ok = battle_heal_mod.run_battle_heal_subtask(
+                                client, log=print,
+                            )
+                        except Exception as _exc:  # noqa: BLE001
+                            print(f"  [battle_heal] error: {_exc}")
+                            ok = False
+                        if not ok:
+                            battle_heal_cooldown_until = turn + 12
+                        last_action = "battle_heal"
+                        continue
                     # Our turn — pick the best damaging move from RAM. The
                     # sequence now self-corrects (leading B,B backs out of any
                     # menu it might mis-open), so fire it for ANY slot without
