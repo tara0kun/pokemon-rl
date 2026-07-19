@@ -251,7 +251,11 @@ class GameState:
     party0_level: int = 0
     party0_hp: int = 0
     party0_max_hp: int = 0
-    party0_species: int = 0  # decrypted species_id (Wingull=278, Grovyle=253, etc)
+    # Decrypted species id — Gen 3 INTERNAL numbering, NOT National Dex
+    # (internal: Grovyle=278, Sceptile=279, Lombre=296; NatDex 279 is
+    # Pelipper — that mixup misdiagnosed the lead twice). Name lookup must
+    # use the ROM's gSpeciesNames order (see scratch/party_dump.py).
+    party0_species: int = 0
     party_count: int = 0
     flag_birch_met: bool = False
     flag_starter_received: bool = False
