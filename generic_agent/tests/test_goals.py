@@ -582,8 +582,11 @@ class TestLavaridgeArc(GoalsTestBase):
 
     # --- magma-done (0x8B == 1): descend, heal, gym ---
     def test_magma_done_descends_then_reaches_lavaridge(self) -> None:
+        # party0_level at the grind target: below it grind_pre_flannery owns
+        # nav on the pocket (H17) — TestFlanneryGrind covers that branch.
         M = dict(flag_route112_magma_cleared=True,
-                 flag_mtchimney_magma_defeated=True)
+                 flag_mtchimney_magma_defeated=True,
+                 party0_level=goals_mod.FLANNERY_GRIND_TARGET_LEVEL)
         self.assertEqual(
             self._name(map_group=24, map_num=12, x=17, y=37, **M),
             "descend_jagged_pass")
@@ -593,8 +596,11 @@ class TestLavaridgeArc(GoalsTestBase):
             "reach_lavaridge")
 
     def test_lavaridge_gym_and_heal_priority(self) -> None:
+        # Level at the grind target: below it the H17 grind goal wins in town
+        # (TestFlanneryGrind covers that branch).
         M = dict(flag_route112_magma_cleared=True,
-                 flag_mtchimney_magma_defeated=True)
+                 flag_mtchimney_magma_defeated=True,
+                 party0_level=goals_mod.FLANNERY_GRIND_TARGET_LEVEL)
         # Full HP in town -> straight to Flannery.
         g = goals_mod.current_goal(
             self._gs(map_group=0, map_num=12, x=5, y=10, **M))
@@ -673,6 +679,172 @@ class TestLavaridgeArc(GoalsTestBase):
         self.assertEqual(  # flicker back to False -> still south (latched)
             self._name(flag_route112_magma_cleared=False, **at),
             "exit_fiery_path_south")
+
+
+class TestFlanneryGrind(GoalsTestBase):
+    """H17: sub-target lead grinds the Jagged Pass grass before Flannery.
+
+    Mirror of the Brawly grind loop (grind_granite_cave / heal_at_dewford_pc):
+    below FLANNERY_GRIND_TARGET_LEVEL the grind goal owns navigation and pins
+    the lead on the canon grass tile; the heal cycle is descend (walk home) ->
+    pocket -> heal_at_lavaridge -> PC; at the target level the goal retires
+    and the descend/reach/gym goals resume the Flannery push."""
+
+    TARGET = goals_mod.FLANNERY_GRIND_TARGET_LEVEL
+
+    def setUp(self) -> None:
+        super().setUp()
+        for m in (goals_mod.PEEKO_DONE_MARKER, goals_mod.LETTER_DONE_MARKER,
+                  goals_mod.DEVON_DELIVERED_MARKER, goals_mod.THEFT_DONE_MARKER,
+                  goals_mod.MTCHIMNEY_DONE_MARKER):
+            m.write_text("1", encoding="utf-8")
+
+    def _gs(self, **kw):
+        base = dict(
+            badge_count=3, party_count=5,
+            party0_level=42,                       # live level at the wall
+            party0_hp=128, party0_max_hp=128,
+            bag_heal_qty=10, money=20000,
+            flag_steven_letter_delivered=True,
+            flag_dock_rejected_devon=True,
+            flag_devon_goods_delivered=True,
+            flag_rock_smash_hm=True, party_moves=[[249, 0, 0, 0]],
+        )
+        base.update(kw)
+        return make_gs(**base)
+
+    def _name(self, **kw):
+        g = goals_mod.current_goal(self._gs(**kw))
+        return g.name if g else None
+
+    def test_under_target_town_routes_to_jagged_grind(self) -> None:
+        # Healthy sub-target lead in Lavaridge -> head for the Jagged Pass
+        # grass, NOT the gym (the goal sits above lavaridge_gym_flannery).
+        g = goals_mod.current_goal(self._gs(map_group=0, map_num=12, x=5, y=10))
+        self.assertEqual(g.name, "grind_pre_flannery")
+        self.assertEqual(g.target_map, (24, 13))
+
+    def test_under_target_pins_grass_on_jagged_pass(self) -> None:
+        # On JaggedPass itself the grind goal must outrank descend_jagged_pass
+        # (also matching there) and pin the canon grass tile.
+        g = goals_mod.current_goal(
+            self._gs(map_group=24, map_num=13, x=14, y=39))
+        self.assertEqual(g.name, "grind_pre_flannery")
+        self.assertEqual(g.target_pos, (19, 32))
+
+    def test_under_target_pocket_and_pc_route_back_to_grind(self) -> None:
+        # Healed at the PC / standing in the pocket -> back into the pass.
+        self.assertEqual(
+            self._name(map_group=0, map_num=27, x=7, y=47),
+            "grind_pre_flannery")
+        self.assertEqual(
+            self._name(map_group=4, map_num=5, x=7, y=4),
+            "grind_pre_flannery")
+
+    def test_at_target_flannery_push_resumes(self) -> None:
+        # The retire boundary: at the target level the grind goes silent and
+        # the pre-existing arc goals drive to Flannery from every loop map.
+        L = dict(party0_level=self.TARGET)
+        self.assertEqual(
+            self._name(map_group=0, map_num=12, x=5, y=10, **L),
+            "lavaridge_gym_flannery")
+        self.assertEqual(
+            self._name(map_group=24, map_num=13, x=19, y=32, **L),
+            "descend_jagged_pass")
+        self.assertEqual(
+            self._name(map_group=0, map_num=27, x=7, y=47, **L),
+            "reach_lavaridge")
+
+    def test_hurt_no_potions_walks_home_and_heals(self) -> None:
+        # Grind yields on its hp gate (< 0.5): on the pass the descend goal is
+        # the walk home; in the pocket / town heal_at_lavaridge (with the new
+        # (0,27) cur entry) routes on to the PC nurse.
+        H = dict(party0_hp=40, bag_heal_qty=0)
+        self.assertEqual(
+            self._name(map_group=24, map_num=13, x=19, y=32, **H),
+            "descend_jagged_pass")
+        self.assertEqual(
+            self._name(map_group=0, map_num=27, x=7, y=47, **H),
+            "heal_at_lavaridge")
+        self.assertEqual(
+            self._name(map_group=0, map_num=12, x=5, y=10, **H),
+            "heal_at_lavaridge")
+
+    def test_hurt_with_potions_field_heals_in_place(self) -> None:
+        # With restores in the bag, field_heal_potion (above the grind goal)
+        # heals on the spot instead of abandoning the grind for the PC.
+        self.assertEqual(
+            self._name(map_group=24, map_num=13, x=19, y=32,
+                       party0_hp=40, bag_heal_qty=5),
+            "field_heal_potion")
+
+    def test_pre_mtchimney_never_grinds(self) -> None:
+        # Before the Mt.Chimney Magma defeat the grind must not fire — the
+        # badge-4 gauntlet goals still own JaggedPass and Route112 south is
+        # crossed en route to Fallarbor pre-theft.
+        goals_mod.MTCHIMNEY_DONE_MARKER.unlink()
+        self.assertEqual(
+            self._name(map_group=24, map_num=13, x=14, y=39,
+                       flag_mtchimney_magma_defeated=False),
+            "mtchimney_defeat_magma")
+
+    def test_badge04_retires_grind(self) -> None:
+        # Heat Badge won -> the whole arc (grind included) retires.
+        self.assertIsNone(goals_mod.current_goal(self._gs(
+            map_group=24, map_num=13, x=19, y=32, flag_badge04_get=True)))
+
+    def test_visited_bypass_keeps_retargeting_the_pass(self) -> None:
+        # JaggedPass is long-visited from the first descent; the grind goal
+        # must keep re-targeting it from town every heal cycle.
+        goals_mod.record_map_visit(24, 13)
+        self.assertEqual(
+            self._name(map_group=0, map_num=12, x=5, y=10),
+            "grind_pre_flannery")
+
+    def test_grind_pin_is_canon_grass_in_the_warp_component(self) -> None:
+        # No hardcoded-coord drift: the pin must be (a) in the SAME walkable
+        # component as the JaggedPass->Route112 (pocket) warp pair — ledges
+        # are collision walls, so this proves two-way walk reachability from
+        # Lavaridge — and (b) a canon wild-encounter grass tile (behavior in
+        # GRASS_BEHAVIORS). Reads only cached map_cache files, like the other
+        # canon tests.
+        import json as _json
+        import struct as _struct
+
+        from generic_agent import config as _config, map_data as _md
+        from generic_agent.map_knowledge import GRASS_BEHAVIORS
+
+        goal = next(g for g in goals_mod.GOAL_TABLE
+                    if g.name == "grind_pre_flannery")
+        self.assertEqual(goal.target_map, (24, 13))
+        mc = _md.get_cache()
+        info = mc.get(24, 13)
+        self.assertIsNotNone(info)
+        r112 = [(w["x"], w["y"]) for w in (info.warps or [])
+                if "Route112" in str(w.get("dest_map", ""))]
+        self.assertTrue(r112)
+        tile2cid, _ = mc._components(24, 13)
+        self.assertEqual(
+            tile2cid.get(goal.target_pos), tile2cid.get(r112[0]))
+        # behavior byte of the pin tile via the layout's tileset pair
+        cache_dir = _config.MEMORY_DIR / "map_cache"
+        layout_id = _json.loads(
+            (cache_dir / "JaggedPass.map.json").read_text(encoding="utf-8")
+        )["layout"]
+        pair = _md.layout_tilesets(layout_id)
+        self.assertIsNotNone(pair)
+        prim, sec = pair
+        table: dict[int, int] = {}
+        pdata = _md.tileset_attr_path("primary", prim).read_bytes()
+        for meta in range(min(0x200, len(pdata) // 2)):
+            table[meta] = _struct.unpack_from("<H", pdata, meta * 2)[0] & 0xFF
+        sdata = _md.tileset_attr_path("secondary", sec).read_bytes()
+        for i in range(len(sdata) // 2):
+            table[0x200 + i] = _struct.unpack_from("<H", sdata, i * 2)[0] & 0xFF
+        raw = (cache_dir / "JaggedPass.map.bin").read_bytes()
+        x, y = goal.target_pos
+        block = _struct.unpack_from("<H", raw, (y * info.width + x) * 2)[0]
+        self.assertIn(table.get(block & 0x3FF), GRASS_BEHAVIORS)
 
 
 if __name__ == "__main__":

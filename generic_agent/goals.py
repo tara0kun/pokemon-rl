@@ -83,6 +83,17 @@ def _in_route112_fiery_south(gs) -> bool:
         return False
 
 
+# H17 (Flannery numbers wall, 07-19 night): Rock Tomb 50-power + Super Potion
+# (+50) loses the numbers race at L42 — Sunny-boosted Overheat measured ~128
+# vs the lead's 137 max HP, so a full-HP lead drops to single digits before
+# battle_heal's window even opens, and +50 never out-heals the next hit.
+# Grinding the lead to this level flips both races (scaled from the measured
+# L42 numbers): HP ~155 / SpD +13% puts the first Overheat at ~73% (survivable
+# from full, healable after the White-Herb reset), and Atk ~95 puts Rock Tomb
+# (2x vs Fire) into 2HKO range on Torkoal (Def140) / OHKO on Numel+Slugma, so
+# at most ~two Overheats land per fight instead of a KO per turn.
+FLANNERY_GRIND_TARGET_LEVEL = 48
+
 LETTER_DONE_MARKER = config.MEMORY_DIR / "steven_letter_done.marker"
 DEVON_DELIVERED_MARKER = config.MEMORY_DIR / "devon_delivered.marker"
 ROCK_SMASH_TAUGHT_MARKER = config.MEMORY_DIR / "rock_smash_taught.marker"
@@ -260,6 +271,11 @@ _GOAL_BYPASS_VISITED = {
     # (target_map != cur) can't apply (same as exit_fiery_path_north).
     "ride_cable_car", "mtchimney_defeat_magma", "descend_jagged_pass",
     "heal_at_lavaridge", "lavaridge_gym_flannery", "reach_lavaridge",
+    # Flannery grind loop (H17): JaggedPass is marked visited on the first
+    # descent, but the grind goal must keep re-targeting it from town/PC on
+    # every heal cycle until the lead reaches the target level (the
+    # grind_granite_cave bypass, mirrored).
+    "grind_pre_flannery",
     # The Mauville Mart is marked visited on first entry, but buy_potions must
     # stay re-targetable to restock (a whiteout back to Mauville, or before the
     # Flannery gym). field_heal_potion has target_map=None so it never needs it.
@@ -788,11 +804,44 @@ class Goal:
                 and _mtchimney_done(gs)
                 and cur in {(24, 12), (19, 1), (24, 13)}
             )
+        if c == "grind_pre_flannery":
+            # H17 grind gate (mirror of grind_pre_brawly's H6b): below the
+            # target level this goal owns navigation and pins the lead on the
+            # Jagged Pass bottom grass — the only canon land_mons zone that is
+            # two-way WALK-reachable from the Lavaridge PC (Route112's
+            # Lavaridge pocket has no grass tiles; Fiery Path / Route113 sit
+            # across blobs the pocket can't re-enter on foot; the Route111
+            # desert needs the post-Flannery Go-Goggles). Wild Numel/Machop/
+            # Spoink L20-22 are harmless to the L42+ lead. Cur-gated to the
+            # loop maps: town, PC, Route112 (grind only drives in the pocket —
+            # on the south blob ride_cable_car sits above and wins), and
+            # JaggedPass itself. Listed ABOVE descend_jagged_pass, which also
+            # matches on JaggedPass: from the pocket this goal routes back INTO
+            # the pass, so a slot below descend would warp-ping-pong. Sitting
+            # above the heal goal, it must yield on its own hp gate (>= 0.5,
+            # the exact complement of heal_at_lavaridge's < 0.5): a hurt lead
+            # falls through to descend (the walk home is the PC route) and
+            # then heal_at_lavaridge in the pocket/town, while a hurt lead
+            # WITH potions is caught by field_heal_potion higher up. Retires
+            # at the target level -> descend/reach/gym goals resume Flannery.
+            return (
+                gs.badge_count >= 3
+                and not gs.flag_badge04_get
+                and _mtchimney_done(gs)
+                and gs.party0_level < FLANNERY_GRIND_TARGET_LEVEL
+                and gs.party0_hp_frac >= 0.5
+                and cur in {(0, 12), (4, 5), (0, 27), (24, 13)}
+            )
         if c == "heal_at_lavaridge":
             # Flannery (Fire) beats a Grass lead, so whiteout is realistic. One
             # heal at the Lavaridge PC re-homes the whiteout point to Lavaridge,
             # so a loss re-tries the gym locally instead of the long Mauville ->
             # cable car -> Jagged loop (the Slateport/Mauville re-home strategy).
+            # (0,27) = the Route112 pocket, the grind loop's walk home: a hurt
+            # sub-target lead descends out of Jagged Pass (grind yields on hp,
+            # descend walks it down) and lands here, and must route on into the
+            # PC instead of going goal-less. South-blob (0,27) frames never
+            # reach this: ride_cable_car sits above and wins outside the pocket.
             return (
                 gs.badge_count >= 3
                 and not gs.flag_badge04_get
@@ -800,7 +849,7 @@ class Goal:
                 and gs.party0_max_hp > 0
                 and gs.party0_hp_frac < 0.5
                 and not gs.in_battle
-                and cur in {(0, 12), (4, 1), (4, 2), (4, 5)}
+                and cur in {(0, 12), (0, 27), (4, 1), (4, 2), (4, 5)}
             )
         if c == "lavaridge_gym_flannery":
             # Badge4 arc leg 6: beat Flannery (13,9) for FLAG_BADGE04_GET (0x86A).
@@ -1226,6 +1275,22 @@ GOAL_TABLE: list[Goal] = [
         target_pos=(13, 6),       # Maxie (Tabitha/grunts en route) -> 0x8B
         condition="mtchimney_defeat_magma",
         desc="Badge4 arc leg4: Mt.Chimney で Tabitha+Maxie 撃破 (0x8B set)",
+    ),
+    Goal(
+        # H17 grind (mirror of grind_granite_cave), listed ABOVE descend so it
+        # wins on JaggedPass while the lead is under-levelled. (19,32) is canon
+        # MB_TALL_GRASS in the SAME walkable component as the JaggedPass<->
+        # Route112-pocket warp pair (14,40)/(15,40) — JaggedPass ledges are
+        # collision walls, so component membership proves the pin is WALK-
+        # reachable both ways (town -> pocket -> warp -> grass) with no ledge
+        # jump. 3 of its 4 neighbours ((19,31)/(18,32)/(20,32)) are grass too,
+        # so the pin-pacing keeps stepping on encounter tiles (grass maps roll
+        # wilds per grass STEP, unlike cave floors which roll on every step).
+        name="grind_pre_flannery",
+        target_map=(24, 13),      # JaggedPass
+        target_pos=(19, 32),      # bottom grass patch (canon land_mons L20-22)
+        condition="grind_pre_flannery",
+        desc="Sceptile < L48 → Jagged Pass 草むら (19,32) で野生戦 grind → Flannery 再挑戦",
     ),
     Goal(
         name="descend_jagged_pass",
