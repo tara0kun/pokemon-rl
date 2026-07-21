@@ -18,15 +18,38 @@ These tests pin the fixed walk model (map_data.FOOT_IMPASSABLE_BEHAVIORS):
   - Route112: the pocket reaches the cable-car station (one-way ledge
     descent), the road leg the grind loop re-boards the car with.
 
-Pure offline: reads only cached map_cache files (never the map_knowledge
-store, so nothing under memory/ is written); skips without the cache.
+Second overshoot (07-22, live): the walk model above was correct, yet the
+descent still bottomed out on the warp pad every cycle. run()'s
+forward_force explore override rewrote the BFS's Right/Left grass-branch
+turn into the entry direction ("Down") for 30 turns after map entry; the
+center column is a one-way JUMP_SOUTH ledge chain, forced Downs VAULT
+(never bump, so tile_map's blocked-dir self-heal can't kick in), and the
+agent flew past both branch rows into the bottom funnel.
+TestForwardForceOverride pins the src gate that fixes it, and
+TestJaggedDescentReplay replays the whole descent through the REAL
+heuristic_button + the REAL forward_force_override under game movement
+rules.
+
+Pure offline: reads only cached map_cache files. The replay redirects the
+map_knowledge store to a temp dir, so nothing under memory/ is written;
+skips without the cache.
 """
 from __future__ import annotations
 
 import struct
+import tempfile
 import unittest
+from pathlib import Path
 
-from generic_agent import config, goals as goals_mod, map_data as md
+from generic_agent import (
+    claude_heuristic as ch,
+    config,
+    goals as goals_mod,
+    map_data as md,
+    map_knowledge as mk_mod,
+    path_memory as path_memory_mod,
+    tile_map as tile_map_mod,
+)
 from generic_agent.map_knowledge import GRASS_BEHAVIORS
 
 JAGGED = (24, 13)
@@ -163,6 +186,205 @@ class TestJaggedPassGrindNav(unittest.TestCase):
         )
         self.assertEqual(bumps, 0)
         self.assertIn(final, set(self.bottom_pads))
+
+
+class TestForwardForceOverride(unittest.TestCase):
+    """The 07-22 overshoot fix: forward_force must never rewrite a
+    goal-directed button, while keeping its explore behavior for
+    non-goal srcs. Pure function, no cache needed."""
+
+    def test_never_overrides_goal_directed(self) -> None:
+        for src in (
+            "mapbfs:Right->JaggedPass(dist=6)",
+            "mapbfs_warp:Down->Route112",
+            "goal_map_explore:Down",
+            "rival_seek:Up",
+            "rival_talk:A",
+        ):
+            self.assertIsNone(
+                ch.forward_force_override("Down", True, "Right", src, set(), 7),
+                src,
+            )
+
+    def test_forces_entry_dir_on_explore_src(self) -> None:
+        self.assertEqual(
+            ch.forward_force_override(
+                "Down", True, "Right", "explore:Right", set(), 7,
+            ),
+            "Down",
+        )
+
+    def test_perp_when_entry_blocked_and_button_opposes(self) -> None:
+        got = ch.forward_force_override(
+            "Down", True, "Up", "explore:Up", {"Down"}, 4,
+        )
+        self.assertIn(got, ("Left", "Right"))
+
+    def test_silent_outside_window_or_when_blocked(self) -> None:
+        self.assertIsNone(
+            ch.forward_force_override(
+                "Down", False, "Right", "explore:x", set(), 4,
+            ),
+        )
+        # entry blocked and button is a sane sideways move: leave it alone
+        self.assertIsNone(
+            ch.forward_force_override(
+                "Down", True, "Right", "explore:x", {"Down"}, 4,
+            ),
+        )
+
+
+class _FakeGS:
+    """Minimal overworld game state for heuristic_button: unknown attrs
+    read falsy so battle/menu/goal side-branches stay quiet."""
+
+    def __init__(self, x: int, y: int) -> None:
+        self.map_group, self.map_num = JAGGED
+        self.x, self.y = x, y
+        self.in_battle = False
+        self.is_trainer_battle = False
+        self.saveblock1_valid = True
+        self.npcs_on_map: list[tuple[int, int, int]] = []
+        self.party0_hp = 120
+        self.party0_max_hp = 120
+        self.party0_hp_frac = 1.0
+        self.party0_level = 42
+        self.party0_critical = False
+        self.party_count = 5
+        self.bag_pokeball_count = 0
+        self.bag_heal_qty = 6
+        self.badge_count = 3
+        self.flag_badge04_get = False
+        self.flag_mtchimney_magma_defeated = True
+
+    def __getattr__(self, name: str):
+        return "" if name.endswith("_hex") else 0
+
+
+@unittest.skipUnless(_HAVE_JAGGED, "JaggedPass canon cache not present")
+class TestJaggedDescentReplay(unittest.TestCase):
+    """Loop-level offline replay of the grind descent: each step asks the
+    REAL heuristic_button (grind_pre_flannery goal), applies run()'s REAL
+    forward_force_override with entry_dir="Down" (the cable-car cycle's
+    re-entry state, tile_map empty exactly like the cleared live store),
+    then moves under game rules (ledge vault / bump / warp). Pre-fix this
+    bottomed out on the Route112 warp pad every cycle; it must now reach
+    the grind pin's grass without ever touching the bottom pads."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.mc = md.get_cache()
+        cls.info = cls.mc.get(*JAGGED)
+        assert cls.info is not None
+        cls.grid = cls.mc.behavior_grid(*JAGGED)
+        cls.elev, cls.ledges = _nav_inputs(cls.mc, *JAGGED)
+        cls.foot = cls.mc._foot_impassable_tiles(*JAGGED)
+        cls.grass = {
+            t for t, bv in cls.grid.items() if bv in GRASS_BEHAVIORS
+        }
+        cls.warp_pads = {
+            (w["x"], w["y"]): str(w.get("dest_map", ""))
+            for w in cls.info.warps
+        }
+        cls.top_pads = [
+            t for t, d in cls.warp_pads.items() if "MtChimney" in d
+        ]
+        cls.bottom_pads = {
+            t for t, d in cls.warp_pads.items() if "Route112" in d
+        }
+        cls.goal = next(
+            g for g in goals_mod.GOAL_TABLE
+            if g.name == "grind_pre_flannery"
+        )
+        pin = cls.goal.target_pos
+        cls.pin_zone = {
+            t for t in [
+                pin, (pin[0], pin[1] + 1), (pin[0], pin[1] - 1),
+                (pin[0] - 1, pin[1]), (pin[0] + 1, pin[1]),
+            ]
+            if cls.info.walkable(*t)
+        }
+
+    def setUp(self) -> None:
+        # Redirect the map_knowledge store to a temp dir: heuristic_button
+        # seeds/saves knowledge files on first get(), and tests must not
+        # write under memory/. Canon map_cache reads are untouched.
+        self._tmp = tempfile.TemporaryDirectory()
+        self._old_dir = mk_mod.KNOWLEDGE_DIR
+        self._old_store = mk_mod._STORE
+        mk_mod.KNOWLEDGE_DIR = Path(self._tmp.name)
+        mk_mod._STORE = None
+
+    def tearDown(self) -> None:
+        mk_mod.KNOWLEDGE_DIR = self._old_dir
+        mk_mod._STORE = self._old_store
+        self._tmp.cleanup()
+
+    def _game_step(self, x: int, y: int, btn: str):
+        dx, dy = DIRS[btn]
+        nx, ny = x + dx, y + dy
+        ledge = self.ledges.get((nx, ny))
+        if ledge is not None:
+            if ledge == (dx, dy):
+                return x + 2 * dx, y + 2 * dy, True
+            return x, y, False           # non-jump approach = wall
+        if (nx, ny) in self.foot or not self.info.walkable(nx, ny):
+            return x, y, False
+        return nx, ny, True
+
+    def test_descent_reaches_pin_grass_not_bottom_warp(self) -> None:
+        tmp_tiles = Path(self._tmp.name) / "tile_map.json"
+        tmp_paths = Path(self._tmp.name) / "path_memory.json"
+        for start in self.top_pads:
+            tm = tile_map_mod.TileMap(path=tmp_tiles)
+            pm = path_memory_mod.TransitionMemory(path=tmp_paths)
+            x, y = start
+            last_action = "Down"   # walked onto the Mt.Chimney-side pad
+            last_pos: tuple[int, int] | None = None
+            same_pos = 0
+            reached: tuple[int, int] | None = None
+            for turn in range(1, 41):
+                gs = _FakeGS(x, y)
+                btn, src = ch.heuristic_button(
+                    gs, tm, pm, {JAGGED: 5}, same_pos, 0, turn,
+                    last_pos, last_action, [], 0, 0,
+                    reward_state=None, screen_signals={},
+                    current_goal=self.goal, client=None,
+                    ram_battle_recent=False,
+                )
+                rec = tm._store.get(tm._map_key(*JAGGED), {}).get(
+                    tm._tile_key(x, y),
+                )
+                forced = ch.forward_force_override(
+                    "Down", turn < 30, btn, src,
+                    set(rec.blocked) if rec is not None else set(), turn,
+                )
+                if forced is not None:
+                    btn = forced
+                if btn not in DIRS:      # interact/settle turn: no move
+                    continue
+                last_pos = (x, y)
+                nx, ny, moved = self._game_step(x, y, btn)
+                if moved:
+                    same_pos = 0
+                    tm.record_visit(*JAGGED, nx, ny)
+                    tm.record_attempt(*JAGGED, x, y, btn, moved=True)
+                else:
+                    same_pos += 1
+                    tm.record_attempt(*JAGGED, x, y, btn, moved=False)
+                last_action = btn
+                x, y = nx, ny
+                self.assertNotIn(
+                    (x, y), self.bottom_pads,
+                    f"descent from {start} overshot into the bottom warp",
+                )
+                if (x, y) in self.pin_zone and (x, y) in self.grass:
+                    reached = (x, y)
+                    break
+            self.assertIsNotNone(
+                reached,
+                f"descent from {start} never reached the grind pin grass",
+            )
 
 
 @unittest.skipUnless(_HAVE_R112, "Route112 canon cache not present")

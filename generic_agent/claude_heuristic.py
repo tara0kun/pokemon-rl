@@ -100,6 +100,69 @@ DOUBLE_BATTLE_SEQ = ("A", "A", "A", "A", "A", "A", "B")
 # to leave any wild battle we don't want to fight (traversal, or no damaging
 # move left). A wild battle can always be run from.
 FLEE_SEQ = ("B", "B", "Up", "Up", "Left", "Right", "Down", "A")
+# src prefixes whose button came from GOAL-DIRECTED navigation (a BFS path
+# step, or a scripted interaction). run()'s post-processing EXPLORE overrides
+# (anomaly_escape, forward_force) must never clobber these: the planner is
+# already steering, and "helpfully" pressing a different direction breaks the
+# plan exactly where it matters. ONE definition, shared by both gates.
+GOAL_DIRECTED_SRC_PREFIXES = ("mapbfs", "rival_seek", "rival_talk", "goal_")
+
+
+def forward_force_override(
+    entry_dir: str | None,
+    in_force_window: bool,
+    button: str,
+    src: str,
+    blocked_now: set[str],
+    turn: int,
+) -> str | None:
+    """Post-map-entry "keep walking forward" EXPLORE heuristic of run().
+
+    For ~30 turns after a map change, keep pressing the direction the agent
+    entered with (entry_dir) so a fresh map is actually walked into instead
+    of dithered on the edge; when entry_dir is empirically blocked at this
+    tile and the planner wants to walk straight back out (opp), sidestep
+    perpendicular. Returns the button to press INSTEAD of `button`, or None
+    to leave the decision alone.
+
+    It must never override a goal-directed button (GOAL_DIRECTED_SRC_
+    PREFIXES — same gate anomaly_escape already respects). Jagged Pass grind
+    (2026-07-22, offline-replayed): every grind cycle re-enters the pass
+    from Mt.Chimney with entry_dir="Down", and this override rewrote the
+    BFS's Right/Left turn toward the grass into "Down" for 30 turns. On a
+    wall that self-heals (the bump records the dir into tile_map's blocked
+    and the force yields next turn), but the pass's center column is a chain
+    of one-way JUMP_SOUTH ledges — a forced Down VAULTS them without ever
+    bumping, so the agent flew past both grass branch rows (y=29/31), the
+    re-plan found no path back (one-way), fell to goal_map_explore and
+    bottomed out on the Route112 warp pad: pocket -> cable car -> repeat,
+    zero grind. The walk model and the BFS were correct all along; only
+    this override broke the follow-through.
+    """
+    if (
+        entry_dir is None
+        or not in_force_window
+        or button not in DIRECTIONS
+        or src.startswith(GOAL_DIRECTED_SRC_PREFIXES)
+    ):
+        return None
+    opp = {
+        "Up": "Down", "Down": "Up",
+        "Left": "Right", "Right": "Left",
+    }[entry_dir]
+    perp_map = {
+        "Up": ("Right", "Left"),
+        "Down": ("Left", "Right"),
+        "Left": ("Up", "Down"),
+        "Right": ("Down", "Up"),
+    }[entry_dir]
+    if entry_dir not in blocked_now and button != entry_dir:
+        return entry_dir
+    if button == opp:
+        perp_options = [d for d in perp_map if d not in blocked_now]
+        if perp_options:
+            return perp_options[turn % len(perp_options)]
+    return None
 
 
 def take_screenshot(client: MGBAClient, session_id: str, turn: int) -> Path:
@@ -2219,7 +2282,7 @@ def run(
             )
             if visited_count < 30:
                 anomaly_kind = "map_lockin"
-        goal_directed = src.startswith(("mapbfs", "rival_seek", "rival_talk", "goal_"))
+        goal_directed = src.startswith(GOAL_DIRECTED_SRC_PREFIXES)
         if (
             anomaly_kind is not None
             and gs.saveblock1_valid
@@ -2273,24 +2336,15 @@ def run(
                     decisions.get("door_pingpong_break", 0) + 1
                 )
 
+        # forward_force: see forward_force_override's docstring. The src
+        # gate inside it (goal_directed skip) is the 07-22 Jagged Pass
+        # overshoot fix — extracted to a module function so the offline
+        # descent replay (test_jagged_nav) exercises the REAL logic.
         if (
-            entry_dir is not None
-            and turn < force_explore_until_turn
-            and button in DIRECTIONS
-            and not gs.in_battle
+            not gs.in_battle
             and gs.saveblock1_valid
             and not door_pingpong
         ):
-            opp = {
-                "Up": "Down", "Down": "Up",
-                "Left": "Right", "Right": "Left",
-            }.get(entry_dir)
-            perp_map = {
-                "Up": ("Right", "Left"),
-                "Down": ("Left", "Right"),
-                "Left": ("Up", "Down"),
-                "Right": ("Down", "Up"),
-            }[entry_dir]
             mk_av = tm._map_key(gs.map_group, gs.map_num)
             rec_av = tm._store.get(mk_av, {}).get(
                 tm._tile_key(gs.x, gs.y)
@@ -2298,15 +2352,10 @@ def run(
             cur_blocked_now = (
                 set(rec_av.blocked) if rec_av is not None else set()
             )
-            forced_btn: str | None = None
-            if entry_dir not in cur_blocked_now and button != entry_dir:
-                forced_btn = entry_dir
-            elif button == opp:
-                perp_options = [
-                    d for d in perp_map if d not in cur_blocked_now
-                ]
-                if perp_options:
-                    forced_btn = perp_options[turn % len(perp_options)]
+            forced_btn = forward_force_override(
+                entry_dir, turn < force_explore_until_turn,
+                button, src, cur_blocked_now, turn,
+            )
             if forced_btn is not None:
                 button = forced_btn
                 src = f"forward_force:{button},entry={entry_dir}"

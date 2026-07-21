@@ -94,11 +94,12 @@ def _in_route112_fiery_south(gs) -> bool:
 # at most ~two Overheats land per fight instead of a KO per turn.
 # 48: the L42 lead LOST Flannery even with Rock Tomb + battle_heal (verified
 # 2026-07-22 — Super Potion +50 can't out-heal Torkoal's Overheat ~128; Sceptile
-# healed 2->52 HP and the next Overheat re-KO'd it). So the grind IS needed. It is
-# still gated on a fix to the Jagged Pass grind nav (the grass sits above one-way
-# ledges the lead can't climb from below — bfs_to_tile's ledge model looks wrong
-# there, or pick a reachable grass). Target restored so the grind runs once that
-# nav is fixed. See daily 2026-07-22.
+# healed 2->52 HP and the next Overheat re-KO'd it). So the grind IS needed.
+# Nav: bfs_to_tile's ledge model and the pin were CORRECT all along — the
+# descent overshoot was run()'s forward_force explore override rewriting the
+# BFS's grass-branch turn into "Down" for 30 turns after map entry (fixed
+# 2026-07-22, forward_force_override src gate; TestJaggedDescentReplay pins
+# the full descent). See daily 2026-07-22.
 FLANNERY_GRIND_TARGET_LEVEL = 48
 
 LETTER_DONE_MARKER = config.MEMORY_DIR / "steven_letter_done.marker"
