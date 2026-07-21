@@ -54,6 +54,25 @@ LEDGE_JUMP_BEHAVIORS: dict[int, tuple[int, int]] = {
     0x3F: (-1, 1),   # JUMP_SOUTHWEST
 }
 
+# Metatile behaviors that are IMPASSABLE ON FOOT even though their collision
+# bits read 0 (pokeemerald field_player_avatar.c):
+#   0xD1 MB_BUMPY_SLOPE / 0xD3-0xD6 MB_*_RAIL: CheckAcroBikeCollision turns
+#     any move onto them into a non-zero collision (COLLISION_WHEELIE_HOP /
+#     rail collisions) — only an Acro Bike trick state may enter; on foot the
+#     player just bumps. 0xD0 MB_MUDDY_SLOPE: ForcedMovement_MuddySlope
+#     force-slides the player south unless on a Mach Bike at full speed, so
+#     it can never be stood on or ascended on foot.
+# The agent never rides a bike, so the BFS walk model must treat these as
+# walls. Jagged Pass is the motivating case (07-22): its only collision-
+# "walkable" routes up to the bottom grass are 0xD1 bumpy-slope strips
+# ((9,30-32) etc.), so BFS claimed an Up-path the game refuses — the agent
+# bumped, wandered off the one-way south ledges into the bottom funnel and
+# bounced JaggedPass <-> Route112 pocket forever. Audited over all 277
+# cached maps: 8 maps carry these behaviors (JaggedPass, Route111/115/119,
+# GraniteCave_B1F, 3 SafariZone maps), none on a live-verified foot route
+# (they were never enterable on foot in-game to begin with).
+FOOT_IMPASSABLE_BEHAVIORS = frozenset({0xD0, 0xD1, 0xD3, 0xD4, 0xD5, 0xD6})
+
 
 def _tileset_dirname(label: str) -> str:
     """gTileset_MeteorFalls -> "meteor_falls" (pokeemerald data/tilesets dir).
@@ -188,6 +207,10 @@ class MapCache:
         ] = {}
         self._ledge_edge_cache: dict[
             tuple[int, int], list[tuple[int, int]]
+        ] = {}
+        # Per-map set of on-foot-impassable tiles (FOOT_IMPASSABLE_BEHAVIORS).
+        self._foot_impassable_cache: dict[
+            tuple[int, int], set[tuple[int, int]]
         ] = {}
 
     def is_indoor(self, map_g: int, map_n: int) -> bool:
@@ -395,7 +418,14 @@ class MapCache:
 
         if not _walk(*start):
             return None
-        blocked = blocked_tiles or set()
+        # On-foot impassable metatiles (bumpy/muddy slopes, Acro rails) are
+        # walls no matter what the caller passes: behavior is a STATIC
+        # tileset attribute, so neither the water-/elevation-relax retries
+        # nor a live-grid extra_walkable override may re-open them (the live
+        # grid reads the same collision-0 bits that lie about these tiles).
+        blocked = set(blocked_tiles or ()) | self._foot_impassable_tiles(
+            map_g, map_n,
+        )
         elev = tile_elevation or {}
         ledges = ledge_jumps or {}
 
@@ -652,9 +682,14 @@ class MapCache:
         duplicated here because map_knowledge imports map_data). Returns {}
         when map.bin or the tileset pair can't be resolved (synthetic test
         maps, offline) — callers must treat a MISSING tile as
-        behavior-UNKNOWN, never as MB_NORMAL. Memoized per map."""
+        behavior-UNKNOWN, never as MB_NORMAL. Memoized per map (lazy attr:
+        several test fixtures build MapCache via __new__ without __init__,
+        and bfs_to_tile's foot-impassable block now reaches here)."""
         key = (map_g, map_n)
-        cached = self._behavior_grid_cache.get(key)
+        cache = getattr(self, "_behavior_grid_cache", None)
+        if cache is None:
+            cache = self._behavior_grid_cache = {}
+        cached = cache.get(key)
         if cached is not None:
             return cached
         grid: dict[tuple[int, int], int] = {}
@@ -690,6 +725,27 @@ class MapCache:
             grid = {}
         self._behavior_grid_cache[key] = grid
         return grid
+
+    def _foot_impassable_tiles(
+        self, map_g: int, map_n: int,
+    ) -> set[tuple[int, int]]:
+        """Tiles whose metatile behavior is on-foot impassable (see
+        FOOT_IMPASSABLE_BEHAVIORS). Memoized per map; empty when behavior
+        data can't be resolved (synthetic test maps, offline) — those keep
+        the collision-only walk model unchanged. Lazy attr like
+        behavior_grid's, for __new__-built test caches."""
+        key = (map_g, map_n)
+        cache = getattr(self, "_foot_impassable_cache", None)
+        if cache is None:
+            cache = self._foot_impassable_cache = {}
+        cached = cache.get(key)
+        if cached is None:
+            cached = {
+                t for t, bv in self.behavior_grid(map_g, map_n).items()
+                if bv in FOOT_IMPASSABLE_BEHAVIORS
+            }
+            cache[key] = cached
+        return cached
 
     def _warp_active(self, map_g: int, map_n: int, w: dict) -> bool:
         """False iff this warp_event provably NEVER fires: its tile's

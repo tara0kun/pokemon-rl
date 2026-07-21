@@ -684,11 +684,14 @@ class TestLavaridgeArc(GoalsTestBase):
 class TestFlanneryGrind(GoalsTestBase):
     """H17: sub-target lead grinds the Jagged Pass grass before Flannery.
 
-    Mirror of the Brawly grind loop (grind_granite_cave / heal_at_dewford_pc):
-    below FLANNERY_GRIND_TARGET_LEVEL the grind goal owns navigation and pins
-    the lead on the canon grass tile; the heal cycle is descend (walk home) ->
-    pocket -> heal_at_lavaridge -> PC; at the target level the goal retires
-    and the descend/reach/gym goals resume the Flannery push."""
+    Mirror of the Brawly grind loop (grind_granite_cave / heal_at_dewford_pc),
+    but the grass is enterable on foot only from the TOP of the pass (07-22:
+    bumpy-slope walls), so the full cycle is: town/PC/pocket ->
+    grind_reboard_cable_car / ride_cable_car (station) -> Mt.Chimney ->
+    descend -> grind_pre_flannery pins the grass ON the pass; the heal cycle
+    is descend (walk home) -> pocket -> heal_at_lavaridge -> PC; at the
+    target level both loop goals retire and the descend/reach/gym goals
+    resume the Flannery push."""
 
     TARGET = goals_mod.FLANNERY_GRIND_TARGET_LEVEL
 
@@ -718,12 +721,14 @@ class TestFlanneryGrind(GoalsTestBase):
         g = goals_mod.current_goal(self._gs(**kw))
         return g.name if g else None
 
-    def test_under_target_town_routes_to_jagged_grind(self) -> None:
-        # Healthy sub-target lead in Lavaridge -> head for the Jagged Pass
-        # grass, NOT the gym (the goal sits above lavaridge_gym_flannery).
+    def test_under_target_town_routes_to_cable_car(self) -> None:
+        # Healthy sub-target lead in Lavaridge -> re-board the cable car
+        # (07-22: the grass is enterable only from the TOP of the pass —
+        # bumpy-slope walls — so town must NOT aim at JaggedPass directly),
+        # and NOT the gym (the goal sits above lavaridge_gym_flannery).
         g = goals_mod.current_goal(self._gs(map_group=0, map_num=12, x=5, y=10))
-        self.assertEqual(g.name, "grind_pre_flannery")
-        self.assertEqual(g.target_map, (24, 13))
+        self.assertEqual(g.name, "grind_reboard_cable_car")
+        self.assertEqual(g.target_map, (19, 0))
 
     def test_under_target_pins_grass_on_jagged_pass(self) -> None:
         # On JaggedPass itself the grind goal must outrank descend_jagged_pass
@@ -733,14 +738,26 @@ class TestFlanneryGrind(GoalsTestBase):
         self.assertEqual(g.name, "grind_pre_flannery")
         self.assertEqual(g.target_pos, (19, 32))
 
-    def test_under_target_pocket_and_pc_route_back_to_grind(self) -> None:
-        # Healed at the PC / standing in the pocket -> back into the pass.
+    def test_under_target_pocket_pc_gym_route_to_cable_car(self) -> None:
+        # Healed at the PC / standing in the pocket / walked into the gym
+        # under-level -> all take the road leg toward the station.
         self.assertEqual(
             self._name(map_group=0, map_num=27, x=7, y=47),
-            "grind_pre_flannery")
+            "grind_reboard_cable_car")
         self.assertEqual(
             self._name(map_group=4, map_num=5, x=7, y=4),
-            "grind_pre_flannery")
+            "grind_reboard_cable_car")
+        self.assertEqual(
+            self._name(map_group=4, map_num=1, x=5, y=10),
+            "grind_reboard_cable_car")
+
+    def test_under_target_south_blob_keeps_ride_cable_car(self) -> None:
+        # Outside the pocket on Route112 the pre-existing ride_cable_car
+        # (earlier in GOAL_TABLE) owns the same station target — the road
+        # leg hands over seamlessly once the lead hops down the ledges.
+        self.assertEqual(
+            self._name(map_group=0, map_num=27, x=26, y=36),
+            "ride_cable_car")
 
     def test_at_target_flannery_push_resumes(self) -> None:
         # The retire boundary: at the target level the grind goes silent and
@@ -794,21 +811,29 @@ class TestFlanneryGrind(GoalsTestBase):
         self.assertIsNone(goals_mod.current_goal(self._gs(
             map_group=24, map_num=13, x=19, y=32, flag_badge04_get=True)))
 
-    def test_visited_bypass_keeps_retargeting_the_pass(self) -> None:
-        # JaggedPass is long-visited from the first descent; the grind goal
-        # must keep re-targeting it from town every heal cycle.
+    def test_visited_bypass_keeps_retargeting_the_loop(self) -> None:
+        # JaggedPass AND the cable-car station are long-visited from the
+        # first ascent/descent; the loop goals must keep re-targeting them
+        # every heal cycle.
         goals_mod.record_map_visit(24, 13)
+        goals_mod.record_map_visit(19, 0)
         self.assertEqual(
             self._name(map_group=0, map_num=12, x=5, y=10),
+            "grind_reboard_cable_car")
+        self.assertEqual(
+            self._name(map_group=24, map_num=13, x=14, y=39),
             "grind_pre_flannery")
 
-    def test_grind_pin_is_canon_grass_in_the_warp_component(self) -> None:
-        # No hardcoded-coord drift: the pin must be (a) in the SAME walkable
-        # component as the JaggedPass->Route112 (pocket) warp pair — ledges
-        # are collision walls, so this proves two-way walk reachability from
-        # Lavaridge — and (b) a canon wild-encounter grass tile (behavior in
-        # GRASS_BEHAVIORS). Reads only cached map_cache files, like the other
-        # canon tests.
+    def test_grind_pin_is_canon_grass_and_reboard_mirrors_ride(self) -> None:
+        # No hardcoded-coord drift: (a) the pin must be a canon
+        # wild-encounter grass tile (behavior in GRASS_BEHAVIORS) — the old
+        # "same walkable component as the bottom warp pair" assertion is
+        # gone: raw-collision components glue regions together across
+        # MB_BUMPY_SLOPE tiles, so it never proved walk reachability (the
+        # walk-model facts live in test_jagged_nav) — and (b) the road-leg
+        # goal must mirror ride_cable_car's station target exactly so the
+        # pocket->south-blob handover stays seamless. Reads only cached
+        # map_cache files, like the other canon tests.
         import json as _json
         import struct as _struct
 
@@ -818,15 +843,15 @@ class TestFlanneryGrind(GoalsTestBase):
         goal = next(g for g in goals_mod.GOAL_TABLE
                     if g.name == "grind_pre_flannery")
         self.assertEqual(goal.target_map, (24, 13))
+        reboard = next(g for g in goals_mod.GOAL_TABLE
+                       if g.name == "grind_reboard_cable_car")
+        ride = next(g for g in goals_mod.GOAL_TABLE
+                    if g.name == "ride_cable_car")
+        self.assertEqual(reboard.target_map, ride.target_map)
+        self.assertEqual(reboard.target_pos, ride.target_pos)
         mc = _md.get_cache()
         info = mc.get(24, 13)
         self.assertIsNotNone(info)
-        r112 = [(w["x"], w["y"]) for w in (info.warps or [])
-                if "Route112" in str(w.get("dest_map", ""))]
-        self.assertTrue(r112)
-        tile2cid, _ = mc._components(24, 13)
-        self.assertEqual(
-            tile2cid.get(goal.target_pos), tile2cid.get(r112[0]))
         # behavior byte of the pin tile via the layout's tileset pair
         cache_dir = _config.MEMORY_DIR / "map_cache"
         layout_id = _json.loads(
