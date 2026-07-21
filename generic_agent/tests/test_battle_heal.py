@@ -30,16 +30,18 @@ class ShouldHealTest(unittest.TestCase):
     """発火条件: our-turn 分岐から呼ばれる純関数。"""
 
     def test_fires_low_hp_with_potion_enemy_alive(self):
-        gs = make_gs(party0_hp=40, party0_max_hp=120)  # 0.33 < 0.40
+        # well under HEAL_TRIGGER_FRAC (threshold-agnostic)
+        gs = make_gs(party0_hp=30, party0_max_hp=120)
         self.assertTrue(battle_heal.should_heal(gs, 50, turn=10,
                                                 cooldown_until=0))
 
     def test_no_fire_at_or_above_threshold(self):
-        # ちょうど閾値 (0.40) は「まだ戦える」— strict less-than。
-        gs = make_gs(party0_hp=48, party0_max_hp=120)
-        self.assertFalse(battle_heal.should_heal(gs, 50, 10, 0))
-        gs = make_gs(party0_hp=90, party0_max_hp=120)
-        self.assertFalse(battle_heal.should_heal(gs, 50, 10, 0))
+        # ちょうど閾値は「まだ戦える」— strict less-than、定数参照で閾値非依存。
+        thresh = battle_heal.HEAL_TRIGGER_FRAC
+        at = make_gs(party0_hp=int(thresh * 100), party0_max_hp=100)  # == thresh
+        self.assertFalse(battle_heal.should_heal(at, 50, 10, 0))
+        high = make_gs(party0_hp=95, party0_max_hp=100)
+        self.assertFalse(battle_heal.should_heal(high, 50, 10, 0))
 
     def test_no_fire_without_potion(self):
         gs = make_gs(bag_heal_qty=0)

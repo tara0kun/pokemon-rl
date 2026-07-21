@@ -34,7 +34,11 @@ from .io import EmulatorError, MGBAClient
 # threshold, so a successful heal never immediately re-fires. Tune upward
 # (<=0.60 stays waste-free: frac + 50/max still < 1.0) if live Flannery runs
 # show a max-roll Overheat KOing from just above the line.
-HEAL_TRIGGER_FRAC = 0.40
+HEAL_TRIGGER_FRAC = 0.60     # raised from 0.40: at 0.40 the lead skipped the
+                             # "<thresh & alive & our turn" window — Torkoal's
+                             # Overheat took it from ~60% straight to fainted, so
+                             # battle_heal never fired (07-19). 0.60 heals before
+                             # the next Overheat can KO from a chipped state.
 _MAX_STEPS = 16              # a clean battle heal is ~6 VLM steps post-opener
 _STEP_SLEEP = 0.7
 _HP_EPSILON = 0.05           # "HP rose" must beat read noise / rounding
