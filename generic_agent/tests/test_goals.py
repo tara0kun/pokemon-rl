@@ -702,7 +702,8 @@ class TestFlanneryGrind(GoalsTestBase):
     def _gs(self, **kw):
         base = dict(
             badge_count=3, party_count=5,
-            party0_level=42,                       # live level at the wall
+            # one below the grind target so the goal fires (threshold-agnostic)
+            party0_level=goals_mod.FLANNERY_GRIND_TARGET_LEVEL - 1,
             party0_hp=128, party0_max_hp=128,
             bag_heal_qty=10, money=20000,
             flag_steven_letter_delivered=True,
