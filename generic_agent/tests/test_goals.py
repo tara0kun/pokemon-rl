@@ -765,6 +765,17 @@ class TestFlanneryGrind(GoalsTestBase):
                        party0_hp=40, party0_max_hp=128),
             "heal_at_mauville")
 
+    def test_zero_damaging_pp_yields_grind_to_heal(self) -> None:
+        # A full-HP lead with 0 damaging PP must NOT keep grinding (it would
+        # flee every wild forever) — it yields to the PC heal, which refills PP.
+        # Unreadable PP (-1, the default) keeps grinding.
+        self.assertEqual(
+            self._name(map_group=0, map_num=27, x=26, y=36,
+                       party0_damaging_pp=-1), "grind_fiery_path")
+        self.assertEqual(
+            self._name(map_group=0, map_num=27, x=26, y=36,
+                       party0_damaging_pp=0), "heal_at_mauville")
+
     def test_pre_mtchimney_never_grinds(self) -> None:
         # Before the Mt.Chimney Magma defeat the grind must not fire — the
         # gauntlet goals still own the arc.

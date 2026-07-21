@@ -224,6 +224,42 @@ def _read_party_move_ids(client: MGBAClient, slot: int) -> list[int]:
     return [w0 & 0xFFFF, (w0 >> 16) & 0xFFFF, w1 & 0xFFFF, (w1 >> 16) & 0xFFFF]
 
 
+def read_party0_damaging_pp(client: MGBAClient) -> int:
+    """Sum of PP across the party leader's DAMAGING moves (power>0 in the ROM
+    gBattleMoves table). Returns -1 if unreadable or the decrypt looks like
+    garbage (out-of-range move id / PP), so the caller treats an unknown value
+    as "keep grinding". The 4 PP bytes sit in the Attacks substruct's 3rd word
+    (a_off+8), same XOR key as the move ids (see _read_party_move_ids)."""
+    from . import battle_moves as _bm
+    try:
+        base = PLAYER_PARTY_ADDR
+        pv = client.read32(base + 0x00)
+        otid = client.read32(base + 0x04)
+        key = pv ^ otid
+        a_off = 0x20 + _SUBSTRUCT_PERMS[pv % 24].index("A") * 12
+        w0 = client.read32(base + a_off) ^ key
+        w1 = client.read32(base + a_off + 4) ^ key
+        w2 = client.read32(base + a_off + 8) ^ key
+    except EmulatorError:
+        return -1
+    moves = [w0 & 0xFFFF, (w0 >> 16) & 0xFFFF, w1 & 0xFFFF, (w1 >> 16) & 0xFFFF]
+    pps = [w2 & 0xFF, (w2 >> 8) & 0xFF, (w2 >> 16) & 0xFF, (w2 >> 24) & 0xFF]
+    # A mis-decrypt (DMA relocation flicker) yields impossible ids/PP -> untrust.
+    if any(m > 559 for m in moves) or any(p > 64 for p in pps):
+        return -1
+    total = 0
+    for mid, pp in zip(moves, pps):
+        if mid == 0:
+            continue
+        try:
+            power, _ = _bm.move_power_type(client, mid)
+        except EmulatorError:
+            return -1
+        if power > 0:
+            total += pp
+    return total
+
+
 def _read_saveblock1_ptr(client: MGBAClient, tries: int = 4) -> int | None:
     """Return a stable SaveBlock1 pointer, ignoring DMA relocation transients."""
     prev = None
@@ -251,6 +287,11 @@ class GameState:
     party0_level: int = 0
     party0_hp: int = 0
     party0_max_hp: int = 0
+    # Sum of PP across the leader's DAMAGING moves (power>0). -1 = unreadable
+    # (garbage decrypt / DMA flicker). The Fiery grind yields to a PC heal when
+    # this is 0: a lead with 0 damaging PP makes best_move_index return -1, and
+    # the grind then flees every wild forever (a healthy-but-zero-XP stall).
+    party0_damaging_pp: int = -1
     # Decrypted species id — Gen 3 INTERNAL numbering, NOT National Dex
     # (internal: Grovyle=278, Sceptile=279, Lombre=296; NatDex 279 is
     # Pelipper — that mixup misdiagnosed the lead twice). Name lookup must
@@ -465,6 +506,8 @@ def read_state(client: MGBAClient) -> GameState:
     except EmulatorError:
         lv = hp = max_hp = 0
 
+    damaging_pp = read_party0_damaging_pp(client)
+
     # Decrypt party0 species (Pokemon Emerald box-pokemon encryption)
     # See 06-29 audit: agent lead was misidentified as Grovyle for 35+ hours.
     party0_species_id = 0
@@ -664,6 +707,7 @@ def read_state(client: MGBAClient) -> GameState:
         party0_level=lv,
         party0_hp=hp,
         party0_max_hp=max_hp,
+        party0_damaging_pp=damaging_pp,
         party0_species=party0_species_id,
         party_count=party_count,
         flag_birch_met=flag_birch,

@@ -663,7 +663,8 @@ class Goal:
                 and not gs.flag_badge04_get
                 and _mtchimney_done(gs)
                 and gs.party0_level < FLANNERY_GRIND_TARGET_LEVEL
-                and gs.party0_hp_frac < 0.4
+                # hurt OR out of damaging PP -> the PC refills both.
+                and (gs.party0_hp_frac < 0.4 or gs.party0_damaging_pp == 0)
                 and not gs.in_battle
                 and not _in_route112_jagged_pocket(gs)
                 and cur in {(0, 2), (10, 5), (0, 26), (0, 27)}
@@ -864,6 +865,10 @@ class Goal:
                 and _mtchimney_done(gs)
                 and gs.party0_level < FLANNERY_GRIND_TARGET_LEVEL
                 and gs.party0_hp_frac >= 0.4
+                # 0 damaging PP -> best_move_index=-1 -> the grind flees every
+                # wild forever. Yield to heal_at_mauville (a PC visit refills PP).
+                # -1 (unreadable) is treated as "keep grinding".
+                and gs.party0_damaging_pp != 0
                 and cur in {
                     _FIERY_PATH, _ROUTE112, (0, 26), (0, 2), (10, 5),
                     (0, 12), (4, 5), (4, 1), (4, 2),
