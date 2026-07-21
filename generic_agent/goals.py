@@ -830,7 +830,11 @@ class Goal:
                 and _mtchimney_done(gs)
                 and gs.party0_level < FLANNERY_GRIND_TARGET_LEVEL
                 and gs.party0_hp_frac >= 0.5
-                and cur in {(0, 12), (4, 5), (0, 27), (24, 13)}
+                # (4,1)/(4,2) = inside the gym: an under-level lead that entered
+                # the gym must be routed BACK OUT to grind, not pushed onto the
+                # (losing) Flannery fight — so grind owns nav here too and its
+                # (24,13) target walks it out via the town exit.
+                and cur in {(0, 12), (4, 5), (0, 27), (24, 13), (4, 1), (4, 2)}
             )
         if c == "heal_at_lavaridge":
             # Flannery (Fire) beats a Grass lead, so whiteout is realistic. One
