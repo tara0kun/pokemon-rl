@@ -92,13 +92,14 @@ def _in_route112_fiery_south(gs) -> bool:
 # from full, healable after the White-Herb reset), and Atk ~95 puts Rock Tomb
 # (2x vs Fire) into 2HKO range on Torkoal (Def140) / OHKO on Numel+Slugma, so
 # at most ~two Overheats land per fight instead of a KO per turn.
-# Temporarily 42 (== the live lead level) to DISABLE the pre-Flannery grind: the
-# Jagged Pass grass sits above one-way ledges the lead can't climb from below, so
-# the grind loop can't actually run there (2026-07-22). We first re-attempt
-# Flannery with the current L42 lead now that Rock Tomb + battle_heal(0.60) +
-# the fight-initiation and gym-maze nav fixes are all in place. Restore to 48
-# (and fix the Jagged Pass ledge model / pick a reachable grass) if that loses.
-FLANNERY_GRIND_TARGET_LEVEL = 42
+# 48: the L42 lead LOST Flannery even with Rock Tomb + battle_heal (verified
+# 2026-07-22 — Super Potion +50 can't out-heal Torkoal's Overheat ~128; Sceptile
+# healed 2->52 HP and the next Overheat re-KO'd it). So the grind IS needed. It is
+# still gated on a fix to the Jagged Pass grind nav (the grass sits above one-way
+# ledges the lead can't climb from below — bfs_to_tile's ledge model looks wrong
+# there, or pick a reachable grass). Target restored so the grind runs once that
+# nav is fixed. See daily 2026-07-22.
+FLANNERY_GRIND_TARGET_LEVEL = 48
 
 LETTER_DONE_MARKER = config.MEMORY_DIR / "steven_letter_done.marker"
 DEVON_DELIVERED_MARKER = config.MEMORY_DIR / "devon_delivered.marker"
