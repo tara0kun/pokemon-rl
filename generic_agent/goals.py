@@ -816,12 +816,13 @@ class Goal:
         if c == "grind_pre_flannery":
             # H17 grind gate (mirror of grind_pre_brawly's H6b): below the
             # target level this goal owns navigation ON JAGGED PASS ONLY and
-            # pins the lead on the bottom grass. ROM-verified 07-22: every
+            # pins the lead on the solid UPPER grass block (cluster0 interior
+            # (9,24), see the Goal comment). ROM-verified 07-22: every
             # collision-"walkable" route UP the pass runs through
             # MB_BUMPY_SLOPE (0xD1) strips — Acro-Bike-only, on foot the
             # player just bumps (pokeemerald CheckAcroBikeCollision) — so
             # the grass is reachable on foot ONLY from the TOP entry
-            # (Mt.Chimney warp: 23-25 step path, walk-simulated clean), and
+            # (Mt.Chimney warp: 18-19 step path to (9,24), walk-sim clean), and
             # NOT from the bottom warp pad / pocket / town. The old cur-set
             # (town/PC/pocket) sent the lead in through the bottom warp
             # toward that unreachable pin, and it bounced JaggedPass <->
@@ -1342,20 +1343,22 @@ GOAL_TABLE: list[Goal] = [
     ),
     Goal(
         # H17 grind (mirror of grind_granite_cave), listed ABOVE descend so it
-        # wins on JaggedPass while the lead is under-levelled. (19,32) is
-        # canon MB_TALL_GRASS. NOTE (07-22): the earlier "same walkable
-        # component as the bottom warp pair proves two-way walk
-        # reachability" argument was contaminated — the raw-collision
-        # component glues regions together across MB_BUMPY_SLOPE tiles
-        # (collision 0 but Acro-Bike-only in game), so the grass is really
-        # top-entry-only; grind_reboard_cable_car above drives the loop's
-        # road leg. 3 of the pin's 4 neighbours ((19,31)/(18,32)/(20,32))
-        # are grass too, so the pin-pacing keeps stepping on encounter tiles
-        # (grass maps roll wilds per grass STEP, unlike cave floors which
-        # roll on every step).
+        # wins on JaggedPass while the lead is under-levelled. Grass is
+        # top-entry-only (grind_reboard_cable_car drives the road leg).
+        # PIN FIX (07-22, live-verified): JaggedPass has TWO grass clusters —
+        # cluster1 x[17-22] y[31-32] (the old (19,32) pin) and cluster0
+        # x[8-11] y[23-25]. cluster1 is split into two rows by a one-way
+        # JUMP_SOUTH ledge, so the descent VAULTS past (20,31)->Down->(20,34)
+        # and lands on non-grass y=34 (live: 400 turns, 0 wild battles).
+        # cluster0 is a SOLID 10-tile block: from interior (9,24) all 10 tiles
+        # walk-connect (no internal ledge) and all 4 neighbours are grass, so
+        # the loop's post-arrival wander stays on grass and rolls a wild EVERY
+        # step — the cave-floor-like behaviour that made grind_granite_cave
+        # work. Grass maps roll per grass STEP, so the agent must LINGER on
+        # grass, which only the solid cluster0 allows.
         name="grind_pre_flannery",
         target_map=(24, 13),      # JaggedPass
-        target_pos=(19, 32),      # bottom grass patch (canon land_mons L20-22)
+        target_pos=(9, 24),       # cluster0 interior (solid 10-tile grass block)
         condition="grind_pre_flannery",
         desc="Sceptile < L48 → Jagged Pass 草むら (19,32) で野生戦 grind → Flannery 再挑戦",
     ),

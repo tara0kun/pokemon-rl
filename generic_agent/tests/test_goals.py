@@ -732,11 +732,13 @@ class TestFlanneryGrind(GoalsTestBase):
 
     def test_under_target_pins_grass_on_jagged_pass(self) -> None:
         # On JaggedPass itself the grind goal must outrank descend_jagged_pass
-        # (also matching there) and pin the canon grass tile.
+        # (also matching there) and pin the solid UPPER grass block interior
+        # (9,24) — cluster0, reachable+wander-safe (the old (19,32) pin sat in
+        # the ledge-split LOWER cluster the descent vaults past).
         g = goals_mod.current_goal(
             self._gs(map_group=24, map_num=13, x=14, y=39))
         self.assertEqual(g.name, "grind_pre_flannery")
-        self.assertEqual(g.target_pos, (19, 32))
+        self.assertEqual(g.target_pos, (9, 24))
 
     def test_under_target_pocket_pc_gym_route_to_cable_car(self) -> None:
         # Healed at the PC / standing in the pocket / walked into the gym
