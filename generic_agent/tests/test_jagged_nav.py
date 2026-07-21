@@ -37,18 +37,12 @@ skips without the cache.
 from __future__ import annotations
 
 import struct
-import tempfile
 import unittest
-from pathlib import Path
 
 from generic_agent import (
     claude_heuristic as ch,
     config,
-    goals as goals_mod,
     map_data as md,
-    map_knowledge as mk_mod,
-    path_memory as path_memory_mod,
-    tile_map as tile_map_mod,
 )
 from generic_agent.map_knowledge import GRASS_BEHAVIORS
 
@@ -119,10 +113,6 @@ class TestJaggedPassGrindNav(unittest.TestCase):
         cls.grass = {
             t for t, bv in cls.grid.items() if bv in GRASS_BEHAVIORS
         }
-        cls.pin = next(
-            g for g in goals_mod.GOAL_TABLE
-            if g.name == "grind_pre_flannery"
-        ).target_pos
         # Warp-derived anchor tiles (no coordinate hardcoding drift).
         cls.top_pads = [
             (w["x"], w["y"]) for w in cls.info.warps
@@ -156,36 +146,23 @@ class TestJaggedPassGrindNav(unittest.TestCase):
         for start in [(9, 34), *self.bottom_pads]:
             self.assertIsNone(self._bfs(start, self.grass), start)
 
-    def test_top_entry_reaches_pin_and_replays_clean(self) -> None:
-        # From both Mt.Chimney landing pads the pin must be reachable AND
-        # the path must replay under game rules with zero bumps, landing
-        # exactly on the pin (catches any future walk-model drift where BFS
-        # emits steps the game refuses).
+    def test_descend_leg_alive_and_replays_clean(self) -> None:
+        # The badge-4 descend leg (Mt.Chimney landing pads -> the bottom
+        # Route112 warp pads) must survive the stricter walk model AND replay
+        # under game rules with zero bumps into foot-impassable tiles (catches
+        # any future walk-model drift where BFS emits steps the game refuses).
+        # This is the post-L48 Flannery approach; the grind itself moved to
+        # Fiery Path (see test_fiery_grind), so no grass-pin leg is asserted.
         self.assertTrue(self.top_pads)
+        self.assertTrue(self.bottom_pads)
         for start in self.top_pads:
-            path = self._bfs(start, {self.pin})
+            path = self._bfs(start, set(self.bottom_pads))
             self.assertIsNotNone(path, start)
             final, bumps = _walk_sim(
                 self.mc, *JAGGED, start, path, self.ledges,
             )
             self.assertEqual(bumps, 0, start)
-            self.assertEqual(final, self.pin, start)
-
-    def test_descend_and_walk_home_legs_alive(self) -> None:
-        # The badge-4 descend leg (top -> bottom pads) and the grind loop's
-        # walk home (grass pin -> bottom pads) must survive the stricter
-        # walk model.
-        for start in self.top_pads:
-            self.assertIsNotNone(
-                self._bfs(start, set(self.bottom_pads)), start,
-            )
-        path = self._bfs(self.pin, set(self.bottom_pads))
-        self.assertIsNotNone(path)
-        final, bumps = _walk_sim(
-            self.mc, *JAGGED, self.pin, path, self.ledges,
-        )
-        self.assertEqual(bumps, 0)
-        self.assertIn(final, set(self.bottom_pads))
+            self.assertIn(final, set(self.bottom_pads), start)
 
 
 class TestForwardForceOverride(unittest.TestCase):
@@ -232,159 +209,6 @@ class TestForwardForceOverride(unittest.TestCase):
                 "Down", True, "Right", "explore:x", {"Down"}, 4,
             ),
         )
-
-
-class _FakeGS:
-    """Minimal overworld game state for heuristic_button: unknown attrs
-    read falsy so battle/menu/goal side-branches stay quiet."""
-
-    def __init__(self, x: int, y: int) -> None:
-        self.map_group, self.map_num = JAGGED
-        self.x, self.y = x, y
-        self.in_battle = False
-        self.is_trainer_battle = False
-        self.saveblock1_valid = True
-        self.npcs_on_map: list[tuple[int, int, int]] = []
-        self.party0_hp = 120
-        self.party0_max_hp = 120
-        self.party0_hp_frac = 1.0
-        self.party0_level = 42
-        self.party0_critical = False
-        self.party_count = 5
-        self.bag_pokeball_count = 0
-        self.bag_heal_qty = 6
-        self.badge_count = 3
-        self.flag_badge04_get = False
-        self.flag_mtchimney_magma_defeated = True
-
-    def __getattr__(self, name: str):
-        return "" if name.endswith("_hex") else 0
-
-
-@unittest.skipUnless(_HAVE_JAGGED, "JaggedPass canon cache not present")
-class TestJaggedDescentReplay(unittest.TestCase):
-    """Loop-level offline replay of the grind descent: each step asks the
-    REAL heuristic_button (grind_pre_flannery goal), applies run()'s REAL
-    forward_force_override with entry_dir="Down" (the cable-car cycle's
-    re-entry state, tile_map empty exactly like the cleared live store),
-    then moves under game rules (ledge vault / bump / warp). Pre-fix this
-    bottomed out on the Route112 warp pad every cycle; it must now reach
-    the grind pin's grass without ever touching the bottom pads."""
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.mc = md.get_cache()
-        cls.info = cls.mc.get(*JAGGED)
-        assert cls.info is not None
-        cls.grid = cls.mc.behavior_grid(*JAGGED)
-        cls.elev, cls.ledges = _nav_inputs(cls.mc, *JAGGED)
-        cls.foot = cls.mc._foot_impassable_tiles(*JAGGED)
-        cls.grass = {
-            t for t, bv in cls.grid.items() if bv in GRASS_BEHAVIORS
-        }
-        cls.warp_pads = {
-            (w["x"], w["y"]): str(w.get("dest_map", ""))
-            for w in cls.info.warps
-        }
-        cls.top_pads = [
-            t for t, d in cls.warp_pads.items() if "MtChimney" in d
-        ]
-        cls.bottom_pads = {
-            t for t, d in cls.warp_pads.items() if "Route112" in d
-        }
-        cls.goal = next(
-            g for g in goals_mod.GOAL_TABLE
-            if g.name == "grind_pre_flannery"
-        )
-        pin = cls.goal.target_pos
-        cls.pin_zone = {
-            t for t in [
-                pin, (pin[0], pin[1] + 1), (pin[0], pin[1] - 1),
-                (pin[0] - 1, pin[1]), (pin[0] + 1, pin[1]),
-            ]
-            if cls.info.walkable(*t)
-        }
-
-    def setUp(self) -> None:
-        # Redirect the map_knowledge store to a temp dir: heuristic_button
-        # seeds/saves knowledge files on first get(), and tests must not
-        # write under memory/. Canon map_cache reads are untouched.
-        self._tmp = tempfile.TemporaryDirectory()
-        self._old_dir = mk_mod.KNOWLEDGE_DIR
-        self._old_store = mk_mod._STORE
-        mk_mod.KNOWLEDGE_DIR = Path(self._tmp.name)
-        mk_mod._STORE = None
-
-    def tearDown(self) -> None:
-        mk_mod.KNOWLEDGE_DIR = self._old_dir
-        mk_mod._STORE = self._old_store
-        self._tmp.cleanup()
-
-    def _game_step(self, x: int, y: int, btn: str):
-        dx, dy = DIRS[btn]
-        nx, ny = x + dx, y + dy
-        ledge = self.ledges.get((nx, ny))
-        if ledge is not None:
-            if ledge == (dx, dy):
-                return x + 2 * dx, y + 2 * dy, True
-            return x, y, False           # non-jump approach = wall
-        if (nx, ny) in self.foot or not self.info.walkable(nx, ny):
-            return x, y, False
-        return nx, ny, True
-
-    def test_descent_reaches_pin_grass_not_bottom_warp(self) -> None:
-        tmp_tiles = Path(self._tmp.name) / "tile_map.json"
-        tmp_paths = Path(self._tmp.name) / "path_memory.json"
-        for start in self.top_pads:
-            tm = tile_map_mod.TileMap(path=tmp_tiles)
-            pm = path_memory_mod.TransitionMemory(path=tmp_paths)
-            x, y = start
-            last_action = "Down"   # walked onto the Mt.Chimney-side pad
-            last_pos: tuple[int, int] | None = None
-            same_pos = 0
-            reached: tuple[int, int] | None = None
-            for turn in range(1, 41):
-                gs = _FakeGS(x, y)
-                btn, src = ch.heuristic_button(
-                    gs, tm, pm, {JAGGED: 5}, same_pos, 0, turn,
-                    last_pos, last_action, [], 0, 0,
-                    reward_state=None, screen_signals={},
-                    current_goal=self.goal, client=None,
-                    ram_battle_recent=False,
-                )
-                rec = tm._store.get(tm._map_key(*JAGGED), {}).get(
-                    tm._tile_key(x, y),
-                )
-                forced = ch.forward_force_override(
-                    "Down", turn < 30, btn, src,
-                    set(rec.blocked) if rec is not None else set(), turn,
-                )
-                if forced is not None:
-                    btn = forced
-                if btn not in DIRS:      # interact/settle turn: no move
-                    continue
-                last_pos = (x, y)
-                nx, ny, moved = self._game_step(x, y, btn)
-                if moved:
-                    same_pos = 0
-                    tm.record_visit(*JAGGED, nx, ny)
-                    tm.record_attempt(*JAGGED, x, y, btn, moved=True)
-                else:
-                    same_pos += 1
-                    tm.record_attempt(*JAGGED, x, y, btn, moved=False)
-                last_action = btn
-                x, y = nx, ny
-                self.assertNotIn(
-                    (x, y), self.bottom_pads,
-                    f"descent from {start} overshot into the bottom warp",
-                )
-                if (x, y) in self.pin_zone and (x, y) in self.grass:
-                    reached = (x, y)
-                    break
-            self.assertIsNotNone(
-                reached,
-                f"descent from {start} never reached the grind pin grass",
-            )
 
 
 @unittest.skipUnless(_HAVE_R112, "Route112 canon cache not present")

@@ -279,12 +279,11 @@ _GOAL_BYPASS_VISITED = {
     # (target_map != cur) can't apply (same as exit_fiery_path_north).
     "ride_cable_car", "mtchimney_defeat_magma", "descend_jagged_pass",
     "heal_at_lavaridge", "lavaridge_gym_flannery", "reach_lavaridge",
-    # Flannery grind loop (H17): JaggedPass is marked visited on the first
-    # descent, but the grind goal must keep re-targeting it from town/PC on
-    # every heal cycle until the lead reaches the target level (the
-    # grind_granite_cave bypass, mirrored). The cable-car station is equally
-    # long-visited, so the loop's road leg needs the same bypass.
-    "grind_pre_flannery", "grind_reboard_cable_car",
+    # Flannery grind loop (H17): FieryPath (24,14) is marked visited the instant
+    # the agent steps in, but the grind goal must keep re-targeting it (and the
+    # cave floor pin) every heal cycle until the lead reaches the target level
+    # (the grind_granite_cave / fiery_path_cross bypass, mirrored).
+    "grind_fiery_path",
     # The Mauville Mart is marked visited on first entry, but buy_potions must
     # stay re-targetable to restock (a whiteout back to Mauville, or before the
     # Flannery gym). field_heal_potion has target_map=None so it never needs it.
@@ -643,7 +642,7 @@ class Goal:
             # whiteout point to Mauville so a gym faint is a short setback, not a
             # Dewford strand. Re-entering the gym resets the barrier puzzle, but
             # the live-collision + frontier-explore machinery re-solves it.
-            return (
+            wattson = (
                 _devon_delivered(gs)
                 and gs.badge_count < 3
                 and gs.party0_hp_frac < 0.5
@@ -651,6 +650,25 @@ class Goal:
                 # reach_mauville routes the agent back out -> bounce, never heals.
                 and cur in {(0, 2), (10, 0), (10, 5)}
             )
+            # Branch 2 (Badge4 Fiery-grind heal cycle): a lead hurt while grinding
+            # Fiery Path heals at the Mauville PC — the only PC on the LOW walkable
+            # loop (Fiery <-> Route112 south <-> Route111 <-> Mauville), so the
+            # heal never rides the cable car up to Lavaridge and back. Excludes
+            # the SW pocket (heal_at_lavaridge is closer from there) and FieryPath
+            # itself (exit_fiery_path_south walks the lead out to Route112 first,
+            # where this then fires). Sits above grind_fiery_path so it wins on a
+            # hurt lead; the healthy lead (hp>=0.4) falls through to the grind.
+            fiery_grind_heal = (
+                gs.badge_count >= 3
+                and not gs.flag_badge04_get
+                and _mtchimney_done(gs)
+                and gs.party0_level < FLANNERY_GRIND_TARGET_LEVEL
+                and gs.party0_hp_frac < 0.4
+                and not gs.in_battle
+                and not _in_route112_jagged_pocket(gs)
+                and cur in {(0, 2), (10, 5), (0, 26), (0, 27)}
+            )
+            return wattson or fiery_grind_heal
         if c == "mauville_gym_wattson":
             # At Mauville City or inside the Gym: route to / interact with
             # Wattson (5,2). Gated to those two maps so table-order selection
@@ -813,75 +831,43 @@ class Goal:
                 and _mtchimney_done(gs)
                 and cur in {(24, 12), (19, 1), (24, 13)}
             )
-        if c == "grind_pre_flannery":
-            # H17 grind gate (mirror of grind_pre_brawly's H6b): below the
-            # target level this goal owns navigation ON JAGGED PASS ONLY and
-            # pins the lead on the solid UPPER grass block (cluster0 interior
-            # (9,24), see the Goal comment). ROM-verified 07-22: every
-            # collision-"walkable" route UP the pass runs through
-            # MB_BUMPY_SLOPE (0xD1) strips — Acro-Bike-only, on foot the
-            # player just bumps (pokeemerald CheckAcroBikeCollision) — so
-            # the grass is reachable on foot ONLY from the TOP entry
-            # (Mt.Chimney warp: 18-19 step path to (9,24), walk-sim clean), and
-            # NOT from the bottom warp pad / pocket / town. The old cur-set
-            # (town/PC/pocket) sent the lead in through the bottom warp
-            # toward that unreachable pin, and it bounced JaggedPass <->
-            # pocket forever; those maps now belong to
-            # grind_reboard_cable_car below, which drives the loop's road
-            # leg (town -> pocket -> ledge-hop down -> cable car ->
-            # Mt.Chimney -> descend onto the grass from above). Still listed
-            # ABOVE descend_jagged_pass (also matching on JaggedPass) so the
-            # under-level lead grinds instead of descending past the grass.
-            # Sitting above the heal goal, it must yield on its own hp gate
-            # (>= 0.5, the exact complement of heal_at_lavaridge's < 0.5): a
-            # hurt lead falls through to descend (the walk home IS the PC
-            # route) and then heal_at_lavaridge in the pocket/town, while a
-            # hurt lead WITH potions is caught by field_heal_potion higher
-            # up. Retires at the target level -> descend/reach/gym goals
-            # resume Flannery. Wild Numel/Machop/Spoink L20-22 are harmless
-            # to the L42+ lead. (If a stray warp drops an under-level lead
-            # into the bottom funnel, the pin BFS returns None and wandering
-            # re-steps the (14/15,40) pad into the pocket, where the reboard
-            # goal picks the loop back up — self-recovering.)
+        if c == "grind_fiery_path":
+            # H17 grind (Fiery Path CAVE — replaces the leaky JaggedPass grass).
+            # Root cause of the leak (live-pinned 07-22): the post-arrival wander
+            # is bfs_frontier_direction(prefer=nearest) = seek the nearest
+            # UNVISITED tile. Once cluster0's 10 grass tiles are all visited the
+            # frontier is ALWAYS outside the block (past the y=26 JUMP_SOUTH ledge
+            # row), so the wander systematically Down-vaulted out of the grass and
+            # drifted to the bottom funnel (71 turns, 2 wild battles). A CAVE has
+            # no such trap: Fiery Path's 272 floor tiles are all MB_CAVE (0x08)
+            # land-encounter with ZERO ledges, so wherever the frontier points the
+            # step still rolls a wild — grind_granite_cave's proven property. Both
+            # Fiery warps drop into Route112, single component, so any leak self-
+            # recovers (cur-set includes Route112). Gates mirror the old grind:
+            # under-level (< TARGET) + not-too-hurt (hp >= 0.4, complement of the
+            # heal goals). cur = FieryPath (grind at the pin) OR Route112 (region
+            # nav drives the entry: post-theft fiery_path_cross is disabled, so
+            # this goal owns Route112-south -> Fiery entry via target_map, exactly
+            # like fiery_path_cross). Listed ABOVE exit_fiery_path_south so the
+            # under-level lead grinds instead of exiting; at TARGET it yields and
+            # exit-south -> ride_cable_car -> descend -> reach_lavaridge -> gym
+            # carries the Flannery approach unchanged.
+            # cur-set: FieryPath (grind at the pin) + the whole walk loop back to
+            # it — Route112 (entry + heal loop), Route111 + Mauville + Mauville PC
+            # (the hurt-lead heal cycle stays LOW and walkable, never the cable
+            # car), and the Lavaridge side (town/PC/gym) so an under-level lead
+            # that reached Lavaridge routes BACK toward Fiery instead of walking
+            # into the losing Flannery fight (the old reboard goal's safety, kept).
             return (
                 gs.badge_count >= 3
                 and not gs.flag_badge04_get
                 and _mtchimney_done(gs)
                 and gs.party0_level < FLANNERY_GRIND_TARGET_LEVEL
-                and gs.party0_hp_frac >= 0.5
-                and cur == (24, 13)
-            )
-        if c == "grind_reboard_cable_car":
-            # Road leg of the H17 grind loop: the JaggedPass grass can only
-            # be ENTERED from the top (bumpy-slope walls, see
-            # grind_pre_flannery above), so from the Lavaridge side the
-            # under-level lead must re-board the cable car. Matches exactly
-            # where ride_cable_car is deliberately silent — town (0,12), the
-            # PC (4,5), inside the gym (4,1)/(4,2) (an under-level lead is
-            # walked OUT toward the station, never onto the losing Flannery
-            # fight), and the Route112 SW pocket — and mirrors ride's
-            # station-attendant target. The pocket -> station leg IS
-            # walkable: one-way DOWN the pocket ledges then up the south
-            # blob (offline BFS 44-45 steps with ledge jumps; the "pocket
-            # can't reach the station" note on _in_route112_jagged_pocket
-            # is about climbing BACK — the descent is fine). Once out of
-            # the pocket on the south blob, ride_cable_car (earlier in
-            # GOAL_TABLE) takes over the same target seamlessly; at the
-            # station the (6,6) attendant interact fires the ride, and on
-            # Mt.Chimney descend_jagged_pass brings the lead down into the
-            # pass where grind_pre_flannery pins the grass. Same hp/level
-            # gates as the grind so field_heal_potion / heal_at_lavaridge
-            # keep their wins on a hurt lead.
-            return (
-                gs.badge_count >= 3
-                and not gs.flag_badge04_get
-                and _mtchimney_done(gs)
-                and gs.party0_level < FLANNERY_GRIND_TARGET_LEVEL
-                and gs.party0_hp_frac >= 0.5
-                and (
-                    cur in {(0, 12), (4, 5), (4, 1), (4, 2)}
-                    or _in_route112_jagged_pocket(gs)
-                )
+                and gs.party0_hp_frac >= 0.4
+                and cur in {
+                    _FIERY_PATH, _ROUTE112, (0, 26), (0, 2), (10, 5),
+                    (0, 12), (4, 5), (4, 1), (4, 2),
+                }
             )
         if c == "heal_at_lavaridge":
             # Flannery (Fire) beats a Grass lead, so whiteout is realistic. One
@@ -1293,6 +1279,32 @@ GOAL_TABLE: list[Goal] = [
         desc="Badge4 arc leg2: Meteor Falls (14,18) coord_event で隕石強奪 (0x333 set)",
     ),
     Goal(
+        # H17 grind (Fiery Path — replaces the leaky Jagged Pass grass grind).
+        # JaggedPass cluster0's y=26 edge is a full JUMP_SOUTH ledge row; the
+        # frontier-explore wander (bfs_frontier_direction, prefer=nearest) seeks
+        # the nearest UNVISITED tile, which after a few turns is always OUTSIDE
+        # the 10-tile grass block (beyond the ledge), so it systematically Down-
+        # vaulted out of the grass and drifted to the bottom funnel (live: 71
+        # turns, 2 wild battles). Fiery Path is a CAVE: all 272 floor tiles are
+        # MB_CAVE (0x08) land-encounter, ZERO ledges, both warps -> Route112, a
+        # single walk component — so the frontier wander stays on the encounter
+        # floor and rolls a wild EVERY step, exactly like grind_granite_cave
+        # (the Badge2 grind that worked). Pin (26,23): canon cave floor, all 4
+        # neighbours 0x08 walkable, 13 steps from the south warp, >=17 from any
+        # Strength boulder. Placed ABOVE exit_fiery_path_south so an under-level
+        # lead grinds instead of exiting; post-theft fiery_path_cross is disabled
+        # so this goal ALSO drives Route112 -> Fiery entry (target_map region nav
+        # to the in-blob warp, like fiery_path_cross). At L48 it yields and the
+        # existing exit-south -> cable car -> Mt.Chimney -> Lavaridge chain
+        # carries the Flannery approach; a hurt lead (hp<0.4) yields to the heal
+        # goals. Gen3 has no over-level XP penalty so L14-16 wilds pay full XP.
+        name="grind_fiery_path",
+        target_map=(24, 14),      # FieryPath (region nav routes to in-blob warp)
+        target_pos=(26, 23),      # cave-floor interior pin (all-0x08 neighbours)
+        condition="grind_fiery_path",
+        desc="Sceptile < L48 → Fiery Path 洞窟 (26,23) で野生戦 grind → Flannery",
+    ),
+    Goal(
         # Inner leg of the southbound Fiery re-cross (post-theft): once IN Fiery
         # Path, walk to the SOUTH warp pad and drop into Route112's cid12 (cable
         # car blob). Mirror of exit_fiery_path_north.
@@ -1326,41 +1338,6 @@ GOAL_TABLE: list[Goal] = [
         target_pos=(13, 6),       # Maxie (Tabitha/grunts en route) -> 0x8B
         condition="mtchimney_defeat_magma",
         desc="Badge4 arc leg4: Mt.Chimney で Tabitha+Maxie 撃破 (0x8B set)",
-    ),
-    Goal(
-        # H17 grind road leg (07-22): the JaggedPass grass is enterable on
-        # foot only from the TOP (bumpy-slope walls, see the condition), so
-        # the under-level loop re-boards the cable car. Mirrors
-        # ride_cable_car's target so the station flow (attendant (6,6)
-        # interact -> ride -> Mt.Chimney) is reused verbatim; ride itself is
-        # deliberately silent in town/PC/gym/pocket, which is exactly this
-        # goal's cur-set.
-        name="grind_reboard_cable_car",
-        target_map=(19, 0),       # Route112_CableCarStation
-        target_pos=(6, 6),        # attendant NPC (interact -> YES -> ride)
-        condition="grind_reboard_cable_car",
-        desc="Sceptile < L48: Lavaridge 側 → cable car 再搭乗 → 上から Jagged Pass 草地へ",
-    ),
-    Goal(
-        # H17 grind (mirror of grind_granite_cave), listed ABOVE descend so it
-        # wins on JaggedPass while the lead is under-levelled. Grass is
-        # top-entry-only (grind_reboard_cable_car drives the road leg).
-        # PIN FIX (07-22, live-verified): JaggedPass has TWO grass clusters —
-        # cluster1 x[17-22] y[31-32] (the old (19,32) pin) and cluster0
-        # x[8-11] y[23-25]. cluster1 is split into two rows by a one-way
-        # JUMP_SOUTH ledge, so the descent VAULTS past (20,31)->Down->(20,34)
-        # and lands on non-grass y=34 (live: 400 turns, 0 wild battles).
-        # cluster0 is a SOLID 10-tile block: from interior (9,24) all 10 tiles
-        # walk-connect (no internal ledge) and all 4 neighbours are grass, so
-        # the loop's post-arrival wander stays on grass and rolls a wild EVERY
-        # step — the cave-floor-like behaviour that made grind_granite_cave
-        # work. Grass maps roll per grass STEP, so the agent must LINGER on
-        # grass, which only the solid cluster0 allows.
-        name="grind_pre_flannery",
-        target_map=(24, 13),      # JaggedPass
-        target_pos=(9, 24),       # cluster0 interior (solid 10-tile grass block)
-        condition="grind_pre_flannery",
-        desc="Sceptile < L48 → Jagged Pass 草むら (19,32) で野生戦 grind → Flannery 再挑戦",
     ),
     Goal(
         name="descend_jagged_pass",
