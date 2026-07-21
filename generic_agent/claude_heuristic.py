@@ -2189,6 +2189,7 @@ def run(
                     "inb": bool(gs.in_battle),
                     "cb2": gs.game_cb2,
                     "bfl": gs.battle_flags,
+                    "lvl": gs.party0_level,
                 }) + "\n")
         except OSError:
             pass
