@@ -436,6 +436,24 @@ def heuristic_button(
                     )
                 except Exception:
                     _seal = set()
+                # Canon ledge jumps for the probe BFS. The probe promises
+                # "the most permissive reachability", but without ledges it
+                # under-counted: components whose only exit is a one-way
+                # jump (Lavaridge 1F Flannery room -> exit area, B1F side
+                # rooms -> geyser room) probed as sealed and the hop was
+                # wrongly banned. Derived from behavior_grid (the same canon
+                # source map_knowledge seeds ledge_jumps from) because
+                # knowledge_ledges is loaded further below.
+                try:
+                    _probe_ledges = {
+                        (lx, ly): map_data_mod.LEDGE_JUMP_BEHAVIORS[bv]
+                        for (lx, ly), bv in mc.behavior_grid(
+                            gs.map_group, gs.map_num,
+                        ).items()
+                        if bv in map_data_mod.LEDGE_JUMP_BEHAVIORS
+                    }
+                except Exception:
+                    _probe_ledges = {}
                 for _hop_try in range(3):
                     _pchain = mc.map_path(
                         gs.map_group, gs.map_num,
@@ -463,7 +481,34 @@ def heuristic_button(
                     if mc.bfs_to_tile(
                         gs.map_group, gs.map_num, (gs.x, gs.y), _pt,
                         blocked_tiles=_seal - _pt,
+                        ledge_jumps=_probe_ledges,
                     ) is None:
+                        # (iii) region rescue: on a multi-component warp-maze
+                        # map the hop's own warp tiles are often in a walk-
+                        # unreachable component, but the hop map IS reachable
+                        # by riding same-map warp pairs (Lavaridge gym: the
+                        # town-exit warps sit in comp5 while the agent stands
+                        # in comp3 — ride hole (0,17) -> B1F -> geyser (8,9)
+                        # -> comp5). Banning the hop here collapsed map_path
+                        # to None and dropped nav onto polluted path-memory
+                        # chains (the 800-turn (5-6,17-18) oscillation,
+                        # 2026-07-21). Keep the hop when the region router
+                        # has a warp-graph route whose first-hop tile is
+                        # walk-reachable; the region routing below then
+                        # drives the actual ride.
+                        if mc.has_multiple_warp_components(
+                            gs.map_group, gs.map_num
+                        ):
+                            _rt, _ = mc.region_route_targets(
+                                gs.map_group, gs.map_num, (gs.x, gs.y),
+                                _pchain[0], None,
+                            )
+                            if _rt and mc.bfs_to_tile(
+                                gs.map_group, gs.map_num, (gs.x, gs.y),
+                                _rt, blocked_tiles=_seal - _rt,
+                                ledge_jumps=_probe_ledges,
+                            ) is not None:
+                                break  # hop rideable via same-map warps
                         banned_hops.add(_hop)  # (ii) sealed from here
                         continue
                     break  # reachable first hop found

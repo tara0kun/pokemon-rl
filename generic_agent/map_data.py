@@ -851,8 +851,10 @@ class MapCache:
         BFS over the (map, component) warp graph from the player's component.
         primary target = the final goal_map (NOT mh_chain's next hop: following
         the map-level next hop re-enters the entrance component and ping-pongs).
-        secondary = mh_chain's next hop (keeps cross-map exits like the heal PC
-        routable). `target_tile` (the goal's target_pos on goal_map) narrows
+        secondary = mh_chain hops tried END-first (keeps cross-map exits like
+        the heal PC routable while never aiming at the map we came from when a
+        farther hop is warp-reachable). `target_tile` (the goal's target_pos
+        on goal_map) narrows
         the primary target to the COMPONENT holding that tile — required for
         hole/geyser gyms where any-component landing bounces the agent around
         the right map but never into the goal's walled-off room; an
@@ -867,7 +869,6 @@ class MapCache:
         start_cid = tile2cid.get((pos[0], pos[1]))
         if start_cid is None:
             return set(), None
-        next_hop = mh_chain[0] if mh_chain else None
         # Component of the goal tile on the goal map (the tile itself or a
         # walkable 4-neighbour — an NPC target may sit on a blocked tile).
         goal_cid: int | None = None
@@ -889,8 +890,21 @@ class MapCache:
         # lands back here "succeeds") — only offer it for cross-map goals.
         if not same_map_goal:
             attempts.append((tuple(goal_map), None))
-        if next_hop is not None:
-            attempts.append((tuple(next_hop), None))
+        # mh_chain fallback: aim at the FARTHEST warp-reachable hop of the
+        # map-level chain, not blindly at chain[0]. From an intermediate
+        # floor of a warp maze, chain[0] is the map we just came FROM (gym
+        # B1F's only map-level neighbour is 1F), and an any-component match
+        # on it is satisfied by the warp straight back into the start
+        # component — the agent rode hole->geyser->hole forever (Lavaridge
+        # (0,17) bounce, 2026-07-21). Walking the chain END-first always
+        # prefers forward progress; chain[0] stays as the last resort so
+        # single-hop chains (the heal-PC exit case) behave as before.
+        if mh_chain:
+            for hop in reversed(mh_chain):
+                h = tuple(hop)
+                if h == tuple(goal_map) or h == (map_g, map_n):
+                    continue  # duplicate of the goal attempts / vacuous
+                attempts.append((h, None))
         for target, tcid in attempts:
             res = self._region_bfs(map_g, map_n, start_cid, target, tcid)
             if res is not None:
