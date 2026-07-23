@@ -75,6 +75,11 @@ class TestCb2ModeClassification(unittest.TestCase):
         self.assertEqual(_read_battle_flags(_AddrClient(0x08038421, 4)), (True, 4))
         # no flag set -> not in battle regardless of cb2
         self.assertEqual(_read_battle_flags(_AddrClient(0x08038421, 0)), (False, 0))
+        # in-battle party/switch screen (flags set) -> battle so SEND_OUT drives
+        # it, not ui_escape; the FIELD party menu (flags 0) stays out of battle.
+        self.assertEqual(_read_battle_flags(_AddrClient(0x081B01B1, 0xC)), (True, 0xC))
+        self.assertEqual(_read_battle_flags(_AddrClient(0x081B01B1, 0)), (False, 0))
+        self.assertEqual(game_mode_for_cb2(0x081B01B1), "battle")
 
 
 class TestSigned16(unittest.TestCase):

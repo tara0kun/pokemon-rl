@@ -2227,7 +2227,16 @@ def run(
         # Unknown-UI escape: an unwhitelisted callback means a menu the loop has
         # no handler for froze the sprite. Override whatever nav produced (its
         # direction presses do nothing in a menu) with B,B,B,A to back out.
-        forced_ui = ui_escape_button(unknown_ui_streak)
+        # GATE (2026-07-24): do NOT fire during a battle sub-screen — a real
+        # battle was confirmed within the last few turns (ram_battle_recent) and
+        # its own handler (SEND_OUT_SEQ etc.) must drive it. Blindly B,B,B,A'ing
+        # the in-battle party screen corrupted the send-out (Sceptile fainted +
+        # stuck). The ONE battle sub-screen we DO escape is the level-up
+        # "forget move?" prompt (cb2 0x081BFAB5): A-mash there can overwrite Rock
+        # Tomb, so we deterministically decline it.
+        forced_ui = None
+        if not ram_battle_recent or gs.game_cb2 == 0x081BFAB5:
+            forced_ui = ui_escape_button(unknown_ui_streak)
         if forced_ui is not None:
             button, src = forced_ui, f"ui_escape:{forced_ui}@{unknown_ui_streak}"
         if "escape" in src:

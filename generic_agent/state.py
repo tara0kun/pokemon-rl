@@ -165,7 +165,15 @@ CB2_MENU_SET = frozenset({0x080BB775})
 # reads NOT-in-battle instead of trapping the loop A-mashing a stale flag (the
 # ~3700-turn PokeNav imprisonment of 2026-07-22). Unknown battle variants are
 # caught by the vision battle_menu latch in the loop.
-CB2_BATTLE_SET = frozenset({0x08038421})
+CB2_BATTLE_SET = frozenset({
+    0x08038421,   # CB2_BattleMain (the battle engine proper)
+    0x081B01B1,   # in-battle party screen ("send out which POKeMON?" after a
+                  # faint). Live 2026-07-24: gBattleTypeFlags=0xC here, so the
+                  # flags gate below keeps the FIELD party menu (flags=0) out of
+                  # battle mode even if it shares this callback. Without this the
+                  # switch screen read as unknown_ui and ui_escape B-mashed it,
+                  # jamming the loop; now the SEND_OUT_SEQ handler drives it.
+})
 
 # Game-mode buckets used to gate tile_map recording, the unknown-UI escape,
 # and battle dispatch.
