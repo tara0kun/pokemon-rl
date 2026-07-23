@@ -842,12 +842,13 @@ class Goal:
             # under-level lead grinds instead of exiting; at TARGET it yields and
             # exit-south -> ride_cable_car -> descend -> reach_lavaridge -> gym
             # carries the Flannery approach unchanged.
-            # cur-set: FieryPath (grind at the pin) + the whole walk loop back to
-            # it — Route112 (entry + heal loop), Route111 + Mauville + Mauville PC
-            # (the hurt-lead heal cycle stays LOW and walkable, never the cable
-            # car), and the Lavaridge side (town/PC/gym) so an under-level lead
-            # that reached Lavaridge routes BACK toward Fiery instead of walking
-            # into the losing Flannery fight (the old reboard goal's safety, kept).
+            # cur-set = the Lavaridge heal loop only: FieryPath (grind at the
+            # pin), Route112 (entry + cable-car boarding), and the Lavaridge side
+            # (town/PC/gym) so an under-level lead that reached Lavaridge routes
+            # BACK toward Fiery instead of walking into the losing Flannery fight.
+            # Route111/Mauville are NOT here — the Mauville heal route stalls in
+            # Route111's boulder maze; the grind heals via the cable car up to
+            # Lavaridge (a hurt lead yields to ride_cable_car, not this goal).
             return (
                 gs.badge_count >= 3
                 and not gs.flag_badge04_get
@@ -855,11 +856,11 @@ class Goal:
                 and gs.party0_level < FLANNERY_GRIND_TARGET_LEVEL
                 and gs.party0_hp_frac >= 0.4
                 # 0 damaging PP -> best_move_index=-1 -> the grind flees every
-                # wild forever. Yield to heal_at_mauville (a PC visit refills PP).
+                # wild forever. Yield to the cable-car heal (a PC refills PP).
                 # -1 (unreadable) is treated as "keep grinding".
                 and gs.party0_damaging_pp != 0
                 and cur in {
-                    _FIERY_PATH, _ROUTE112, (0, 26), (0, 2), (10, 5),
+                    _FIERY_PATH, _ROUTE112,
                     (0, 12), (4, 5), (4, 1), (4, 2),
                 }
             )
