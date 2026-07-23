@@ -650,26 +650,15 @@ class Goal:
                 # reach_mauville routes the agent back out -> bounce, never heals.
                 and cur in {(0, 2), (10, 0), (10, 5)}
             )
-            # Branch 2 (Badge4 Fiery-grind heal cycle): a lead hurt while grinding
-            # Fiery Path heals at the Mauville PC — the only PC on the LOW walkable
-            # loop (Fiery <-> Route112 south <-> Route111 <-> Mauville), so the
-            # heal never rides the cable car up to Lavaridge and back. Excludes
-            # the SW pocket (heal_at_lavaridge is closer from there) and FieryPath
-            # itself (exit_fiery_path_south walks the lead out to Route112 first,
-            # where this then fires). Sits above grind_fiery_path so it wins on a
-            # hurt lead; the healthy lead (hp>=0.4) falls through to the grind.
-            fiery_grind_heal = (
-                gs.badge_count >= 3
-                and not gs.flag_badge04_get
-                and _mtchimney_done(gs)
-                and gs.party0_level < FLANNERY_GRIND_TARGET_LEVEL
-                # hurt OR out of damaging PP -> the PC refills both.
-                and (gs.party0_hp_frac < 0.4 or gs.party0_damaging_pp == 0)
-                and not gs.in_battle
-                and not _in_route112_jagged_pocket(gs)
-                and cur in {(0, 2), (10, 5), (0, 26), (0, 27)}
-            )
-            return wattson or fiery_grind_heal
+            # NB: the Fiery grind's hurt-lead heal is NOT here. Routing to
+            # Mauville crosses Route111's boulder maze / desert-gate and the
+            # loop's multi-hop connection routing stalls there (2026-07-23 live).
+            # The grind heals at LAVARIDGE via the cable car instead — WARP
+            # routing (ride_cable_car -> Mt.Chimney -> descend -> reach_lavaridge
+            # -> heal_at_lavaridge), which is live-proven and avoids Route111. A
+            # hurt grind lead on Route112 cid12 falls through to ride_cable_car
+            # (cur-negative there); heal_at_lavaridge's grind gate does the rest.
+            return wattson
         if c == "mauville_gym_wattson":
             # At Mauville City or inside the Gym: route to / interact with
             # Wattson (5,2). Gated to those two maps so table-order selection
@@ -889,7 +878,11 @@ class Goal:
                 and not gs.flag_badge04_get
                 and _mtchimney_done(gs)
                 and gs.party0_max_hp > 0
-                and gs.party0_hp_frac < 0.5
+                # hurt OR out of damaging PP (the Fiery grind heals here via the
+                # cable car — Route112->Route111->Mauville stalls in the boulder
+                # maze). PP0 must heal too: a full-HP/0-PP lead would otherwise
+                # walk into Flannery and lose. A PC visit refills HP and PP.
+                and (gs.party0_hp_frac < 0.5 or gs.party0_damaging_pp == 0)
                 and not gs.in_battle
                 and cur in {(0, 12), (0, 27), (4, 1), (4, 2), (4, 5)}
             )

@@ -757,24 +757,34 @@ class TestFlanneryGrind(GoalsTestBase):
             self._name(map_group=0, map_num=12, x=5, y=6, **L),
             "lavaridge_gym_flannery")
 
-    def test_hurt_heals_at_mauville(self) -> None:
-        # A lead hurt below the grind's hp gate heals at the Mauville PC (the
-        # low walkable loop), not the cable car up to Lavaridge.
+    def test_hurt_routes_up_to_lavaridge_heal(self) -> None:
+        # Heal via the CABLE CAR to Lavaridge, not Mauville (Route112->Route111
+        # ->Mauville stalls in the boulder maze). A hurt lead on the Route112
+        # south blob rides the cable car up; at Lavaridge it heals at the PC.
         self.assertEqual(
-            self._name(map_group=0, map_num=2, x=5, y=5,
+            self._name(map_group=0, map_num=27, x=26, y=36,
                        party0_hp=40, party0_max_hp=128),
-            "heal_at_mauville")
+            "ride_cable_car")
+        self.assertEqual(
+            self._name(map_group=0, map_num=12, x=5, y=6,
+                       party0_hp=40, party0_max_hp=128),
+            "heal_at_lavaridge")
 
     def test_zero_damaging_pp_yields_grind_to_heal(self) -> None:
         # A full-HP lead with 0 damaging PP must NOT keep grinding (it would
-        # flee every wild forever) — it yields to the PC heal, which refills PP.
-        # Unreadable PP (-1, the default) keeps grinding.
+        # flee every wild forever) — it yields toward the PC heal (which refills
+        # PP): cable car up from the south blob, PC at Lavaridge. Unreadable PP
+        # (-1, the default) keeps grinding. And a 0-PP lead at Lavaridge must
+        # heal, NOT walk into Flannery.
         self.assertEqual(
             self._name(map_group=0, map_num=27, x=26, y=36,
                        party0_damaging_pp=-1), "grind_fiery_path")
         self.assertEqual(
             self._name(map_group=0, map_num=27, x=26, y=36,
-                       party0_damaging_pp=0), "heal_at_mauville")
+                       party0_damaging_pp=0), "ride_cable_car")
+        self.assertEqual(
+            self._name(map_group=0, map_num=12, x=5, y=6,
+                       party0_damaging_pp=0), "heal_at_lavaridge")
 
     def test_pre_mtchimney_never_grinds(self) -> None:
         # Before the Mt.Chimney Magma defeat the grind must not fire — the
