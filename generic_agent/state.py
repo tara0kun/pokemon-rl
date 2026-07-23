@@ -154,6 +154,35 @@ CB2_OVERWORLD_SET = frozenset({0x08085E5D})
 # menu callbacks as not-in-battle too. 0x080BB775 = Pokedex/region-map detail,
 # live-observed 07-16 (cb2 stable 6/6 while the screen showed the town map).
 CB2_MENU_SET = frozenset({0x080BB775})
+# Battle callback2 whitelist (the "H-cb2" the comment above waited for).
+# 0x08038421 = CB2_BattleMain (US), the single value observed across all 33
+# battle episodes (557 turns) of the 2026-07-22 grind session. gBattleTypeFlags
+# is STALE after a battle (never zero-cleared), so a set flag must NOT be read
+# as in-battle unless the game mode is ACTUALLY a battle. Flipping to a
+# whitelist (in-battle ONLY when cb2 is a battle callback) is strictly safer
+# than the old menu-exclusion list: an UNKNOWN callback (PokeNav 0x081C7401,
+# Trainer Card 0x080C2711, the level-up "forget move" screen 0x081BFAB5) now
+# reads NOT-in-battle instead of trapping the loop A-mashing a stale flag (the
+# ~3700-turn PokeNav imprisonment of 2026-07-22). Unknown battle variants are
+# caught by the vision battle_menu latch in the loop.
+CB2_BATTLE_SET = frozenset({0x08038421})
+
+# Game-mode buckets used to gate tile_map recording, the unknown-UI escape,
+# and battle dispatch.
+MODE_OVERWORLD = "overworld"
+MODE_BATTLE = "battle"
+MODE_MENU = "menu"
+MODE_UNKNOWN_UI = "unknown_ui"
+
+
+def game_mode_for_cb2(cb2: int) -> str:
+    if cb2 in CB2_OVERWORLD_SET:
+        return MODE_OVERWORLD
+    if cb2 in CB2_BATTLE_SET:
+        return MODE_BATTLE
+    if cb2 in CB2_MENU_SET:
+        return MODE_MENU
+    return MODE_UNKNOWN_UI
 
 
 BATTLE_TYPE_TRAINER = 0x0008
@@ -284,6 +313,10 @@ class GameState:
     in_battle: bool = False
     battle_flags: int = 0
     game_cb2: int = 0  # gMain.callback2 (game-mode fn ptr); overworld/menu/battle
+    # Coarse game mode derived from game_cb2 (game_mode_for_cb2): "overworld" /
+    # "battle" / "menu" / "unknown_ui". Gates tile_map recording and the loop's
+    # unknown-UI escape (an unwhitelisted callback = a menu we can be trapped in).
+    game_mode: str = MODE_OVERWORLD
     party0_level: int = 0
     party0_hp: int = 0
     party0_max_hp: int = 0
@@ -448,18 +481,21 @@ def _read_battle_flags(client: MGBAClient) -> tuple[bool, int]:
             continue
         if v >= 0x00010000:
             continue
-        # gBattleTypeFlags is set but may be stale (whiteout leaves it non-
-        # zero in the overworld). Confirm we are ACTUALLY in a battle via the
-        # game-mode callback: in the field it is CB2_Overworld; only in a
-        # real battle is it a battle callback. This flips instantly on exit,
-        # unlike the flag, so it kills the post-whiteout false positive.
+        # gBattleTypeFlags is set but may be stale (whiteout / a menu opened
+        # after a battle leaves it non-zero). Confirm we are ACTUALLY in a
+        # battle via the game-mode callback WHITELIST: in-battle only when cb2
+        # is a battle callback. This flips instantly on exit, unlike the flag,
+        # and — unlike the old overworld/menu EXCLUSION list — an unknown menu
+        # callback (PokeNav etc.) reads not-in-battle instead of imprisoning
+        # the loop. Unknown battle variants are recovered by the loop's vision
+        # battle_menu latch.
         try:
             cb2 = client.read32(GMAIN_CB2_ADDR)
         except EmulatorError:
             cb2 = None
-        if cb2 is not None and (cb2 in CB2_OVERWORLD_SET or cb2 in CB2_MENU_SET):
-            return False, 0
-        return True, v
+        if cb2 is not None and cb2 in CB2_BATTLE_SET:
+            return True, v
+        return False, 0
     return False, 0
 
 
@@ -704,6 +740,7 @@ def read_state(client: MGBAClient) -> GameState:
         in_battle=in_battle,
         battle_flags=flags,
         game_cb2=cb2,
+        game_mode=game_mode_for_cb2(cb2),
         party0_level=lv,
         party0_hp=hp,
         party0_max_hp=max_hp,

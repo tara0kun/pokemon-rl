@@ -107,6 +107,25 @@ FLEE_SEQ = ("B", "B", "Up", "Up", "Left", "Right", "Down", "A")
 # plan exactly where it matters. ONE definition, shared by both gates.
 GOAL_DIRECTED_SRC_PREFIXES = ("mapbfs", "rival_seek", "rival_talk", "goal_")
 
+_UI_ESCAPE_CYCLE = ("B", "B", "B", "A")
+
+
+def ui_escape_button(unknown_ui_streak: int) -> str | None:
+    """Escape an unknown-UI screen the loop has no handler for — PokeNav
+    (cb2 0x081C7401), Trainer Card, the level-up "forget move?" prompt. Returns
+    a button after 3 CONSECUTIVE unknown-UI frames (so a warp-fade transient
+    passes through), else None.
+
+    B x3 backs out of any nested menu; the trailing A answers a "give up? /
+    stop learning?" YES prompt (B alone loops those). This DETERMINISTICALLY
+    declines level-up move learning — safe here (it protects Rock Tomb from an
+    A-mash overwrite, and is no worse than today's random A-mash outcome). Root
+    fix for the 2026-07-22 ~3700-turn PokeNav imprisonment: with the cb2 battle
+    whitelist, PokeNav no longer reads as in_battle, and this backs out of it."""
+    if unknown_ui_streak < 3:
+        return None
+    return _UI_ESCAPE_CYCLE[unknown_ui_streak % len(_UI_ESCAPE_CYCLE)]
+
 
 def forward_force_override(
     entry_dir: str | None,
@@ -1502,6 +1521,12 @@ def run(
     last_pos: tuple[int, int] | None = None
     last_action = ""
     last_map_key: tuple[int, int] | None = None
+    # Previous stable frame's battle/HP, to fingerprint a WHITEOUT map change
+    # (faint -> teleport to a PC). Such transitions are not walkable edges and
+    # must not be recorded in path_memory (a bogus 0-27->0-2 from_pos=(31,45)
+    # whiteout edge made goal_toward walk toward a fainting spot for ~3500 turns).
+    prev_frame_in_battle = False
+    prev_frame_lead_hp = -1
     same_pos_streak = 0
     same_hash_streak = 0
     same_map_streak = 0
@@ -1519,6 +1544,7 @@ def run(
     battle_trainer_latch = False
     battle_double_latch = False
     last_ram_battle_turn = -999
+    unknown_ui_streak = 0
     teach_cooldown_until = 0
     shop_cooldown_until = 0
     heal_cooldown_until = 0
@@ -1557,7 +1583,13 @@ def run(
                 same_map_streak += 1
             else:
                 same_map_streak = 0
-                if last_map_key is not None:
+                # Skip WHITEOUT teleports: a map change whose previous frame was
+                # in battle or had a fainted lead is a faint->PC warp, not a
+                # walkable edge. Recording it poisons goal_toward with a
+                # teleport (the (31,45)->Mauville bug). Real warps (doors, cable
+                # car interact) start from an overworld, non-fainted frame.
+                is_whiteout = prev_frame_in_battle or prev_frame_lead_hp == 0
+                if last_map_key is not None and not is_whiteout:
                     pm.record_transition(
                         last_map_key[0], last_map_key[1],
                         last_pos[0] if last_pos else None,
@@ -1575,17 +1607,26 @@ def run(
                         entry_dir = last_action
                         force_explore_until_turn = turn + 30
             last_map_key = map_key
+            prev_frame_in_battle = bool(gs.in_battle)
+            prev_frame_lead_hp = int(getattr(gs, "party0_hp", -1))
             map_visit_counts[map_key] = (
                 map_visit_counts.get(map_key, 0) + 1
             )
             pos_now = (gs.x, gs.y)
             recent_pos.append((map_key[0], map_key[1], gs.x, gs.y))
+            # Only OVERWORLD frames record collision: a direction press during a
+            # battle/menu/unknown-UI freezes the sprite in place, and recording
+            # that as moved=False permanently poisons the tile (the record gate
+            # existed in tile_map but was never wired -> Route112's road self-
+            # contaminated from FLEE presses during grass battles).
+            overworld_frame = getattr(gs, "game_mode", "overworld") == "overworld"
             if last_pos == pos_now:
                 same_pos_streak += 1
                 if last_action in DIRECTIONS:
                     tm.record_attempt(
                         *map_key, gs.x, gs.y,
                         last_action, moved=False,
+                        overworld=overworld_frame,
                     )
             else:
                 same_pos_streak = 0
@@ -1597,8 +1638,18 @@ def run(
                     tm.record_attempt(
                         *map_key, last_pos[0], last_pos[1],
                         last_action, moved=True,
+                        overworld=overworld_frame,
                     )
             last_pos = pos_now
+            # Periodically relax over-blocked tiles (mirror of auto_loop:1077,
+            # which the claude_heuristic loop never wired -> Route112 stayed
+            # poisoned across sessions). With the unblock-on-success semantics
+            # above this is a backstop for tiles the agent no longer walks over.
+            if turn % 50 == 0:
+                try:
+                    tm.decay(*map_key)
+                except (OSError, RuntimeError):
+                    pass
         # gs.in_battle has a known RAM false-negative on English Emerald
         # (the BATTLE_FLAGS_CANDIDATES addresses stay 0 during the
         # move-select screen), so screen vision backs it up. But a lone vision
@@ -1607,6 +1658,15 @@ def run(
         # false-positives it and freezes nav. gs.in_battle here is the raw RAM
         # read (heuristic_button, which overrides it, runs later this turn).
         ss_for_battle = locals().get("screen_signals") or {}
+        # Track consecutive unknown-UI (unwhitelisted cb2) frames so ui_escape
+        # can back out of a menu the loop has no handler for (PokeNav, Trainer
+        # Card, the level-up "forget move?" prompt). NOT gated on
+        # ram_battle_recent: the forget-move screen IS mid-battle, and gating it
+        # out reproduces the 175-turn imprisonment the architect measured.
+        if getattr(gs, "game_mode", "overworld") == "unknown_ui":
+            unknown_ui_streak += 1
+        else:
+            unknown_ui_streak = 0
         if gs.in_battle:
             last_ram_battle_turn = turn
         ram_battle_recent = (turn - last_ram_battle_turn) <= 12
@@ -2164,6 +2224,12 @@ def run(
                 client=client,
                 ram_battle_recent=ram_battle_recent,
             )
+        # Unknown-UI escape: an unwhitelisted callback means a menu the loop has
+        # no handler for froze the sprite. Override whatever nav produced (its
+        # direction presses do nothing in a menu) with B,B,B,A to back out.
+        forced_ui = ui_escape_button(unknown_ui_streak)
+        if forced_ui is not None:
+            button, src = forced_ui, f"ui_escape:{forced_ui}@{unknown_ui_streak}"
         if "escape" in src:
             escape_dir_index = (escape_dir_index + 1) % 4
         if src.startswith("wild_catch_try_screen:init") and not catch_seq_queue:

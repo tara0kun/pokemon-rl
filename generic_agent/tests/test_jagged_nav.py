@@ -165,6 +165,22 @@ class TestJaggedPassGrindNav(unittest.TestCase):
             self.assertIn(final, set(self.bottom_pads), start)
 
 
+class TestUiEscape(unittest.TestCase):
+    """ui_escape_button backs out of an unknown-UI screen (PokeNav, Trainer
+    Card, the level-up 'forget move?' prompt) after 3 consecutive frames. Root
+    fix for the 2026-07-22 ~3700-turn PokeNav imprisonment. Pure function."""
+
+    def test_silent_below_threshold(self) -> None:
+        for s in (0, 1, 2):
+            self.assertIsNone(ch.ui_escape_button(s))
+
+    def test_bbba_cycle_at_and_above_threshold(self) -> None:
+        got = [ch.ui_escape_button(s) for s in (3, 4, 5, 6, 7)]
+        # B,B,B,A repeating (indices 3..7 -> cycle[3%4..7%4])
+        self.assertEqual(got, ["A", "B", "B", "B", "A"])
+        self.assertTrue(all(b in ("A", "B") for b in got))
+
+
 class TestForwardForceOverride(unittest.TestCase):
     """The 07-22 overshoot fix: forward_force must never rewrite a
     goal-directed button, while keeping its explore behavior for

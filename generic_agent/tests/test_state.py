@@ -9,10 +9,14 @@ import unittest
 
 from generic_agent.io import EmulatorError, MGBAClient, RawResponse
 from generic_agent.state import (
+    BATTLE_FLAGS_CANDIDATES,
     BATTLE_TYPE_TRAINER,
+    GMAIN_CB2_ADDR,
     GameState,
+    _read_battle_flags,
     _read_saveblock1_ptr,
     _signed16,
+    game_mode_for_cb2,
 )
 
 
@@ -42,6 +46,35 @@ class Read32Stub:
         if isinstance(v, Exception):
             raise v
         return v
+
+
+class _AddrClient:
+    """read32 keyed by address: cb2 at GMAIN_CB2_ADDR, a stale battle flag at
+    the first candidate address."""
+
+    def __init__(self, cb2: int, flags: int) -> None:
+        self.mem = {GMAIN_CB2_ADDR: cb2, BATTLE_FLAGS_CANDIDATES[0]: flags}
+
+    def read32(self, addr: int) -> int:
+        return self.mem.get(addr, 0)
+
+
+class TestCb2ModeClassification(unittest.TestCase):
+    def test_game_mode_buckets(self) -> None:
+        self.assertEqual(game_mode_for_cb2(0x08085E5D), "overworld")
+        self.assertEqual(game_mode_for_cb2(0x08038421), "battle")
+        self.assertEqual(game_mode_for_cb2(0x080BB775), "menu")
+        # PokeNav / Trainer Card / forget-move = unwhitelisted -> unknown_ui
+        self.assertEqual(game_mode_for_cb2(0x081C7401), "unknown_ui")
+
+    def test_in_battle_only_when_cb2_is_battle(self) -> None:
+        # RC2 fix: a stale gBattleTypeFlags on PokeNav must NOT read in-battle
+        # (the ~3700-turn imprisonment). Only a battle callback does.
+        self.assertEqual(_read_battle_flags(_AddrClient(0x081C7401, 4)), (False, 0))
+        self.assertEqual(_read_battle_flags(_AddrClient(0x08085E5D, 4)), (False, 0))
+        self.assertEqual(_read_battle_flags(_AddrClient(0x08038421, 4)), (True, 4))
+        # no flag set -> not in battle regardless of cb2
+        self.assertEqual(_read_battle_flags(_AddrClient(0x08038421, 0)), (False, 0))
 
 
 class TestSigned16(unittest.TestCase):

@@ -34,6 +34,24 @@ class TestTileMap(unittest.TestCase):
             self.tm.record_attempt(0, 11, 5, 5, "Up", moved=False)
         self.assertNotIn("Up", self._rec().blocked)
 
+    def test_success_unblocks_and_resets_streak(self) -> None:
+        # Route112 fix: a single success clears a block AND the fail streak.
+        # (24,39)-Right had tried=140, nearly all success, yet stayed blocked
+        # under the old lifetime-cumulative rule; a road tile must self-heal.
+        for _ in range(3):
+            self.tm.record_attempt(0, 11, 5, 5, "Up", moved=False)
+        self.assertIn("Up", self._rec().blocked)
+        self.tm.record_attempt(0, 11, 5, 5, "Up", moved=True)
+        self.assertNotIn("Up", self._rec().blocked)
+        self.assertEqual(self._rec().fail_streak.get("Up", 0), 0)
+
+    def test_non_consecutive_failures_never_block(self) -> None:
+        # Blocking is on the CONSECUTIVE streak, not lifetime tries: a transient
+        # NPC/battle bump between successes must not seal the tile.
+        for moved in (False, False, True, False, False, True, False, False):
+            self.tm.record_attempt(0, 11, 5, 5, "Up", moved=moved)
+        self.assertNotIn("Up", self._rec().blocked)
+
     def test_non_overworld_attempts_ignored(self) -> None:
         # INVARIANTS C-16: dialog/battle 中の方向キーは封鎖記録を汚染しない
         for _ in range(5):

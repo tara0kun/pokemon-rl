@@ -34,12 +34,21 @@ class TileRecord:
     visits: int = 0
     tried: dict[str, int] = field(default_factory=dict)
     blocked: list[str] = field(default_factory=list)
+    # Per-direction CONSECUTIVE-failure counter. A direction is blocked only
+    # after 3 IN-A-ROW failures, and a single success clears it (see
+    # record_attempt). The old "lifetime cumulative tried>=3" rule never
+    # unblocked, so one transient NPC/battle bump permanently sealed a tile
+    # that the agent walked through 137 times (Route112 (24,39)-Right: tried
+    # 140, nearly all success, yet blocked). Default {} = backward compatible
+    # with pre-fix JSON.
+    fail_streak: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
             "visits": self.visits,
             "tried": dict(self.tried),
             "blocked": list(self.blocked),
+            "fail_streak": dict(self.fail_streak),
         }
 
     @classmethod
@@ -48,6 +57,7 @@ class TileRecord:
             visits=int(d.get("visits", 0)),
             tried=dict(d.get("tried", {})),
             blocked=list(d.get("blocked", [])),
+            fail_streak=dict(d.get("fail_streak", {})),
         )
 
 
@@ -111,11 +121,17 @@ class TileMap:
         moved: bool,
         overworld: bool = True,
     ) -> None:
-        """Increment direction-try counter and mark blocked after 3 fails.
+        """Mark a direction blocked after 3 CONSECUTIVE failures; clear it on
+        any success.
 
         `overworld=False` short-circuits — direction presses during
         dialogs, battles, recovery or paused-screen states don't move the
         sprite and silently poison the tile's blocked list. Skip them.
+
+        Blocking is on the CONSECUTIVE-failure streak, not lifetime tries: a
+        transient block (an NPC standing in the way, a battle freezing the
+        sprite) heals the instant the agent moves that way once. Otherwise a
+        few overworld-mis-gated FLEE presses permanently seal a road tile.
         """
         if direction not in DIRECTIONS:
             return
@@ -123,7 +139,15 @@ class TileMap:
             return
         rec = self._get_record(map_group, map_num, x, y)
         rec.tried[direction] = rec.tried.get(direction, 0) + 1
-        if not moved and rec.tried[direction] >= 3 and direction not in rec.blocked:
+        if moved:
+            # Success clears the block AND the streak — the tile is passable
+            # this way, whatever transient blocked it before.
+            rec.fail_streak[direction] = 0
+            if direction in rec.blocked:
+                rec.blocked.remove(direction)
+            return
+        rec.fail_streak[direction] = rec.fail_streak.get(direction, 0) + 1
+        if rec.fail_streak[direction] >= 3 and direction not in rec.blocked:
             if len(rec.blocked) >= 3:
                 print(
                     f"  [tile-map] refused 4-way seal at ({x},{y}) "
@@ -131,6 +155,7 @@ class TileMap:
                 )
                 rec.tried = {}
                 rec.blocked = []
+                rec.fail_streak = {}
                 return
             rec.blocked.append(direction)
 
