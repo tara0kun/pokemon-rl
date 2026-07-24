@@ -100,7 +100,14 @@ def _in_route112_fiery_south(gs) -> bool:
 # BFS's grass-branch turn into "Down" for 30 turns after map entry (fixed
 # 2026-07-22, forward_force_override src gate; TestJaggedDescentReplay pins
 # the full descent). See daily 2026-07-22.
-FLANNERY_GRIND_TARGET_LEVEL = 48
+# 46 (was 48): user decision 2026-07-24 to test Flannery at the current L46
+# rather than the slow L46->L48 grind (~1-3h on Fiery Path's L14-16 wild XP).
+# Sceptile L46 holds Rock Tomb (Rock 2x vs Fire) + 2 Super Potions for the
+# mid-battle heal (H16), and the whiteout is re-homed to Lavaridge, so a loss
+# is a cheap short retry from the adjacent PC — not the old cross-mountain
+# cascade. At level>=46 grind_fiery_path retires and lavaridge_gym_flannery
+# fires. Raise back to 48 if L46 proves too thin.
+FLANNERY_GRIND_TARGET_LEVEL = 46
 
 LETTER_DONE_MARKER = config.MEMORY_DIR / "steven_letter_done.marker"
 DEVON_DELIVERED_MARKER = config.MEMORY_DIR / "devon_delivered.marker"

@@ -3,6 +3,25 @@
 > Last verified: 2026-07-06。各仮説に「これを実行してこうなれば棄却」を付す。
 > 実行前に RESUME.md で現在地を確認。診断の第一手は常に `logs/decisions_*.jsonl` の grep。
 
+## H17. Lavaridge PC の nurse counter から退出できず ~28 turn 空回り — ⚠️ OPEN (2026-07-24、低優先・自己解消する)
+
+**症状**: `heal_at_lavaridge` で PC (4,5) の nurse (7,3) に (7,4) から Up+A で回復後、goal が
+`grind_fiery_path` に切替わっても、char が counter (7,4) に居座り退出できない。log 実測
+(decisions_20260724T150506, turn 111-138): 全 turn (4,5)(7,4)、`dialog_visible:A` と
+`hidden_battle_probe:A@streak=N`(N=8→30) を交互。**turn 139 で自己解消**(streak≥30 で
+hidden_battle_probe が停止→mapbfs の Down が dialog なし frame で通り退出)。
+
+**真因(推定)**: 回復後も nurse の closing dialog が残る/A で「回復しますか?」を再誘発 →
+`dialog_visible` 検出が A を優先し、mapbfs の Down(退出)が dialog に食われる。streak<30 の間
+hidden_battle_probe(A,A,A,B)が A を押し続けて dialog を再点火するので、streak が 30 に達して
+probe が止むまで抜けられない。**~28 turn(~3分)の一過性 stall**で自己解消するため blocker で
+ないが、faint→heal を繰り返すと毎回発生し非効率。
+
+**棄却条件**: heal 後 counter(7,4)で `goal != heal_at_lavaridge` かつ dialog 検出時、A でなく
+退出方向(Down)を優先する gate を入れて、heal→退出が 5 turn 以内で完了すれば解決。関連:
+[[menu-automation]]、GOTCHAS の nurse counter 記述。**Flannery 戦で faint→Lavaridge heal が
+頻発するなら優先度を上げる**。
+
 ## H14. Mt.Chimney の Team Magma ガントレットで弱パーティが whiteout ループ — ⚠️ OPEN (2026-07-18、現行 blocker)
 
 **症状**: Lavaridge arc の nav/goal/latch は全て機能し、agent は elevation fix 後に
