@@ -269,5 +269,47 @@ class RiseConfirmTest(unittest.TestCase):
         self.assertFalse(self.st._rise_confirmed("b", True, True))
 
 
+class Party0LevelFlickerTest(unittest.TestCase):
+    """party0_level drop-flicker carry (07-24 Lavaridge gym oscillation).
+
+    A contended read8 returns 0 for the lead's level; every `party0_level < X`
+    goal gate then reads it as under-leveled and resurrects a retired grind
+    goal for that frame, yanking mapbfs backward (log: every grind_fiery_path
+    turn inside the gym had lvl=0). Level 0 is impossible for a real slot-0
+    mon, so carry the last positive read; a genuine lead swap (positive lower
+    read) must still pass through.
+    """
+
+    def setUp(self) -> None:
+        from generic_agent import state as st
+        self.st = st
+        st.reset_flag_latches()
+
+    def tearDown(self) -> None:
+        self.st.reset_flag_latches()
+
+    def test_zero_read_carries_last_good(self) -> None:
+        f = self.st._flicker_guarded_level
+        self.assertEqual(f(46), 46)
+        self.assertEqual(f(0), 46)   # the flicker frame
+        self.assertEqual(f(46), 46)
+
+    def test_initial_zero_stays_zero(self) -> None:
+        # No good read yet (fresh save / empty party): report the truth.
+        self.assertEqual(self.st._flicker_guarded_level(0), 0)
+
+    def test_lead_swap_lowers_carry(self) -> None:
+        f = self.st._flicker_guarded_level
+        self.assertEqual(f(46), 46)
+        self.assertEqual(f(12), 12)  # swapped lead: NOT a max-latch
+        self.assertEqual(f(0), 12)   # flicker after swap carries the new lead
+
+    def test_reset_clears_carry(self) -> None:
+        f = self.st._flicker_guarded_level
+        f(46)
+        self.st.reset_flag_latches()
+        self.assertEqual(f(0), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

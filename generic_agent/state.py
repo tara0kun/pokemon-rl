@@ -237,8 +237,32 @@ def _rise_confirmed(key: str, raw: bool, stable: bool) -> bool:
 
 
 def reset_flag_latches() -> None:
+    global _PARTY0_LEVEL_LAST_GOOD
     _BADGE_BITS_LATCHED.clear()
     _RISE_CONFIRM.clear()
+    _PARTY0_LEVEL_LAST_GOOD = 0
+
+
+# Drop-flicker guard for party0_level (same DMA-corruption family as the badge
+# latch above): a contended/mid-DMA read8 intermittently returns 0 for the
+# lead's level. A REAL slot-0 mon is never level 0, but every `party0_level <
+# X` goal gate reads 0 as "under-leveled" — on 07-24 each lvl=0 frame
+# resurrected the retired grind_fiery_path goal INSIDE Lavaridge Gym and
+# yanked mapbfs backward toward B1F for a turn (the (0,13)-(0,15) up/down
+# oscillation against the hole climb). Unlike badges, level is NOT monotonic
+# across lead swaps, so this is a last-good CARRY, not a max-latch: any
+# positive read (a swapped-in lower-level lead included) replaces the carry;
+# only the impossible 0 is substituted. Process-lifetime, like the badge latch.
+_PARTY0_LEVEL_LAST_GOOD: int = 0
+
+
+def _flicker_guarded_level(lv: int) -> int:
+    global _PARTY0_LEVEL_LAST_GOOD
+    if lv == 0 and _PARTY0_LEVEL_LAST_GOOD > 0:
+        return _PARTY0_LEVEL_LAST_GOOD
+    if lv > 0:
+        _PARTY0_LEVEL_LAST_GOOD = lv
+    return lv
 
 # Pokemon substruct order by personality % 24 (Gen 3 box-mon encryption).
 _SUBSTRUCT_PERMS = [
@@ -549,6 +573,8 @@ def read_state(client: MGBAClient) -> GameState:
             lv = hp = max_hp = 0
     except EmulatorError:
         lv = hp = max_hp = 0
+    # hp is NOT carried (0 is a real faint); level 0 is always a bad read.
+    lv = _flicker_guarded_level(lv)
 
     damaging_pp = read_party0_damaging_pp(client)
 

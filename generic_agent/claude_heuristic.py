@@ -949,6 +949,22 @@ def heuristic_button(
                             (gs.map_group, gs.map_num), None,
                             target_tile=interact_target,
                         )
+                        if _rt and (gs.x, gs.y) in _rt and same_pos_streak <= 2:
+                            # Standing ON the region route's own hole/geyser:
+                            # the step-on warp already fired and this read is
+                            # the mid-fade transient (Lavaridge 1F (8,9)). The
+                            # empty-path handler below never matches here —
+                            # target_tiles still holds the goal's neighbours,
+                            # not _rt — so control used to fall through to
+                            # goal_map_explore, whose stray Up landed in the
+                            # B1F (8,6-8) pocket whose only exit is the geyser
+                            # straight back up: the 07-24 1F<->B1F ride loop.
+                            # B is inert during the fade; next turn re-plans
+                            # from the landing. _rt holds ACTIVE warps only
+                            # (_warps_in_component filters inert pads), so the
+                            # warp always resolves; the streak guard is a
+                            # last-resort escape if a read wedges.
+                            return "B", "region_warp_settle"
                         if _rt:
                             bfs_path = mc.bfs_to_tile(
                                 gs.map_group, gs.map_num,
