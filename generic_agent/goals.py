@@ -941,6 +941,13 @@ class Goal:
                 gs.badge_count >= 3
                 and not gs.flag_badge04_get
                 and gs.party0_max_hp > 0
+                # A fainted lead (hp 0) can't be Potion-revived — no Revive in
+                # bag. Without this guard, hp_frac 0.0 < 0.50 fired a doomed VLM
+                # Potion sub-task (~22 steps, always fails) every 25-turn
+                # cooldown and blocked the Jagged Pass descent to a PC (07-24
+                # deadlock). Let a faint fall through to the fight/descent so the
+                # loop reaches a PC (whiteout or on foot) and full-heals there.
+                and gs.party0_hp > 0
                 # 0.50 (was 0.80 for the now-cleared Maxie boss): on the Jagged
                 # Pass descent the lead takes constant chip damage, and firing at
                 # <80% churned — a heal sub-task after every trainer that barely

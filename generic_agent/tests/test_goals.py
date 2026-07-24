@@ -668,6 +668,17 @@ class TestLavaridgeArc(GoalsTestBase):
                        party0_hp=131, party0_max_hp=131, bag_heal_qty=5, **M),
             "mtchimney_defeat_magma")
 
+    def test_fainted_lead_does_not_field_heal(self) -> None:
+        # A fainted lead (hp 0) can't be Potion-revived (no Revive in bag), so
+        # field_heal must NOT fire — it churned a doomed VLM Potion sub-task
+        # every 25 turns and blocked the Jagged Pass descent to a PC (the 07-24
+        # deadlock). Fall through to the fight/descent so the loop reaches a PC.
+        M = dict(flag_route112_magma_cleared=True)
+        self.assertNotEqual(
+            self._name(map_group=24, map_num=12, x=17, y=37,
+                       party0_hp=0, party0_max_hp=131, bag_heal_qty=5, **M),
+            "field_heal_potion")
+
     def test_theft_latch_survives_flag_flicker(self) -> None:
         # Once 0x333 has read True, a later frame reading it False must NOT
         # revert to the pre-theft goal (the DMA-flicker north-yank guard).

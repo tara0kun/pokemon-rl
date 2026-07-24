@@ -2005,13 +2005,22 @@ def run(
                     enemy_cur_hp = -1
                 if enemy_cur_hp == 0 and not at_fight_menu:
                     # Opponent fainted and we are NOT choosing a move (a switch
-                    # prompt / victory text is up): B advances the faint/send-
-                    # out text AND answers the switch prompt NO / backs out one
-                    # nested party-menu level. A here would confirm YES and
-                    # open the party menu with no way back. Gated on NOT the
-                    # FIGHT menu so a transient enemy-HP=0 read never skips our
-                    # attack while it is genuinely our turn (Fable F4).
-                    battle_move_queue = ["B"]
+                    # prompt, victory text, or a level-up move-learn prompt is
+                    # up). Drained one-per-turn: B,B answers a SHIFT "Will you
+                    # switch? NO" and backs out nested text; the trailing A
+                    # escapes the move-learn ping-pong that pure-B can NEVER
+                    # leave — after a weak mon KOs a foe and levels, "Delete a
+                    # move? YES/NO" <-> "Stop learning? YES/NO" both take B as
+                    # NO, so ["B"] alone bounces between them forever (the
+                    # ~1500-turn Jagged Pass trainer freeze, 07-24). A answers
+                    # YES: either it stops the learn (protecting Rock Tomb) or
+                    # opens the forget screen (cb2 0x081BFAB5) where the
+                    # ui_escape exception declines it. The A lands only AFTER
+                    # B,B consumed any SHIFT prompt, so it never mis-confirms a
+                    # switch (the old Machop->Makuhita party-menu stall). Gated
+                    # on NOT the FIGHT menu so a transient enemy-HP=0 read never
+                    # skips our attack on our genuine turn (Fable F4).
+                    battle_move_queue = ["B", "B", "A"]
                 else:
                     # Mid-battle heal (H16, Flannery): Overheat (140, 2x vs
                     # grass, Sun-boosted, ~85-128 dmg) out-paces Rock Tomb
