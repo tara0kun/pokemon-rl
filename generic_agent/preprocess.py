@@ -146,16 +146,58 @@ def to_jpeg_b64(
     return base64.standard_b64encode(raw).decode("ascii"), len(raw)
 
 
+# The GBA frame is 240x160; menu text is ~8px tall. Sending it as a tiny
+# JPEG (q70) made even the ROM text unreadable -- the VLM hallucinated menu
+# items and cursor positions ("ROCK SMASH" read as "STRENGTH", the party list
+# read as WINGULL/NUMEL/ABRA...), which is what broke the HM-teach. Upscaling
+# 3x with nearest-neighbour (crisp pixels, no interpolation blur) and encoding
+# lossless PNG makes Haiku read the same frames perfectly (verified 07-17 on
+# the bag/party/context menus). Cost stays modest: ~460 image tokens vs ~51,
+# i.e. ~$0.0005/uncached call on Haiku. This is the single change that makes
+# "the VLM carries generality" viable.
+VLM_UPSCALE_LONG_EDGE = 720
+
+
+def to_upscaled_png_b64(
+    arr: np.ndarray, target_long_edge: int = VLM_UPSCALE_LONG_EDGE,
+) -> tuple[str, int]:
+    """(base64 PNG, byte size) upscaled so small ROM frames are legible.
+
+    Nearest-neighbour keeps the pixel grid sharp (bilinear would blur the tiny
+    font); PNG is lossless so JPEG artefacts don't smear the text. No-op when
+    the image is already at least target size.
+    """
+    _require_image(arr, "arr")
+    h, w = arr.shape[:2]
+    long_edge = max(h, w)
+    img = arr
+    if 0 < long_edge < target_long_edge:
+        scale = target_long_edge / long_edge
+        img = cv2.resize(
+            img, (int(w * scale), int(h * scale)),
+            interpolation=cv2.INTER_NEAREST,
+        )
+    ok, buf = cv2.imencode(".png", img)
+    if not ok:
+        raise RuntimeError("png encode failed")
+    raw = buf.tobytes()
+    return base64.standard_b64encode(raw).decode("ascii"), len(raw)
+
+
 def png_path_to_jpeg_block(path: Path) -> tuple[dict[str, Any], int, str]:
-    """Convert PNG path → (Anthropic image block, byte size, frame hash)."""
+    """Convert PNG path → (Anthropic image block, byte size, frame hash).
+
+    Emits an upscaled lossless PNG (see to_upscaled_png_b64); the name keeps
+    'jpeg' only for call-site compatibility.
+    """
     arr = load_png_as_array(path)
     fhash = frame_hash(arr)
-    b64, size = to_jpeg_b64(arr)
+    b64, size = to_upscaled_png_b64(arr)
     block = {
         "type": "image",
         "source": {
             "type": "base64",
-            "media_type": "image/jpeg",
+            "media_type": "image/png",
             "data": b64,
         },
     }

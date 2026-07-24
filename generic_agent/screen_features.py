@@ -84,10 +84,21 @@ def dialog_open(img: np.ndarray) -> bool:
 
 
 def menu_open(img: np.ndarray) -> bool:
-    """True if Start menu is visible on the right side."""
+    """True if Start menu is visible on the right side.
+
+    A menu is white panels WITH black text rows — require both. White ratio
+    alone false-positived on the Lavaridge Gym's pale-cream floor filling the
+    right strip (player pinned at x=0, out-of-map void left): w=0.56-0.68 with
+    dark<=0.021 across the whole 07-24 spam window (cb2 stayed CB2_Overworld
+    = provably no menu), and the resulting menu_visible:B preempted gym nav
+    for ~45 straight turns at the exact puzzle hole. Real text screens
+    measured dark>=0.081 (session scan, n=47) — 0.04 splits with 2x margin
+    on both sides.
+    """
     region = img[MENU_TOP_Y:MENU_BOTTOM_Y, MENU_LEFT_X:MENU_RIGHT_X]
     w = _white_ratio(region)
-    return w > 0.55
+    d = _dark_ratio(region)
+    return w > 0.55 and d > 0.04
 
 
 def letter_entry(img: np.ndarray) -> bool:

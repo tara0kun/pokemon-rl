@@ -9,10 +9,14 @@ import unittest
 
 from generic_agent.io import EmulatorError, MGBAClient, RawResponse
 from generic_agent.state import (
+    BATTLE_FLAGS_CANDIDATES,
     BATTLE_TYPE_TRAINER,
+    GMAIN_CB2_ADDR,
     GameState,
+    _read_battle_flags,
     _read_saveblock1_ptr,
     _signed16,
+    game_mode_for_cb2,
 )
 
 
@@ -42,6 +46,40 @@ class Read32Stub:
         if isinstance(v, Exception):
             raise v
         return v
+
+
+class _AddrClient:
+    """read32 keyed by address: cb2 at GMAIN_CB2_ADDR, a stale battle flag at
+    the first candidate address."""
+
+    def __init__(self, cb2: int, flags: int) -> None:
+        self.mem = {GMAIN_CB2_ADDR: cb2, BATTLE_FLAGS_CANDIDATES[0]: flags}
+
+    def read32(self, addr: int) -> int:
+        return self.mem.get(addr, 0)
+
+
+class TestCb2ModeClassification(unittest.TestCase):
+    def test_game_mode_buckets(self) -> None:
+        self.assertEqual(game_mode_for_cb2(0x08085E5D), "overworld")
+        self.assertEqual(game_mode_for_cb2(0x08038421), "battle")
+        self.assertEqual(game_mode_for_cb2(0x080BB775), "menu")
+        # PokeNav / Trainer Card / forget-move = unwhitelisted -> unknown_ui
+        self.assertEqual(game_mode_for_cb2(0x081C7401), "unknown_ui")
+
+    def test_in_battle_only_when_cb2_is_battle(self) -> None:
+        # RC2 fix: a stale gBattleTypeFlags on PokeNav must NOT read in-battle
+        # (the ~3700-turn imprisonment). Only a battle callback does.
+        self.assertEqual(_read_battle_flags(_AddrClient(0x081C7401, 4)), (False, 0))
+        self.assertEqual(_read_battle_flags(_AddrClient(0x08085E5D, 4)), (False, 0))
+        self.assertEqual(_read_battle_flags(_AddrClient(0x08038421, 4)), (True, 4))
+        # no flag set -> not in battle regardless of cb2
+        self.assertEqual(_read_battle_flags(_AddrClient(0x08038421, 0)), (False, 0))
+        # in-battle party/switch screen (flags set) -> battle so SEND_OUT drives
+        # it, not ui_escape; the FIELD party menu (flags 0) stays out of battle.
+        self.assertEqual(_read_battle_flags(_AddrClient(0x081B01B1, 0xC)), (True, 0xC))
+        self.assertEqual(_read_battle_flags(_AddrClient(0x081B01B1, 0)), (False, 0))
+        self.assertEqual(game_mode_for_cb2(0x081B01B1), "battle")
 
 
 class TestSigned16(unittest.TestCase):
@@ -140,6 +178,137 @@ class TestMGBAClientParsing(unittest.TestCase):
         c = FakeSendClient(["<|SUCCESS|>"])
         with self.assertRaises(ValueError):
             c.tap("X")
+
+
+class BadgeLatchTest(unittest.TestCase):
+    """The badge latch must never let a SaveBlock1 DMA drop-flicker (a frame
+    that reads 0 for a set badge flag) reduce the earned badge count."""
+
+    def setUp(self) -> None:
+        import generic_agent.state as st
+        self.st = st
+        st.reset_flag_latches()
+
+    def tearDown(self) -> None:
+        self.st.reset_flag_latches()
+
+    def _count(self, bits_true: set[int]) -> int:
+        # mirrors the read_state badge loop: latch the bits read set this frame,
+        # then count from the latch (decoupled from the reads, so a mid-loop
+        # read failure can't drop the count).
+        st = self.st
+        for bi in range(8):
+            if bi in bits_true:
+                st._BADGE_BITS_LATCHED.add(bi)
+        return len(st._BADGE_BITS_LATCHED)
+
+    def test_drop_flicker_does_not_lower_count(self) -> None:
+        self.assertEqual(self._count({0, 1, 2}), 3)   # Badge 3 earned
+        self.assertEqual(self._count(set()), 3)       # DMA flicker -> still 3
+        self.assertEqual(self._count({0, 1, 2, 3}), 4)  # Badge 4 earned
+        self.assertEqual(self._count(set()), 4)       # still 4, never dips
+
+    def test_read_failure_frame_keeps_latched_count(self) -> None:
+        # The real bug: a corrupted badge read8 raised mid-loop under button-
+        # press load, aborting the loop with a PARTIAL count even though the
+        # latch held {0,1,2}. Counting from len(latch) makes an all-fail frame
+        # (no bits read this frame) still report the full earned count.
+        self.assertEqual(self._count({0, 1, 2}), 3)
+        self.assertEqual(self._count(set()), 3)  # every read failed -> still 3
+
+    def test_reset_clears_latch(self) -> None:
+        self._count({0, 1, 2})
+        self.st.reset_flag_latches()
+        self.assertEqual(self._count(set()), 0)
+
+
+class RiseConfirmTest(unittest.TestCase):
+    """Future-event gate flags (0x333/0x8B) must survive a spurious single True:
+    a garbage read once false-latched the theft and skipped Meteor Falls."""
+
+    def setUp(self) -> None:
+        import generic_agent.state as st
+        self.st = st
+        st.reset_flag_latches()
+
+    def tearDown(self) -> None:
+        self.st.reset_flag_latches()
+
+    def test_single_true_not_confirmed(self) -> None:
+        # One True, or True interrupted by a False, never confirms.
+        self.assertFalse(self.st._rise_confirmed("k", True, True))   # 1
+        self.assertFalse(self.st._rise_confirmed("k", False, True))  # reset
+        self.assertFalse(self.st._rise_confirmed("k", True, True))   # 1
+        self.assertFalse(self.st._rise_confirmed("k", True, True))   # 2
+
+    def test_n_consecutive_true_confirms(self) -> None:
+        res = False
+        for _ in range(self.st._RISE_CONFIRM_N):
+            res = self.st._rise_confirmed("k", True, True)
+        self.assertTrue(res)
+        # stays confirmed while True
+        self.assertTrue(self.st._rise_confirmed("k", True, True))
+        # a False resets it (state read; goals._latched holds the disk latch)
+        self.assertFalse(self.st._rise_confirmed("k", False, True))
+
+    def test_unstable_frame_never_confirms(self) -> None:
+        # The cable-car false-latch: a garbage True across cutscene frames
+        # (stable=False) must never accumulate, and it resets any progress.
+        for _ in range(self.st._RISE_CONFIRM_N + 3):
+            self.assertFalse(self.st._rise_confirmed("k", True, False))
+        # even mixing in a couple of stable Trues can't reach N if cutscene
+        # frames keep resetting it
+        self.st._rise_confirmed("k", True, True)   # 1
+        self.st._rise_confirmed("k", True, True)   # 2
+        self.st._rise_confirmed("k", True, False)  # reset
+        self.assertFalse(self.st._rise_confirmed("k", True, True))  # back to 1
+
+    def test_flags_are_independent(self) -> None:
+        for _ in range(self.st._RISE_CONFIRM_N):
+            self.st._rise_confirmed("a", True, True)
+        self.assertFalse(self.st._rise_confirmed("b", True, True))
+
+
+class Party0LevelFlickerTest(unittest.TestCase):
+    """party0_level drop-flicker carry (07-24 Lavaridge gym oscillation).
+
+    A contended read8 returns 0 for the lead's level; every `party0_level < X`
+    goal gate then reads it as under-leveled and resurrects a retired grind
+    goal for that frame, yanking mapbfs backward (log: every grind_fiery_path
+    turn inside the gym had lvl=0). Level 0 is impossible for a real slot-0
+    mon, so carry the last positive read; a genuine lead swap (positive lower
+    read) must still pass through.
+    """
+
+    def setUp(self) -> None:
+        from generic_agent import state as st
+        self.st = st
+        st.reset_flag_latches()
+
+    def tearDown(self) -> None:
+        self.st.reset_flag_latches()
+
+    def test_zero_read_carries_last_good(self) -> None:
+        f = self.st._flicker_guarded_level
+        self.assertEqual(f(46), 46)
+        self.assertEqual(f(0), 46)   # the flicker frame
+        self.assertEqual(f(46), 46)
+
+    def test_initial_zero_stays_zero(self) -> None:
+        # No good read yet (fresh save / empty party): report the truth.
+        self.assertEqual(self.st._flicker_guarded_level(0), 0)
+
+    def test_lead_swap_lowers_carry(self) -> None:
+        f = self.st._flicker_guarded_level
+        self.assertEqual(f(46), 46)
+        self.assertEqual(f(12), 12)  # swapped lead: NOT a max-latch
+        self.assertEqual(f(0), 12)   # flicker after swap carries the new lead
+
+    def test_reset_clears_carry(self) -> None:
+        f = self.st._flicker_guarded_level
+        f(46)
+        self.st.reset_flag_latches()
+        self.assertEqual(f(0), 0)
 
 
 if __name__ == "__main__":

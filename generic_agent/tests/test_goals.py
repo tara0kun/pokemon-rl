@@ -34,12 +34,18 @@ class GoalsTestBase(unittest.TestCase):
             goals_mod.PEEKO_DONE_MARKER,
             goals_mod.LETTER_DONE_MARKER,
             goals_mod.DEVON_DELIVERED_MARKER,
+            goals_mod.ROCK_SMASH_TAUGHT_MARKER,
+            goals_mod.THEFT_DONE_MARKER,
+            goals_mod.MTCHIMNEY_DONE_MARKER,
         )
         goals_mod.GOALS_FILE = tmp / "goal_notes.jsonl"
         goals_mod.VISITED_MAPS_FILE = tmp / "visited_maps.json"
         goals_mod.PEEKO_DONE_MARKER = tmp / "peeko_done.marker"
         goals_mod.LETTER_DONE_MARKER = tmp / "steven_letter_done.marker"
         goals_mod.DEVON_DELIVERED_MARKER = tmp / "devon_delivered.marker"
+        goals_mod.ROCK_SMASH_TAUGHT_MARKER = tmp / "rock_smash_taught.marker"
+        goals_mod.THEFT_DONE_MARKER = tmp / "meteor_theft_done.marker"
+        goals_mod.MTCHIMNEY_DONE_MARKER = tmp / "mtchimney_done.marker"
 
     def tearDown(self) -> None:
         (
@@ -48,6 +54,9 @@ class GoalsTestBase(unittest.TestCase):
             goals_mod.PEEKO_DONE_MARKER,
             goals_mod.LETTER_DONE_MARKER,
             goals_mod.DEVON_DELIVERED_MARKER,
+            goals_mod.ROCK_SMASH_TAUGHT_MARKER,
+            goals_mod.THEFT_DONE_MARKER,
+            goals_mod.MTCHIMNEY_DONE_MARKER,
         ) = self._orig
         self._tmp.cleanup()
 
@@ -315,13 +324,173 @@ class TestDewfordChain(GoalsTestBase):
         self.assertEqual(g_gym.name, "mauville_gym_wattson")
         self.assertEqual(g_gym.target_pos, (5, 2))  # Wattson NPC tile
 
-    def test_badge3_retires_mauville_chain(self) -> None:
-        # Once the Dynamo Badge is won (badge_count 3) the whole Mauville chain
-        # deactivates (Route111/Verdanturf is the next unimplemented step -> None).
+    def test_badge3_starts_with_rock_smash(self) -> None:
+        # Once the Dynamo Badge is won (badge_count 3) the Lavaridge arc begins,
+        # and its FIRST step is getting HM06 Rock Smash (Route111 is gated by a
+        # breakable rock) — get_rock_smash before reach_fallarbor.
         gs = make_gs(map_group=0, map_num=2, badge_count=3,
                      flag_steven_letter_delivered=True,
                      flag_dock_rejected_devon=True,
                      flag_devon_goods_delivered=True)
+        g = goals_mod.current_goal(gs)
+        self.assertEqual(g.name, "get_rock_smash")
+        self.assertEqual(g.target_map, (10, 2))
+        self.assertEqual(g.target_pos, (4, 4))
+
+    def test_rock_smash_chain_serializes(self) -> None:
+        # HM received but not taught -> teach_rock_smash; taught -> reach_fallarbor
+        # takes over (the smash goal only fires on Route111 with the rock present).
+        base = dict(map_group=0, map_num=2, badge_count=3,
+                    flag_steven_letter_delivered=True,
+                    flag_dock_rejected_devon=True,
+                    flag_devon_goods_delivered=True)
+        # HM received, no party mon knows Rock Smash -> teach it (UI sub-task)
+        gs_teach = make_gs(flag_rock_smash_hm=True,
+                           party_moves=[[348, 43, 228, 98]], **base)
+        self.assertEqual(goals_mod.current_goal(gs_teach).name, "teach_rock_smash")
+        # taught (move 249 present) -> advance to reach_fallarbor
+        gs_taught = make_gs(flag_rock_smash_hm=True,
+                            party_moves=[[348, 43, 228, 98], [249, 0, 0, 0]],
+                            **base)
+        self.assertEqual(goals_mod.current_goal(gs_taught).name, "reach_fallarbor")
+
+    def test_smash_goal_fires_on_route111_with_rock(self) -> None:
+        # On Route111, knowing Rock Smash, with the rock live at (19,100) ->
+        # smash_route111_rock (interact + smash), NOT reach_fallarbor.
+        gs = make_gs(map_group=0, map_num=26, badge_count=3,
+                     flag_steven_letter_delivered=True,
+                     flag_dock_rejected_devon=True,
+                     flag_devon_goods_delivered=True,
+                     flag_rock_smash_hm=True,
+                     party_moves=[[249, 0, 0, 0]],
+                     npcs_on_map=[(19, 100, 86)])
+        g = goals_mod.current_goal(gs)
+        self.assertEqual(g.name, "smash_route111_rock")
+        self.assertEqual(g.target_pos, (19, 100))
+
+    def test_fiery_path_cross_fires_on_route112_south(self) -> None:
+        # Route112 south blob (holds the higher-y Fiery Path warp) can only
+        # reach Fallarbor across Fiery Path -> fiery_path_cross, NOT
+        # reach_fallarbor (which would ping-pong Route111<->Route112). Uses the
+        # real Route112 collision from the map cache to resolve the component.
+        base = dict(map_group=0, map_num=27, badge_count=3,
+                    flag_steven_letter_delivered=True,
+                    flag_dock_rejected_devon=True,
+                    flag_devon_goods_delivered=True,
+                    flag_rock_smash_hm=True,        # HM06 received + taught, so the
+                    party_moves=[[249, 0, 0, 0]])   # Rock Smash chain is retired
+        gs_south = make_gs(x=26, y=44, **base)   # the 5595-turn stall tile
+        self.assertEqual(goals_mod.current_goal(gs_south).name,
+                         "fiery_path_cross")
+        # North blob (after crossing) -> reach_fallarbor takes over.
+        gs_north = make_gs(x=22, y=10, **base)
+        self.assertEqual(goals_mod.current_goal(gs_north).name,
+                         "reach_fallarbor")
+
+    def test_fiery_path_cross_survives_visited_suppression(self) -> None:
+        # Fiery Path is a CROSSING: FieryPath (24,14) is marked visited the
+        # instant we step in, but fiery_path_cross must keep firing (it's in
+        # _GOAL_BYPASS_VISITED) until we exit into the north blob. Without the
+        # bypass, one visit dropped it to reach_fallarbor and the agent
+        # oscillated Route111<->Route112 south for 1000+ turns (07-17).
+        goals_mod.record_map_visit(24, 14)   # FieryPath now "visited"
+        base = dict(map_group=0, map_num=27, badge_count=3,
+                    flag_steven_letter_delivered=True,
+                    flag_dock_rejected_devon=True,
+                    flag_devon_goods_delivered=True,
+                    flag_rock_smash_hm=True,
+                    party_moves=[[249, 0, 0, 0]])
+        gs_south = make_gs(x=38, y=46, **base)  # a live oscillation tile
+        self.assertEqual(goals_mod.current_goal(gs_south).name,
+                         "fiery_path_cross")
+
+    def test_exit_fiery_path_north_fires_inside_the_cave(self) -> None:
+        # Once IN Fiery Path (24,14), route to the north warp pad -- neither
+        # fiery_path_cross (needs Route112) nor reach_fallarbor (cur-set) fire
+        # there, so the agent wandered goal-less for 1243 turns (07-17).
+        base = dict(map_group=24, map_num=14, badge_count=3,
+                    flag_steven_letter_delivered=True,
+                    flag_dock_rejected_devon=True,
+                    flag_devon_goods_delivered=True,
+                    flag_rock_smash_hm=True, party_moves=[[249, 0, 0, 0]])
+        goals_mod.record_map_visit(24, 14)   # visited the instant we step in
+        gs = make_gs(x=26, y=21, **base)     # the stuck-at-y21 tile
+        g = goals_mod.current_goal(gs)
+        self.assertEqual(g.name, "exit_fiery_path_north")
+        self.assertEqual(g.target_pos, (26, 4))
+        # retires once Flannery is beaten / the magma leg is cleared
+        self.assertIsNone(goals_mod.current_goal(
+            make_gs(x=26, y=21, flag_badge04_get=True, **base)))
+
+    def test_exit_fiery_path_target_matches_canon_north_warp(self) -> None:
+        # No hardcoded-coord drift: the goal's target_pos must be the min-y
+        # (northern) FieryPath->Route112 warp read from the map cache.
+        from generic_agent import map_data as md
+        fp = md.get_cache().get(24, 14)
+        r112 = [(w["x"], w["y"]) for w in (fp.warps or [])
+                if "Route112" in str(w.get("dest_map", ""))]
+        north = min(r112, key=lambda t: t[1])
+        goal = next(g for g in goals_mod.GOAL_TABLE
+                    if g.name == "exit_fiery_path_north")
+        self.assertEqual(goal.target_pos, north)
+
+    def test_meteor_falls_theft_fires_past_fallarbor(self) -> None:
+        # Once at/past Fallarbor (reach_fallarbor's cur-set no longer matches),
+        # the arc's leg 2 takes over: enter Meteor Falls for the Team Magma
+        # theft cutscene. Route114 (0,29) is past Fallarbor and in no cur-set.
+        base = dict(badge_count=3,
+                    flag_steven_letter_delivered=True,
+                    flag_dock_rejected_devon=True,
+                    flag_devon_goods_delivered=True,
+                    flag_rock_smash_hm=True, party_moves=[[249, 0, 0, 0]])
+        gs = make_gs(map_group=0, map_num=29, **base)   # Route114
+        g = goals_mod.current_goal(gs)
+        self.assertEqual(g.name, "meteor_falls_theft")
+        self.assertEqual(g.target_map, (24, 0))         # MeteorFalls1F1R
+        # (13,18) = west neighbour of the (14,18) theft coord_event, so BFS from
+        # the east stops on the trigger (step-on fires the cutscene).
+        self.assertEqual(g.target_pos, (13, 18))
+        # Inside Meteor Falls the goal stays live (visited-bypass) until 0x333.
+        gs_inside = make_gs(map_group=24, map_num=0, x=20, y=18, **base)
+        goals_mod.record_map_visit(24, 0)
+        self.assertEqual(goals_mod.current_goal(gs_inside).name,
+                         "meteor_falls_theft")
+
+    def test_meteor_falls_theft_advances_to_cable_car(self) -> None:
+        # The theft cutscene sets FLAG_HIDE_ROUTE_112_TEAM_MAGMA (0x333). Once
+        # set (latched), leg 2 retires and the cable-car leg (3) takes over: from
+        # Route114 the agent heads back to the Route112 cable-car station.
+        gs = make_gs(map_group=0, map_num=29, badge_count=3,
+                     flag_steven_letter_delivered=True,
+                     flag_dock_rejected_devon=True,
+                     flag_devon_goods_delivered=True,
+                     flag_rock_smash_hm=True, party_moves=[[249, 0, 0, 0]],
+                     flag_route112_magma_cleared=True)
+        self.assertEqual(goals_mod.current_goal(gs).name, "ride_cable_car")
+
+    def test_meteor_falls_target_is_west_of_canon_trigger(self) -> None:
+        # No hardcoded-coord drift: target_pos must sit immediately WEST of the
+        # canon theft coord_event so the eastward approach steps onto it. Read
+        # the trigger from the cached map.json (MagmaStealsMeteoriteScene).
+        import json
+        from generic_agent import config
+        p = config.MEMORY_DIR / "map_cache" / "MeteorFalls_1F_1R.map.json"
+        ce = [e for e in json.loads(p.read_text(encoding="utf-8")).get(
+            "coord_events", []) if "MagmaSteals" in str(e.get("script", ""))]
+        self.assertEqual(len(ce), 1)
+        trig = (ce[0]["x"], ce[0]["y"])
+        goal = next(g for g in goals_mod.GOAL_TABLE
+                    if g.name == "meteor_falls_theft")
+        self.assertEqual(goal.target_pos, (trig[0] - 1, trig[1]))  # west nbr
+
+    def test_badge4_retires_lavaridge_arc(self) -> None:
+        # Once Flannery is beaten (FLAG_BADGE04_GET) the Lavaridge arc retires
+        # (Petalburg/Norman is the next unimplemented step -> None).
+        gs = make_gs(map_group=0, map_num=13, badge_count=4,
+                     flag_steven_letter_delivered=True,
+                     flag_dock_rejected_devon=True,
+                     flag_devon_goods_delivered=True,
+                     flag_badge04_get=True)
         self.assertIsNone(goals_mod.current_goal(gs))
 
     def test_badge2_low_hp_heals_before_cave_trek(self) -> None:
@@ -339,6 +508,333 @@ class TestDewfordChain(GoalsTestBase):
         south = make_gs(map_group=0, map_num=19, y=40, badge_count=1)
         self.assertEqual(goals_mod.current_goal(north).name, "dewford_to_woods")
         self.assertEqual(goals_mod.current_goal(south).name, "dewford_to_briney")
+
+
+class TestLavaridgeArc(GoalsTestBase):
+    """Badge4 (Lavaridge/Flannery) arc goal chain, gated by the two latched
+    story flags: theft (0x333) and Mt.Chimney (0x8B). Peeko/letter/devon are
+    long done by badge 3, so their markers are pre-written."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        for m in (goals_mod.PEEKO_DONE_MARKER, goals_mod.LETTER_DONE_MARKER,
+                  goals_mod.DEVON_DELIVERED_MARKER):
+            m.write_text("1", encoding="utf-8")
+
+    def _gs(self, **kw):
+        base = dict(
+            badge_count=3, party_count=5,
+            # Full HP + stocked by default so nav/routing tests aren't diverted
+            # by field_heal_potion (<80%) or buy_potions; the shop/heal tests
+            # override party0_hp / bag_heal_qty explicitly.
+            party0_hp=128, party0_max_hp=128,
+            bag_heal_qty=10, money=20000,
+            flag_steven_letter_delivered=True,
+            flag_dock_rejected_devon=True,
+            flag_devon_goods_delivered=True,
+            flag_rock_smash_hm=True, party_moves=[[249, 0, 0, 0]],
+        )
+        base.update(kw)
+        return make_gs(**base)
+
+    def _name(self, **kw):
+        g = goals_mod.current_goal(self._gs(**kw))
+        return g.name if g else None
+
+    # --- pre-theft (0x333 == 0): the four earlier goals still own the map ---
+    def test_pre_theft_route114_is_theft_goal(self) -> None:
+        self.assertEqual(
+            self._name(map_group=0, map_num=29, x=19, y=20),
+            "meteor_falls_theft")
+
+    def test_pre_theft_fiery_heads_north(self) -> None:
+        self.assertEqual(
+            self._name(map_group=24, map_num=14, x=26, y=20),
+            "exit_fiery_path_north")
+
+    # --- post-theft (0x333 == 1, 0x8B == 0): cable-car leg ---
+    def test_theft_done_routes_to_cable_car(self) -> None:
+        # North blob and south blob both drive to the station (region nav
+        # crosses Fiery southward for the north one).
+        T = dict(flag_route112_magma_cleared=True)
+        for (x, y) in ((22, 10), (26, 36)):
+            g = goals_mod.current_goal(
+                self._gs(map_group=0, map_num=27, x=x, y=y, **T))
+            self.assertEqual(g.name, "ride_cable_car")
+            self.assertEqual(g.target_pos, (6, 6))
+
+    def test_theft_done_fiery_flips_south(self) -> None:
+        # The SAME FieryPath tile that pre-theft routed north now routes south.
+        g = goals_mod.current_goal(self._gs(
+            map_group=24, map_num=14, x=26, y=20,
+            flag_route112_magma_cleared=True))
+        self.assertEqual(g.name, "exit_fiery_path_south")
+        self.assertEqual(g.target_pos, (26, 36))
+
+    def test_at_mtchimney_fights_magma_not_cable_car(self) -> None:
+        # ride_cable_car goes silent on the Mt.Chimney maps so the battle goal
+        # wins there.
+        g = goals_mod.current_goal(self._gs(
+            map_group=24, map_num=12, x=17, y=37,
+            flag_route112_magma_cleared=True))
+        self.assertEqual(g.name, "mtchimney_defeat_magma")
+        self.assertEqual(g.target_pos, (13, 6))
+
+    # --- magma-done (0x8B == 1): descend, heal, gym ---
+    def test_magma_done_descends_then_reaches_lavaridge(self) -> None:
+        # party0_level at the grind target: below it grind_pre_flannery owns
+        # nav on the pocket (H17) — TestFlanneryGrind covers that branch.
+        M = dict(flag_route112_magma_cleared=True,
+                 flag_mtchimney_magma_defeated=True,
+                 party0_level=goals_mod.FLANNERY_GRIND_TARGET_LEVEL)
+        self.assertEqual(
+            self._name(map_group=24, map_num=12, x=17, y=37, **M),
+            "descend_jagged_pass")
+        # In the SW pocket ride/descend/flannery are all silent -> reach_lavaridge
+        self.assertEqual(
+            self._name(map_group=0, map_num=27, x=7, y=47, **M),
+            "reach_lavaridge")
+
+    def test_lavaridge_gym_and_heal_priority(self) -> None:
+        # Level at the grind target: below it the H17 grind goal wins in town
+        # (TestFlanneryGrind covers that branch).
+        M = dict(flag_route112_magma_cleared=True,
+                 flag_mtchimney_magma_defeated=True,
+                 party0_level=goals_mod.FLANNERY_GRIND_TARGET_LEVEL)
+        # Full HP in town -> straight to Flannery.
+        g = goals_mod.current_goal(
+            self._gs(map_group=0, map_num=12, x=5, y=10, **M))
+        self.assertEqual(g.name, "lavaridge_gym_flannery")
+        self.assertEqual(g.target_pos, (13, 9))
+        # Low HP -> heal first (heal sits above the gym goal).
+        self.assertEqual(
+            self._name(map_group=0, map_num=12, x=5, y=10,
+                       party0_hp=40, **M),
+            "heal_at_lavaridge")
+        # Dropped into gym B1F mid-puzzle -> gym goal persists (target 1F).
+        self.assertEqual(
+            self._name(map_group=4, map_num=2, x=5, y=5, **M),
+            "lavaridge_gym_flannery")
+
+    def test_badge04_retires_entire_arc(self) -> None:
+        # Heat Badge won -> every Lavaridge-arc goal retires (next step
+        # unimplemented -> None), even standing in Lavaridge.
+        self.assertIsNone(goals_mod.current_goal(self._gs(
+            map_group=0, map_num=12, x=5, y=10, flag_badge04_get=True,
+            flag_route112_magma_cleared=True,
+            flag_mtchimney_magma_defeated=True)))
+
+    def test_buy_potions_fires_low_stock_before_cable_car(self) -> None:
+        # H14: post-theft at Mauville with few restores + money -> stock up at
+        # the Mart BEFORE heading to the cable car (buy_potions is above
+        # ride_cable_car in the table).
+        g = goals_mod.current_goal(self._gs(
+            map_group=0, map_num=2, flag_route112_magma_cleared=True,
+            bag_heal_qty=0, money=20000))
+        self.assertEqual(g.name, "buy_potions")
+        self.assertEqual(g.target_map, (10, 7))
+        self.assertEqual(g.target_pos, (2, 3))
+
+    def test_buy_potions_retires_when_stocked(self) -> None:
+        # Enough restores -> skip the shop, proceed to the cable car.
+        self.assertEqual(
+            self._name(map_group=0, map_num=2, flag_route112_magma_cleared=True,
+                       bag_heal_qty=10, money=20000),
+            "ride_cable_car")
+
+    def test_buy_potions_no_fire_when_broke(self) -> None:
+        # Confirmed-broke wallet (0..699) can't buy -> don't detour to the Mart.
+        self.assertEqual(
+            self._name(map_group=0, map_num=2, flag_route112_magma_cleared=True,
+                       bag_heal_qty=0, money=300),
+            "ride_cable_car")
+
+    def test_field_heal_fires_low_hp_with_potions(self) -> None:
+        # On Mt.Chimney, low HP + restores in bag -> heal before the next
+        # trainer (field_heal_potion is above mtchimney_defeat_magma).
+        M = dict(flag_route112_magma_cleared=True)
+        self.assertEqual(
+            self._name(map_group=24, map_num=12, x=17, y=37,
+                       party0_hp=50, party0_max_hp=131, bag_heal_qty=5, **M),
+            "field_heal_potion")
+        # No restores left -> fall through to fighting (anti-loop guard).
+        self.assertEqual(
+            self._name(map_group=24, map_num=12, x=17, y=37,
+                       party0_hp=50, party0_max_hp=131, bag_heal_qty=0, **M),
+            "mtchimney_defeat_magma")
+        # Full HP -> no heal, fight.
+        self.assertEqual(
+            self._name(map_group=24, map_num=12, x=17, y=37,
+                       party0_hp=131, party0_max_hp=131, bag_heal_qty=5, **M),
+            "mtchimney_defeat_magma")
+
+    def test_fainted_lead_does_not_field_heal(self) -> None:
+        # A fainted lead (hp 0) can't be Potion-revived (no Revive in bag), so
+        # field_heal must NOT fire — it churned a doomed VLM Potion sub-task
+        # every 25 turns and blocked the Jagged Pass descent to a PC (the 07-24
+        # deadlock). Fall through to the fight/descent so the loop reaches a PC.
+        M = dict(flag_route112_magma_cleared=True)
+        self.assertNotEqual(
+            self._name(map_group=24, map_num=12, x=17, y=37,
+                       party0_hp=0, party0_max_hp=131, bag_heal_qty=5, **M),
+            "field_heal_potion")
+
+    def test_theft_latch_survives_flag_flicker(self) -> None:
+        # Once 0x333 has read True, a later frame reading it False must NOT
+        # revert to the pre-theft goal (the DMA-flicker north-yank guard).
+        at = dict(map_group=24, map_num=14, x=26, y=20)
+        self.assertEqual(  # observe theft -> latches marker
+            self._name(flag_route112_magma_cleared=True, **at),
+            "exit_fiery_path_south")
+        self.assertTrue(goals_mod.THEFT_DONE_MARKER.exists())
+        self.assertEqual(  # flicker back to False -> still south (latched)
+            self._name(flag_route112_magma_cleared=False, **at),
+            "exit_fiery_path_south")
+
+
+class TestFlanneryGrind(GoalsTestBase):
+    """H17: sub-target lead grinds Fiery Path (a CAVE) before Flannery.
+
+    The Jagged Pass grass grind leaked (frontier wander vaults the y=26
+    JUMP_SOUTH ledge out of the grass), so the grind moved to Fiery Path: a
+    272-tile MB_CAVE floor with zero ledges where the frontier wander stays on
+    the encounter floor every step (grind_granite_cave's proven property). The
+    cycle: on Route112 / the Lavaridge side, grind_fiery_path routes toward the
+    cave (post-theft fiery_path_cross is off, so this goal drives entry); inside
+    the cave it pins (26,23) and grinds; a hurt lead heals at the Mauville PC
+    (the low walkable loop) via heal_at_mauville; at the target level the grind
+    retires and exit_fiery_path_south -> ride_cable_car -> descend ->
+    reach_lavaridge -> gym resume the Flannery push."""
+
+    TARGET = goals_mod.FLANNERY_GRIND_TARGET_LEVEL
+
+    def setUp(self) -> None:
+        super().setUp()
+        for m in (goals_mod.PEEKO_DONE_MARKER, goals_mod.LETTER_DONE_MARKER,
+                  goals_mod.DEVON_DELIVERED_MARKER, goals_mod.THEFT_DONE_MARKER,
+                  goals_mod.MTCHIMNEY_DONE_MARKER):
+            m.write_text("1", encoding="utf-8")
+
+    def _gs(self, **kw):
+        base = dict(
+            badge_count=3, party_count=5,
+            # one below the grind target so the goal fires (threshold-agnostic)
+            party0_level=goals_mod.FLANNERY_GRIND_TARGET_LEVEL - 1,
+            party0_hp=128, party0_max_hp=128,
+            bag_heal_qty=10, money=20000,
+            flag_steven_letter_delivered=True,
+            flag_dock_rejected_devon=True,
+            flag_devon_goods_delivered=True,
+            flag_rock_smash_hm=True, party_moves=[[249, 0, 0, 0]],
+        )
+        base.update(kw)
+        return make_gs(**base)
+
+    def _name(self, **kw):
+        g = goals_mod.current_goal(self._gs(**kw))
+        return g.name if g else None
+
+    def test_under_target_grinds_inside_fiery(self) -> None:
+        # Inside Fiery Path an under-level lead pins the cave-floor grind tile
+        # and outranks exit_fiery_path_south (which would otherwise walk it
+        # straight back out the south warp post-theft).
+        g = goals_mod.current_goal(self._gs(map_group=24, map_num=14, x=26, y=23))
+        self.assertEqual(g.name, "grind_fiery_path")
+        self.assertEqual(g.target_map, (24, 14))
+        self.assertEqual(g.target_pos, (26, 23))
+
+    def test_under_target_routes_in_from_route112(self) -> None:
+        # On Route112 (post-theft, so fiery_path_cross is off) the grind goal
+        # drives the entry toward Fiery Path.
+        self.assertEqual(
+            self._name(map_group=0, map_num=27, x=26, y=36), "grind_fiery_path")
+
+    def test_under_target_lavaridge_routes_back_not_flannery(self) -> None:
+        # An under-level lead that reached the Lavaridge side must route BACK
+        # toward the grind, never into the (losing) Flannery fight.
+        for m in ((0, 12), (4, 5), (4, 1)):
+            self.assertEqual(
+                self._name(map_group=m[0], map_num=m[1], x=5, y=6),
+                "grind_fiery_path", m)
+
+    def test_at_target_resumes_flannery_push(self) -> None:
+        # At the target level the grind retires: inside Fiery the exit goal
+        # walks out south; on the Lavaridge side the gym goal takes over.
+        L = dict(party0_level=self.TARGET)
+        self.assertEqual(
+            self._name(map_group=24, map_num=14, x=26, y=23, **L),
+            "exit_fiery_path_south")
+        self.assertEqual(
+            self._name(map_group=0, map_num=12, x=5, y=6, **L),
+            "lavaridge_gym_flannery")
+
+    def test_hurt_routes_up_to_lavaridge_heal(self) -> None:
+        # Heal via the CABLE CAR to Lavaridge, not Mauville (Route112->Route111
+        # ->Mauville stalls in the boulder maze). A hurt lead on the Route112
+        # south blob rides the cable car up; at Lavaridge it heals at the PC.
+        self.assertEqual(
+            self._name(map_group=0, map_num=27, x=26, y=36,
+                       party0_hp=40, party0_max_hp=128),
+            "ride_cable_car")
+        self.assertEqual(
+            self._name(map_group=0, map_num=12, x=5, y=6,
+                       party0_hp=40, party0_max_hp=128),
+            "heal_at_lavaridge")
+
+    def test_zero_damaging_pp_yields_grind_to_heal(self) -> None:
+        # A full-HP lead with 0 damaging PP must NOT keep grinding (it would
+        # flee every wild forever) — it yields toward the PC heal (which refills
+        # PP): cable car up from the south blob, PC at Lavaridge. Unreadable PP
+        # (-1, the default) keeps grinding. And a 0-PP lead at Lavaridge must
+        # heal, NOT walk into Flannery.
+        self.assertEqual(
+            self._name(map_group=0, map_num=27, x=26, y=36,
+                       party0_damaging_pp=-1), "grind_fiery_path")
+        self.assertEqual(
+            self._name(map_group=0, map_num=27, x=26, y=36,
+                       party0_damaging_pp=0), "ride_cable_car")
+        self.assertEqual(
+            self._name(map_group=0, map_num=12, x=5, y=6,
+                       party0_damaging_pp=0), "heal_at_lavaridge")
+
+    def test_pre_mtchimney_never_grinds(self) -> None:
+        # Before the Mt.Chimney Magma defeat the grind must not fire — the
+        # gauntlet goals still own the arc.
+        goals_mod.MTCHIMNEY_DONE_MARKER.unlink()
+        self.assertNotEqual(
+            self._name(map_group=24, map_num=14, x=26, y=23,
+                       flag_mtchimney_magma_defeated=False),
+            "grind_fiery_path")
+
+    def test_badge04_retires_grind(self) -> None:
+        # Heat Badge won -> the whole arc (grind included) retires.
+        self.assertIsNone(goals_mod.current_goal(self._gs(
+            map_group=24, map_num=14, x=26, y=23, flag_badge04_get=True)))
+
+    def test_visited_bypass_keeps_retargeting_the_cave(self) -> None:
+        # FieryPath is marked visited the instant the lead steps in, but the
+        # grind must keep re-targeting it every heal cycle until the target
+        # level (the fiery_path_cross / grind_granite_cave bypass, mirrored).
+        goals_mod.record_map_visit(24, 14)
+        self.assertEqual(
+            self._name(map_group=0, map_num=27, x=26, y=36), "grind_fiery_path")
+
+    def test_pin_is_canon_cave_floor(self) -> None:
+        # No hardcoded-coord drift: the pin must be a canon MB_CAVE (0x08)
+        # land-encounter floor tile with all 4 neighbours also cave floor, so
+        # the frontier wander stays on the encounter floor every step (the
+        # leak-proof property the Jagged Pass grass lacked).
+        from generic_agent import config as _config, map_data as _md
+        goal = next(g for g in goals_mod.GOAL_TABLE
+                    if g.name == "grind_fiery_path")
+        self.assertEqual(goal.target_map, (24, 14))
+        if not (_config.MEMORY_DIR / "map_cache" / "FieryPath.map.bin").exists():
+            self.skipTest("FieryPath canon cache not present")
+        bg = _md.get_cache().behavior_grid(24, 14)
+        px, py = goal.target_pos
+        self.assertEqual(bg.get((px, py)), 0x08)
+        for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            self.assertEqual(bg.get((px + dx, py + dy)), 0x08, (dx, dy))
 
 
 if __name__ == "__main__":

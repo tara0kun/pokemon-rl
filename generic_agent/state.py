@@ -146,9 +146,179 @@ GMAIN_CB2_ADDR = 0x030022C4
 # Field/overworld callback2 values where a set gBattleTypeFlags must NOT be
 # read as in-battle. 0x08085E5D = CB2_Overworld (US), live-observed 07-01.
 CB2_OVERWORLD_SET = frozenset({0x08085E5D})
+# gBattleTypeFlags is stale after a battle (never cleared). The overworld guard
+# above catches the field, but a MENU opened later (Pokedex, region map, bag)
+# has its own callback2 and was slipping through -> a stale double-battle flag
+# read as in-battle froze the loop mashing A in the Pokedex for 4000 turns
+# (07-16). Until the battle-callback whitelist (H-cb2) is captured, treat known
+# menu callbacks as not-in-battle too. 0x080BB775 = Pokedex/region-map detail,
+# live-observed 07-16 (cb2 stable 6/6 while the screen showed the town map).
+CB2_MENU_SET = frozenset({0x080BB775})
+# Battle callback2 whitelist (the "H-cb2" the comment above waited for).
+# 0x08038421 = CB2_BattleMain (US), the single value observed across all 33
+# battle episodes (557 turns) of the 2026-07-22 grind session. gBattleTypeFlags
+# is STALE after a battle (never zero-cleared), so a set flag must NOT be read
+# as in-battle unless the game mode is ACTUALLY a battle. Flipping to a
+# whitelist (in-battle ONLY when cb2 is a battle callback) is strictly safer
+# than the old menu-exclusion list: an UNKNOWN callback (PokeNav 0x081C7401,
+# Trainer Card 0x080C2711, the level-up "forget move" screen 0x081BFAB5) now
+# reads NOT-in-battle instead of trapping the loop A-mashing a stale flag (the
+# ~3700-turn PokeNav imprisonment of 2026-07-22). Unknown battle variants are
+# caught by the vision battle_menu latch in the loop.
+CB2_BATTLE_SET = frozenset({
+    0x08038421,   # CB2_BattleMain (the battle engine proper)
+    0x081B01B1,   # in-battle party screen ("send out which POKeMON?" after a
+                  # faint). Live 2026-07-24: gBattleTypeFlags=0xC here, so the
+                  # flags gate below keeps the FIELD party menu (flags=0) out of
+                  # battle mode even if it shares this callback. Without this the
+                  # switch screen read as unknown_ui and ui_escape B-mashed it,
+                  # jamming the loop; now the SEND_OUT_SEQ handler drives it.
+})
+
+# Game-mode buckets used to gate tile_map recording, the unknown-UI escape,
+# and battle dispatch.
+MODE_OVERWORLD = "overworld"
+MODE_BATTLE = "battle"
+MODE_MENU = "menu"
+MODE_UNKNOWN_UI = "unknown_ui"
+
+
+def game_mode_for_cb2(cb2: int) -> str:
+    if cb2 in CB2_OVERWORLD_SET:
+        return MODE_OVERWORLD
+    if cb2 in CB2_BATTLE_SET:
+        return MODE_BATTLE
+    if cb2 in CB2_MENU_SET:
+        return MODE_MENU
+    return MODE_UNKNOWN_UI
 
 
 BATTLE_TYPE_TRAINER = 0x0008
+MOVE_ROCK_SMASH = 249  # MOVE_ROCK_SMASH (moves.h)
+
+# Monotonic badge latch, immune to the SaveBlock1 DMA drop-flicker: a
+# relocation-time read intermittently returns 0 for a badge flag that IS set,
+# which dips badge_count below its true value for a frame and fires stale
+# pre-badge goals (mauville_gym_wattson / enter_rustboro_gym / reach_mauville
+# fired ~4% of Route111 turns). Badges are never un-earned, so once a badge bit
+# is seen True keep it True. Process-lifetime; a fresh valid read re-latches
+# after a restart. Safe as a "genuinely-True past event" latch (NOT a
+# future-event `not X` gate). reset_flag_latches() is for tests.
+_BADGE_BITS_LATCHED: set[int] = set()
+
+# Rise-flicker guard for future-event GATE flags (0x333 theft, 0x8B Mt.Chimney).
+# Unlike the past-event latches, a spurious True on these advances the goal PAST
+# an event that has not happened: a single garbage/crossed read of 0x333 (under
+# multi-loop socket contention, 07-18) reported theft=True, goals._latched wrote
+# meteor_theft_done.marker, and the agent skipped Meteor Falls straight to the
+# (grunt-blocked) cable car. So read_state reports these True only after
+# _RISE_CONFIRM_N CONSECUTIVE True reads; a genuinely-set flag reads True for
+# many turns so the guard costs nothing real. Counter is per-flag, in-process.
+_RISE_CONFIRM: dict[str, int] = {}
+_RISE_CONFIRM_N = 5
+
+
+def _rise_confirmed(key: str, raw: bool, stable: bool) -> bool:
+    """Confirm a future-event gate flag rise only across STABLE overworld frames.
+
+    N=3 was defeated once already: during the Route112 cable-car RIDE (a scripted
+    cutscene, cb2 != CB2_Overworld) 0x8B read a garbage True for 3+ consecutive
+    read_state calls and false-latched mtchimney_done, skipping the Team Magma
+    battle (07-18). The garbage correlates with cutscene/transition frames, so a
+    non-stable frame (cb2 not CB2_Overworld: battle, menu, cable car, warp fade)
+    RESETS the counter — only a run of N genuine overworld True reads latches. The
+    real flag is set in the overworld right after its event and holds True for
+    hundreds of turns, so N=5 stable confirmations cost nothing."""
+    if raw and stable:
+        _RISE_CONFIRM[key] = _RISE_CONFIRM.get(key, 0) + 1
+    else:
+        _RISE_CONFIRM[key] = 0
+    return _RISE_CONFIRM[key] >= _RISE_CONFIRM_N
+
+
+def reset_flag_latches() -> None:
+    global _PARTY0_LEVEL_LAST_GOOD
+    _BADGE_BITS_LATCHED.clear()
+    _RISE_CONFIRM.clear()
+    _PARTY0_LEVEL_LAST_GOOD = 0
+
+
+# Drop-flicker guard for party0_level (same DMA-corruption family as the badge
+# latch above): a contended/mid-DMA read8 intermittently returns 0 for the
+# lead's level. A REAL slot-0 mon is never level 0, but every `party0_level <
+# X` goal gate reads 0 as "under-leveled" — on 07-24 each lvl=0 frame
+# resurrected the retired grind_fiery_path goal INSIDE Lavaridge Gym and
+# yanked mapbfs backward toward B1F for a turn (the (0,13)-(0,15) up/down
+# oscillation against the hole climb). Unlike badges, level is NOT monotonic
+# across lead swaps, so this is a last-good CARRY, not a max-latch: any
+# positive read (a swapped-in lower-level lead included) replaces the carry;
+# only the impossible 0 is substituted. Process-lifetime, like the badge latch.
+_PARTY0_LEVEL_LAST_GOOD: int = 0
+
+
+def _flicker_guarded_level(lv: int) -> int:
+    global _PARTY0_LEVEL_LAST_GOOD
+    if lv == 0 and _PARTY0_LEVEL_LAST_GOOD > 0:
+        return _PARTY0_LEVEL_LAST_GOOD
+    if lv > 0:
+        _PARTY0_LEVEL_LAST_GOOD = lv
+    return lv
+
+# Pokemon substruct order by personality % 24 (Gen 3 box-mon encryption).
+_SUBSTRUCT_PERMS = [
+    "GAEM", "GAME", "GEAM", "GEMA", "GMAE", "GMEA",
+    "AGEM", "AGME", "AEGM", "AEMG", "AMGE", "AMEG",
+    "EGAM", "EGMA", "EAGM", "EAMG", "EMGA", "EMAG",
+    "MGAE", "MGEA", "MAGE", "MAEG", "MEGA", "MEAG",
+]
+
+
+def _read_party_move_ids(client: MGBAClient, slot: int) -> list[int]:
+    """Decrypt gPlayerParty[slot]'s 4 move IDs from the Attacks substruct."""
+    base = PLAYER_PARTY_ADDR + slot * POKEMON_STRUCT_SIZE
+    pv = client.read32(base + 0x00)
+    otid = client.read32(base + 0x04)
+    key = pv ^ otid
+    a_off = 0x20 + _SUBSTRUCT_PERMS[pv % 24].index("A") * 12
+    w0 = client.read32(base + a_off) ^ key
+    w1 = client.read32(base + a_off + 4) ^ key
+    return [w0 & 0xFFFF, (w0 >> 16) & 0xFFFF, w1 & 0xFFFF, (w1 >> 16) & 0xFFFF]
+
+
+def read_party0_damaging_pp(client: MGBAClient) -> int:
+    """Sum of PP across the party leader's DAMAGING moves (power>0 in the ROM
+    gBattleMoves table). Returns -1 if unreadable or the decrypt looks like
+    garbage (out-of-range move id / PP), so the caller treats an unknown value
+    as "keep grinding". The 4 PP bytes sit in the Attacks substruct's 3rd word
+    (a_off+8), same XOR key as the move ids (see _read_party_move_ids)."""
+    from . import battle_moves as _bm
+    try:
+        base = PLAYER_PARTY_ADDR
+        pv = client.read32(base + 0x00)
+        otid = client.read32(base + 0x04)
+        key = pv ^ otid
+        a_off = 0x20 + _SUBSTRUCT_PERMS[pv % 24].index("A") * 12
+        w0 = client.read32(base + a_off) ^ key
+        w1 = client.read32(base + a_off + 4) ^ key
+        w2 = client.read32(base + a_off + 8) ^ key
+    except EmulatorError:
+        return -1
+    moves = [w0 & 0xFFFF, (w0 >> 16) & 0xFFFF, w1 & 0xFFFF, (w1 >> 16) & 0xFFFF]
+    pps = [w2 & 0xFF, (w2 >> 8) & 0xFF, (w2 >> 16) & 0xFF, (w2 >> 24) & 0xFF]
+    # A mis-decrypt (DMA relocation flicker) yields impossible ids/PP -> untrust.
+    if any(m > 559 for m in moves) or any(p > 64 for p in pps):
+        return -1
+    total = 0
+    for mid, pp in zip(moves, pps):
+        if mid == 0:
+            continue
+        try:
+            power, _ = _bm.move_power_type(client, mid)
+        except EmulatorError:
+            return -1
+        if power > 0:
+            total += pp
+    return total
 
 
 def _read_saveblock1_ptr(client: MGBAClient, tries: int = 4) -> int | None:
@@ -174,10 +344,24 @@ class GameState:
     saveblock1_valid: bool
     in_battle: bool = False
     battle_flags: int = 0
+    game_cb2: int = 0  # gMain.callback2 (game-mode fn ptr); overworld/menu/battle
+    # Coarse game mode derived from game_cb2 (game_mode_for_cb2): "overworld" /
+    # "battle" / "menu" / "unknown_ui". Gates tile_map recording and the loop's
+    # unknown-UI escape (an unwhitelisted callback = a menu we can be trapped in).
+    game_mode: str = MODE_OVERWORLD
     party0_level: int = 0
     party0_hp: int = 0
     party0_max_hp: int = 0
-    party0_species: int = 0  # decrypted species_id (Wingull=278, Grovyle=253, etc)
+    # Sum of PP across the leader's DAMAGING moves (power>0). -1 = unreadable
+    # (garbage decrypt / DMA flicker). The Fiery grind yields to a PC heal when
+    # this is 0: a lead with 0 damaging PP makes best_move_index return -1, and
+    # the grind then flees every wild forever (a healthy-but-zero-XP stall).
+    party0_damaging_pp: int = -1
+    # Decrypted species id — Gen 3 INTERNAL numbering, NOT National Dex
+    # (internal: Grovyle=278, Sceptile=279, Lombre=296; NatDex 279 is
+    # Pelipper — that mixup misdiagnosed the lead twice). Name lookup must
+    # use the ROM's gSpeciesNames order (see scratch/party_dump.py).
+    party0_species: int = 0
     party_count: int = 0
     flag_birch_met: bool = False
     flag_starter_received: bool = False
@@ -197,9 +381,30 @@ class GameState:
     # redirects you to find Capt. Stern (who is at the Oceanic Museum). Sequences
     # the Devon Goods errand — visit the Dock first, then the museum.
     flag_dock_rejected_devon: bool = False
+    # --- Lavaridge / Flannery (Badge 4) arc gates (canon docs/PLAN_lavaridge_flannery) ---
+    # FLAG_HIDE_ROUTE_112_TEAM_MAGMA (0x333): set by the Meteor Falls meteorite-
+    # theft cutscene; removes the 2 grunts guarding the Route112 Cable Car.
+    flag_route112_magma_cleared: bool = False
+    # FLAG_DEFEATED_EVIL_TEAM_MT_CHIMNEY (0x8B): set after beating Tabitha+Maxie at
+    # Mt.Chimney; opens the north exit to Jagged Pass -> Lavaridge (the ONLY entry
+    # to Lavaridge). Gate for descend_jagged_pass / reach_lavaridge.
+    flag_mtchimney_magma_defeated: bool = False
+    # FLAG_BADGE04_GET (0x86A, Heat Badge): set on beating Flannery. Retires the
+    # whole Lavaridge arc.
+    flag_badge04_get: bool = False
+    # FLAG_RECEIVED_HM_ROCK_SMASH (0x6B): set when the Mauville House1 RockSmashDude
+    # gives HM06. Gate for get_rock_smash (retire once received).
+    flag_rock_smash_hm: bool = False
+    # party_moves[slot] = [4 move ids] (decrypted Attacks substruct) for each
+    # party member. Used to tell whether any Pokemon KNOWS Rock Smash (field-move
+    # gate) and to confirm the HM-teach sub-task succeeded. Empty on read failure.
+    party_moves: list[list[int]] = field(default_factory=list)
     bag_pokeball_count: int = 0
     bag_first_item_id: int = 0
     bag_first_item_qty: int = 0
+    bag_heal_qty: int = 0          # HP restores in the Items pocket (H14)
+    bag_super_potion_qty: int = 0  # SUPER_POTION only
+    money: int = -1               # -1 = unreadable
     badge_count: int = 0
     total_event_flags: int = 0  # PWhiddy-style: sum of set bits across all flags
     event_flag_bytes_hex: str = ""  # PWhiddy v2 obs: full 300 bytes = 2400 bits
@@ -214,6 +419,12 @@ class GameState:
     @property
     def is_wild_battle(self) -> bool:
         return self.in_battle and not self.is_trainer_battle
+
+    @property
+    def knows_rock_smash(self) -> bool:
+        """True if any party member knows MOVE_ROCK_SMASH (249) — the field-move
+        gate for smashing rocks."""
+        return any(MOVE_ROCK_SMASH in moves for moves in self.party_moves)
 
     @property
     def party0_hp_frac(self) -> float:
@@ -302,31 +513,42 @@ def _read_battle_flags(client: MGBAClient) -> tuple[bool, int]:
             continue
         if v >= 0x00010000:
             continue
-        # gBattleTypeFlags is set but may be stale (whiteout leaves it non-
-        # zero in the overworld). Confirm we are ACTUALLY in a battle via the
-        # game-mode callback: in the field it is CB2_Overworld; only in a
-        # real battle is it a battle callback. This flips instantly on exit,
-        # unlike the flag, so it kills the post-whiteout false positive.
+        # gBattleTypeFlags is set but may be stale (whiteout / a menu opened
+        # after a battle leaves it non-zero). Confirm we are ACTUALLY in a
+        # battle via the game-mode callback WHITELIST: in-battle only when cb2
+        # is a battle callback. This flips instantly on exit, unlike the flag,
+        # and — unlike the old overworld/menu EXCLUSION list — an unknown menu
+        # callback (PokeNav etc.) reads not-in-battle instead of imprisoning
+        # the loop. Unknown battle variants are recovered by the loop's vision
+        # battle_menu latch.
         try:
             cb2 = client.read32(GMAIN_CB2_ADDR)
         except EmulatorError:
             cb2 = None
-        if cb2 is not None and cb2 in CB2_OVERWORLD_SET:
-            return False, 0
-        return True, v
+        if cb2 is not None and cb2 in CB2_BATTLE_SET:
+            return True, v
+        return False, 0
     return False, 0
 
 
 def read_state(client: MGBAClient) -> GameState:
     in_battle, flags = _read_battle_flags(client)
+    try:
+        cb2 = client.read32(GMAIN_CB2_ADDR)
+    except EmulatorError:
+        cb2 = 0
 
     ptr = _read_saveblock1_ptr(client)
     if ptr is None:
+        # An invalid-pointer frame must still report the badges earned so far
+        # (from the latch), not 0 -- else a badge-gated goal (reach_mauville:
+        # badge_count < 3) fires on the flicker frame.
         return GameState(
             0, 0, 0, 0,
             saveblock1_valid=False,
             in_battle=in_battle,
             battle_flags=flags,
+            badge_count=len(_BADGE_BITS_LATCHED),
         )
 
     try:
@@ -340,6 +562,7 @@ def read_state(client: MGBAClient) -> GameState:
             saveblock1_valid=False,
             in_battle=in_battle,
             battle_flags=flags,
+            badge_count=len(_BADGE_BITS_LATCHED),
         )
 
     try:
@@ -350,6 +573,10 @@ def read_state(client: MGBAClient) -> GameState:
             lv = hp = max_hp = 0
     except EmulatorError:
         lv = hp = max_hp = 0
+    # hp is NOT carried (0 is a real faint); level 0 is always a bad read.
+    lv = _flicker_guarded_level(lv)
+
+    damaging_pp = read_party0_damaging_pp(client)
 
     # Decrypt party0 species (Pokemon Emerald box-pokemon encryption)
     # See 06-29 audit: agent lead was misidentified as Grovyle for 35+ hours.
@@ -383,9 +610,17 @@ def read_state(client: MGBAClient) -> GameState:
     flag_steven_letter = False
     flag_devon_delivered = False
     flag_dock_rejected = False
+    flag_r112_magma = False
+    flag_mtc_defeated = False
+    flag_badge4 = False
+    flag_rock_smash = False
+    party_moves: list[list[int]] = []
     pokeballs = 0
     first_item_id = 0
     first_item_qty = 0
+    bag_heal_qty = 0
+    bag_super_potion_qty = 0
+    money = -1
     badges = 0
     total_flags = 0
     flag_hex = ""
@@ -397,12 +632,25 @@ def read_state(client: MGBAClient) -> GameState:
         # Previously `badges` stayed hardcoded 0, so badge_count always read
         # 0 even after earning a badge (Stone Badge won 07-01 but reported
         # as 0). Count the set badge flags.
-        badges = 0
         for _bi in range(8):
             _fn = 0x867 + _bi
-            _fb = client.read8(ptr + SB1_FLAGS_OFFSET + _fn // 8)
+            try:
+                _fb = client.read8(ptr + SB1_FLAGS_OFFSET + _fn // 8)
+            except EmulatorError:
+                # Under button-press load a badge read8 intermittently returns a
+                # corrupted/non-numeric reply (~5% of reads observed 07-18). It
+                # must NOT drop a latched badge, and it must NOT abort this loop:
+                # the count used to be coupled to the read (badges += 1 inside
+                # the loop), so a mid-loop raise jumped to the outer except with
+                # badges partial (0) EVEN THOUGH the latch held {0,1,2} -- which
+                # dipped badge_count below 3 and re-fired reach_mauville, yanking
+                # the agent back toward Mauville on Route114 (goal oscillation).
+                continue
             if (_fb >> (_fn % 8)) & 1:
-                badges += 1
+                _BADGE_BITS_LATCHED.add(_bi)  # earned -> never drops (DMA flicker)
+        # Count from the latch, decoupled from the per-bit reads above: badge_count
+        # is now len(latched bits), immune to any single frame's read failures.
+        badges = len(_BADGE_BITS_LATCHED)
         flag_byte_birch = client.read8(ptr + SB1_FLAGS_OFFSET + (0x52 // 8))
         flag_birch = bool(flag_byte_birch & (1 << (0x52 % 8)))
         flag_byte_starter = client.read8(ptr + SB1_FLAGS_OFFSET + (0x55 // 8))
@@ -415,6 +663,20 @@ def read_state(client: MGBAClient) -> GameState:
         flag_devon_delivered = bool(flag_byte_dgd & (1 << (0x95 % 8)))
         flag_byte_dr = client.read8(ptr + SB1_FLAGS_OFFSET + (0x94 // 8))
         flag_dock_rejected = bool(flag_byte_dr & (1 << (0x94 % 8)))
+        # Lavaridge arc gates
+        # Rise-confirm the two future-event gates only on stable overworld
+        # frames (cb2 == CB2_Overworld) -- cutscene/transition reads are garbage.
+        _cb2_stable = cb2 in CB2_OVERWORLD_SET
+        flag_byte_r112m = client.read8(ptr + SB1_FLAGS_OFFSET + (0x333 // 8))
+        flag_r112_magma = _rise_confirmed(
+            "r112_magma", bool(flag_byte_r112m & (1 << (0x333 % 8))), _cb2_stable)
+        flag_byte_mtc = client.read8(ptr + SB1_FLAGS_OFFSET + (0x8B // 8))
+        flag_mtc_defeated = _rise_confirmed(
+            "mtc_defeated", bool(flag_byte_mtc & (1 << (0x8B % 8))), _cb2_stable)
+        flag_byte_b4 = client.read8(ptr + SB1_FLAGS_OFFSET + (0x86A // 8))
+        flag_badge4 = bool(flag_byte_b4 & (1 << (0x86A % 8)))
+        flag_byte_rs = client.read8(ptr + SB1_FLAGS_OFFSET + (0x6B // 8))
+        flag_rock_smash = bool(flag_byte_rs & (1 << (0x6B % 8)))
         first_item_id = client.read16(ptr + SB1_BAG_ITEMS + 0)
         first_item_qty_enc = client.read16(ptr + SB1_BAG_ITEMS + 2)
         # 35 fix (06-29): Pokemon Emerald bag quantities are XOR-encrypted
@@ -457,6 +719,30 @@ def read_state(client: MGBAClient) -> GameState:
     except EmulatorError:
         pass
 
+    # Heal-item counts + money (H14: buy_potions / field_heal_potion gates).
+    # Items pocket 0x560 x30 slots; count HP restores {POTION 13, FULL_RESTORE
+    # 19, MAX_POTION 20, HYPER_POTION 21, SUPER_POTION 22}. Money = SB1+0x490 XOR
+    # the FULL 32-bit SaveBlock2 key (item qty uses only the low 16). Independent
+    # try so a failure here never voids the flag/party reads below.
+    try:
+        sb2p = client.read32(0x03005D90)
+        key = client.read32(sb2p + 0xAC)
+        for slot in range(30):
+            sid = client.read16(ptr + SB1_BAG_ITEMS + slot * 4)
+            if sid == 0:
+                break
+            if sid in (13, 19, 20, 21, 22):
+                q = client.read16(ptr + SB1_BAG_ITEMS + slot * 4 + 2) ^ (
+                    key & 0xFFFF)
+                if 0 < q <= 99:  # stack cap 99; DMA-garbage guard
+                    bag_heal_qty += q
+                    if sid == 22:
+                        bag_super_potion_qty += q
+        m = client.read32(ptr + 0x490) ^ key
+        money = m if 0 <= m <= 999999 else -1
+    except EmulatorError:
+        pass
+
     # 34 fix (06-29): Independent try block for flag bytes read.
     # Previously bundled with bag/party reads — when any earlier read
     # raised EmulatorError, flag_hex stayed empty silently.
@@ -469,6 +755,16 @@ def read_state(client: MGBAClient) -> GameState:
     except EmulatorError:
         pass
 
+    # Independent try for party move IDs (field-move gate: knows_rock_smash).
+    # Reads gPlayerParty (fixed addr, not SaveBlock1). ~3 read32/slot.
+    try:
+        _pm: list[list[int]] = []
+        for slot in range(min(max(party_count, 0), 6)):
+            _pm.append(_read_party_move_ids(client, slot))
+        party_moves = _pm
+    except EmulatorError:
+        pass
+
     return GameState(
         map_group=mg,
         map_num=mn,
@@ -477,9 +773,12 @@ def read_state(client: MGBAClient) -> GameState:
         saveblock1_valid=True,
         in_battle=in_battle,
         battle_flags=flags,
+        game_cb2=cb2,
+        game_mode=game_mode_for_cb2(cb2),
         party0_level=lv,
         party0_hp=hp,
         party0_max_hp=max_hp,
+        party0_damaging_pp=damaging_pp,
         party0_species=party0_species_id,
         party_count=party_count,
         flag_birch_met=flag_birch,
@@ -488,9 +787,17 @@ def read_state(client: MGBAClient) -> GameState:
         flag_steven_letter_delivered=flag_steven_letter,
         flag_devon_goods_delivered=flag_devon_delivered,
         flag_dock_rejected_devon=flag_dock_rejected,
+        flag_route112_magma_cleared=flag_r112_magma,
+        flag_mtchimney_magma_defeated=flag_mtc_defeated,
+        flag_badge04_get=flag_badge4,
+        flag_rock_smash_hm=flag_rock_smash,
+        party_moves=party_moves,
         bag_pokeball_count=pokeballs,
         bag_first_item_id=first_item_id,
         bag_first_item_qty=first_item_qty,
+        bag_heal_qty=bag_heal_qty,
+        bag_super_potion_qty=bag_super_potion_qty,
+        money=money,
         badge_count=badges,
         total_event_flags=total_flags,
         event_flag_bytes_hex=flag_hex,

@@ -42,19 +42,25 @@ from collections import deque
 from pathlib import Path
 
 from . import (
+    battle_heal as battle_heal_mod,
     battle_moves as battle_moves_mod,
     config,
     curriculum as curr_mod,
+    field_heal,
     goals as goals_mod,
+    hm_teach,
+    shop as shop_mod,
     knn_explorer as knn_mod,
     llm_advisor as llm_mod,
     map_data as map_data_mod,
+    map_knowledge as mk_mod,
     memory,
     path_memory as path_memory_mod,
     preprocess,
     reward_state as reward_state_mod,
     screen_features as sf_mod,
     state as state_mod,
+    vlm_screen,
     tile_map as tile_map_mod,
 )
 from .io import EmulatorError, MGBAClient
@@ -76,11 +82,106 @@ RUN_CYCLE = ("B", "A", "Down", "Right", "A", "A")
 # "Do what" (cursor on SEND OUT); A confirms. Used ONLY when the active
 # battler's HP is 0 — never at the FIGHT menu (that thrash was H6a).
 SEND_OUT_SEQ = ("A", "B", "Down", "A", "A")
+# Double-battle drive cycle. The command menu defaults its cursor to FIGHT at the
+# START of every turn, and both mons' moves are chosen BEFORE any executes, so
+# during selection every target is still alive: 6 plain A's take FIGHT->move->
+# (default, live) target for BOTH mons and commit the turn (verified live — a
+# Jagged Pass L41-vs-L21 double fell to pure A-mash). The earlier cycle that
+# threaded in "Down"/"Left" to reach the 2nd mon / re-pick a target instead
+# DRIFTED the command cursor off FIGHT onto POKEMON, where A opens the switch
+# menu and the turn never commits — a Lavaridge B1F double froze 268 turns at the
+# command menu on exactly that (07-19). The trailing B advances victory/faint
+# text (or is a no-op at a command menu — B cannot flee a trainer battle). A mon
+# fainting is handled separately: double_battle_needs_send_out() -> SEND_OUT_SEQ
+# fires BEFORE this, so this cycle only ever runs the no-faint case.
+DOUBLE_BATTLE_SEQ = ("A", "A", "A", "A", "A", "A", "B")
 # Flee a wild battle: B,B backs out of any submenu, Up,Up,Left resets the cursor
 # to FIGHT (top-left), then Right,Down -> RUN (bottom-right), A selects it. Used
 # to leave any wild battle we don't want to fight (traversal, or no damaging
 # move left). A wild battle can always be run from.
 FLEE_SEQ = ("B", "B", "Up", "Up", "Left", "Right", "Down", "A")
+# src prefixes whose button came from GOAL-DIRECTED navigation (a BFS path
+# step, or a scripted interaction). run()'s post-processing EXPLORE overrides
+# (anomaly_escape, forward_force) must never clobber these: the planner is
+# already steering, and "helpfully" pressing a different direction breaks the
+# plan exactly where it matters. ONE definition, shared by both gates.
+GOAL_DIRECTED_SRC_PREFIXES = ("mapbfs", "rival_seek", "rival_talk", "goal_")
+
+_UI_ESCAPE_CYCLE = ("B", "B", "B", "A")
+
+
+def ui_escape_button(unknown_ui_streak: int) -> str | None:
+    """Escape an unknown-UI screen the loop has no handler for — PokeNav
+    (cb2 0x081C7401), Trainer Card, the level-up "forget move?" prompt. Returns
+    a button after 3 CONSECUTIVE unknown-UI frames (so a warp-fade transient
+    passes through), else None.
+
+    B x3 backs out of any nested menu; the trailing A answers a "give up? /
+    stop learning?" YES prompt (B alone loops those). This DETERMINISTICALLY
+    declines level-up move learning — safe here (it protects Rock Tomb from an
+    A-mash overwrite, and is no worse than today's random A-mash outcome). Root
+    fix for the 2026-07-22 ~3700-turn PokeNav imprisonment: with the cb2 battle
+    whitelist, PokeNav no longer reads as in_battle, and this backs out of it."""
+    if unknown_ui_streak < 3:
+        return None
+    return _UI_ESCAPE_CYCLE[unknown_ui_streak % len(_UI_ESCAPE_CYCLE)]
+
+
+def forward_force_override(
+    entry_dir: str | None,
+    in_force_window: bool,
+    button: str,
+    src: str,
+    blocked_now: set[str],
+    turn: int,
+) -> str | None:
+    """Post-map-entry "keep walking forward" EXPLORE heuristic of run().
+
+    For ~30 turns after a map change, keep pressing the direction the agent
+    entered with (entry_dir) so a fresh map is actually walked into instead
+    of dithered on the edge; when entry_dir is empirically blocked at this
+    tile and the planner wants to walk straight back out (opp), sidestep
+    perpendicular. Returns the button to press INSTEAD of `button`, or None
+    to leave the decision alone.
+
+    It must never override a goal-directed button (GOAL_DIRECTED_SRC_
+    PREFIXES — same gate anomaly_escape already respects). Jagged Pass grind
+    (2026-07-22, offline-replayed): every grind cycle re-enters the pass
+    from Mt.Chimney with entry_dir="Down", and this override rewrote the
+    BFS's Right/Left turn toward the grass into "Down" for 30 turns. On a
+    wall that self-heals (the bump records the dir into tile_map's blocked
+    and the force yields next turn), but the pass's center column is a chain
+    of one-way JUMP_SOUTH ledges — a forced Down VAULTS them without ever
+    bumping, so the agent flew past both grass branch rows (y=29/31), the
+    re-plan found no path back (one-way), fell to goal_map_explore and
+    bottomed out on the Route112 warp pad: pocket -> cable car -> repeat,
+    zero grind. The walk model and the BFS were correct all along; only
+    this override broke the follow-through.
+    """
+    if (
+        entry_dir is None
+        or not in_force_window
+        or button not in DIRECTIONS
+        or src.startswith(GOAL_DIRECTED_SRC_PREFIXES)
+    ):
+        return None
+    opp = {
+        "Up": "Down", "Down": "Up",
+        "Left": "Right", "Right": "Left",
+    }[entry_dir]
+    perp_map = {
+        "Up": ("Right", "Left"),
+        "Down": ("Left", "Right"),
+        "Left": ("Up", "Down"),
+        "Right": ("Down", "Up"),
+    }[entry_dir]
+    if entry_dir not in blocked_now and button != entry_dir:
+        return entry_dir
+    if button == opp:
+        perp_options = [d for d in perp_map if d not in blocked_now]
+        if perp_options:
+            return perp_options[turn % len(perp_options)]
+    return None
 
 
 def take_screenshot(client: MGBAClient, session_id: str, turn: int) -> Path:
@@ -321,7 +422,19 @@ def heuristic_button(
         current_goal is not None
         and current_goal.name.startswith(
             ("dewford", "peeko", "rescue_peeko", "reach",
-             "grind", "heal", "deliver", "sail", "mauville")
+             "grind", "heal", "deliver", "sail", "mauville",
+             "get_rock_smash", "smash_",
+             # Badge4 (Lavaridge) arc. Without these the same_map_streak>=200
+             # explore hijack overrides the goal with a nearer unexplored map:
+             # meteor_falls_theft (target MeteorFalls, a WARP not a connection)
+             # got yanked to FallarborTown (dist 65 < 68) on Route114 and the
+             # agent oscillated (19,56)<->(19,57), net-zero progress. reach_*
+             # goals were already directed (that's why reach_fallarbor worked);
+             # these have no target_pos on the approach map so only directed_
+             # goal protects them. "fiery_path"/"exit_fiery" retrofit the same
+             # guard for the southbound Fiery re-cross to the cable car.
+             "meteor_falls", "fiery_path", "exit_fiery",
+             "ride_", "mtchimney", "descend_", "lavaridge_")
         )
     )
     # H4b: Mr.Briney's Dewford->Slateport sail multichoice (Petalburg=case 0 /
@@ -376,10 +489,115 @@ def heuristic_button(
             cur_info = None
             mc = None
         if cur_info and mc is not None:
+            # Part B (hop-fallback): map_path returns the SHORTEST map chain,
+            # which is often a first hop we can't actually take -- a
+            # connection-lie (an all-wall edge -> no exit tiles, e.g.
+            # Route112->Route113 up) or an edge that is physically sealed from
+            # here (Route111 south -> the Route113 strip is behind the
+            # sandstorm triggers). The BFS below then finds no path and the
+            # agent wanders (the 5595-turn Route112 stall). So first BAN the
+            # dead first hops and let map_path re-route (Route111 -> Route112 ->
+            # Route113 -> Fallarbor). The probe BFS blocks only permanent walls
+            # + sandstorm triggers -- the most permissive reachability, so it
+            # bans a hop only when it is GENUINELY sealed, never a merely
+            # water-/npc-crossable one (those still resolve in the main BFS
+            # fallbacks). Interact-on-target-map goals aim at a tile, not a map
+            # boundary, so they skip this.
+            banned_hops: set[str] = set()
+            _is_interact_here = (
+                current_goal is not None
+                and getattr(current_goal, "target_pos", None) is not None
+                and (gs.map_group, gs.map_num) == current_goal.target_map
+            )
+            if not _is_interact_here and cur_info.walkable(gs.x, gs.y):
+                try:
+                    _mkp = mk_mod.get_store().get(gs.map_group, gs.map_num)
+                    _seal = (
+                        mc.permanent_blocked(gs.map_group, gs.map_num)
+                        | getattr(_mkp, "blocked_triggers", set())
+                    )
+                except Exception:
+                    _seal = set()
+                # Canon ledge jumps for the probe BFS. The probe promises
+                # "the most permissive reachability", but without ledges it
+                # under-counted: components whose only exit is a one-way
+                # jump (Lavaridge 1F Flannery room -> exit area, B1F side
+                # rooms -> geyser room) probed as sealed and the hop was
+                # wrongly banned. Derived from behavior_grid (the same canon
+                # source map_knowledge seeds ledge_jumps from) because
+                # knowledge_ledges is loaded further below.
+                try:
+                    _probe_ledges = {
+                        (lx, ly): map_data_mod.LEDGE_JUMP_BEHAVIORS[bv]
+                        for (lx, ly), bv in mc.behavior_grid(
+                            gs.map_group, gs.map_num,
+                        ).items()
+                        if bv in map_data_mod.LEDGE_JUMP_BEHAVIORS
+                    }
+                except Exception:
+                    _probe_ledges = {}
+                for _hop_try in range(3):
+                    _pchain = mc.map_path(
+                        gs.map_group, gs.map_num,
+                        effective_goal_map[0], effective_goal_map[1],
+                        max_hops=8, banned_first_hops=banned_hops,
+                    )
+                    if not _pchain or _pchain[0] == effective_goal_map:
+                        break  # no path, or first hop IS the goal map (nothing to ban)
+                    _hop = mc.name_for(*_pchain[0])
+                    if not _hop:
+                        break
+                    _pt: set[tuple[int, int]] = set()
+                    for _d, _cs in cur_info.connections.items():
+                        if any(c["map_name"] == _hop for c in _cs):
+                            _pt |= mc.exit_tiles_toward(
+                                gs.map_group, gs.map_num, _d, dest_name=_hop,
+                            )
+                    if not _pt:
+                        _pt |= mc.warp_tiles_for(
+                            gs.map_group, gs.map_num, _hop,
+                        )
+                    if not _pt:
+                        banned_hops.add(_hop)  # (i) connection-lie: no exit
+                        continue
+                    if mc.bfs_to_tile(
+                        gs.map_group, gs.map_num, (gs.x, gs.y), _pt,
+                        blocked_tiles=_seal - _pt,
+                        ledge_jumps=_probe_ledges,
+                    ) is None:
+                        # (iii) region rescue: on a multi-component warp-maze
+                        # map the hop's own warp tiles are often in a walk-
+                        # unreachable component, but the hop map IS reachable
+                        # by riding same-map warp pairs (Lavaridge gym: the
+                        # town-exit warps sit in comp5 while the agent stands
+                        # in comp3 — ride hole (0,17) -> B1F -> geyser (8,9)
+                        # -> comp5). Banning the hop here collapsed map_path
+                        # to None and dropped nav onto polluted path-memory
+                        # chains (the 800-turn (5-6,17-18) oscillation,
+                        # 2026-07-21). Keep the hop when the region router
+                        # has a warp-graph route whose first-hop tile is
+                        # walk-reachable; the region routing below then
+                        # drives the actual ride.
+                        if mc.has_multiple_warp_components(
+                            gs.map_group, gs.map_num
+                        ):
+                            _rt, _ = mc.region_route_targets(
+                                gs.map_group, gs.map_num, (gs.x, gs.y),
+                                _pchain[0], None,
+                            )
+                            if _rt and mc.bfs_to_tile(
+                                gs.map_group, gs.map_num, (gs.x, gs.y),
+                                _rt, blocked_tiles=_seal - _rt,
+                                ledge_jumps=_probe_ledges,
+                            ) is not None:
+                                break  # hop rideable via same-map warps
+                        banned_hops.add(_hop)  # (ii) sealed from here
+                        continue
+                    break  # reachable first hop found
             mh_chain = mc.map_path(
                 gs.map_group, gs.map_num,
                 effective_goal_map[0], effective_goal_map[1],
-                max_hops=8,
+                max_hops=8, banned_first_hops=banned_hops,
             )
             if mh_chain is None:
                 mh_chain = pm.find_path_to_map(
@@ -451,9 +669,24 @@ def heuristic_button(
                     if mc.has_multiple_warp_components(
                         gs.map_group, gs.map_num
                     ):
+                        # Aim the region router at the COMPONENT holding the
+                        # goal tile when the goal names one (Lavaridge gym
+                        # hole/geyser nav: an any-component landing bounces
+                        # between floors but never into Flannery's walled
+                        # room). Cross-map any-component stays as fallback.
+                        _goal_tpos = None
+                        if (
+                            current_goal is not None
+                            and getattr(current_goal, "target_pos", None)
+                            is not None
+                            and tuple(current_goal.target_map)
+                            == tuple(effective_goal_map)
+                        ):
+                            _goal_tpos = current_goal.target_pos
                         region_tiles, region_hop = mc.region_route_targets(
                             gs.map_group, gs.map_num, (gs.x, gs.y),
                             effective_goal_map, mh_chain,
+                            target_tile=_goal_tpos,
                         )
                     if region_tiles:
                         target_tiles |= region_tiles
@@ -461,10 +694,16 @@ def heuristic_button(
                         # on_goal_warp check + reason string below.
                         next_hop_name = region_hop or next_hop_name
                     else:
-                        for direction, conn in cur_info.connections.items():
-                            if conn["map_name"] == next_hop_name:
+                        for direction, conns in cur_info.connections.items():
+                            if any(
+                                c["map_name"] == next_hop_name for c in conns
+                            ):
+                                # dest_name: a side can hold >1 connection
+                                # (Route111 left = Route113 + Route112); take
+                                # ONLY next_hop's strip, not the union.
                                 target_tiles |= mc.exit_tiles_toward(
                                     gs.map_group, gs.map_num, direction,
+                                    dest_name=next_hop_name,
                                 )
                         if not target_tiles:
                             target_tiles |= mc.warp_tiles_for(
@@ -532,7 +771,12 @@ def heuristic_button(
                         gs.map_group, gs.map_num,
                     )
                     try:
-                        from . import map_knowledge as mk_mod
+                        # NB: mk_mod is the module-level import. A local
+                        # `from . import map_knowledge as mk_mod` here made
+                        # mk_mod a function-local, so the Part B probe's earlier
+                        # use of mk_mod raised UnboundLocalError -> its seal was
+                        # silently empty -> it never banned the sandstorm-sealed
+                        # Route113 hop and the agent bounced Mauville<->Route111.
                         mk = mk_mod.get_store().get(
                             gs.map_group, gs.map_num,
                         )
@@ -540,11 +784,13 @@ def heuristic_button(
                         knowledge_elev = mk.tile_elevation
                         knowledge_ledges = mk.ledge_jumps
                         knowledge_water = mk.water_tiles
+                        knowledge_triggers = mk.blocked_triggers
                     except Exception:
                         knowledge_trainer = set()
                         knowledge_elev = {}
                         knowledge_ledges = {}
                         knowledge_water = set()
+                        knowledge_triggers = set()
                     # Deep water is walkable in the raw collision layer but
                     # impassable on foot (no Surf) — block it so BFS routes
                     # over the bridges instead of straight through the pond
@@ -577,6 +823,7 @@ def heuristic_button(
                     bfs_blocked = (
                         npc_tiles | empirical_blocked
                         | perm_blocked | knowledge_water | other_warps
+                        | knowledge_triggers
                     )
                     # Never treat the interaction target or its approach
                     # tiles as blocked: face+A bumps against a leader/NPC (or
@@ -645,6 +892,96 @@ def heuristic_button(
                                 ledge_jumps=knowledge_ledges,
                                 extra_walkable=extra_w,
                             )
+                            # A live-opened barrier must not strand behind an
+                            # unmodeled elevation edge: retry the SAME live
+                            # overrides elevation-relaxed (see fallback below).
+                            if not bfs_path and knowledge_elev:
+                                bfs_path = mc.bfs_to_tile(
+                                    gs.map_group, gs.map_num,
+                                    (gs.x, gs.y), target_tiles,
+                                    blocked_tiles=(
+                                        (bfs_blocked | extra_b) - extra_w
+                                    ),
+                                    ledge_jumps=knowledge_ledges,
+                                    extra_walkable=extra_w,
+                                )
+                    # Elevation-relax fallback (mirrors the water one above):
+                    # the elevation-carry BFS models on-foot movement only; if
+                    # a goal is reachable in-game through something it can't
+                    # see (scripted/forced movement, an unmodeled mechanic, or
+                    # bad canon elevation), NO path would strand the agent.
+                    # Retrying without elevation restores the pre-elevation
+                    # behavior as the floor; a genuinely game-blocked step is
+                    # then caught by tile_map empirical learning as before.
+                    if not bfs_path and knowledge_elev:
+                        bfs_path = mc.bfs_to_tile(
+                            gs.map_group, gs.map_num,
+                            (gs.x, gs.y), target_tiles,
+                            blocked_tiles=bfs_blocked,
+                            ledge_jumps=knowledge_ledges,
+                        )
+                    # Same-map hole/geyser fallback (Segment 4b, Lavaridge
+                    # Gym): the goal tile sits in a walkable component that
+                    # NO amount of walking reaches — only riding same-map
+                    # warp pairs (1F holes <-> B1F geysers) and one-way
+                    # ledges gets there, so every tile-BFS above failed.
+                    # Ask the region router for the first-hop warp toward
+                    # the goal's component and BFS to that warp instead;
+                    # stepping on it fires the warp (pokeemerald step-on
+                    # trigger) and the next turn re-plans from the landing.
+                    # `bfs_path is None` (genuinely unreachable), NOT `not
+                    # bfs_path`: an EMPTY path means the agent is already standing
+                    # on an interact target tile (a walkable neighbour of the
+                    # NPC), and must fall through to the face+A interact below.
+                    # `not bfs_path` also caught [] and re-routed to a warp — so
+                    # at Flannery's tile the agent walked off to a geyser instead
+                    # of starting the gym battle, frozen 500+ turns at (14,9)
+                    # (07-19). Only a true None means "no walk reaches it".
+                    if (
+                        bfs_path is None
+                        and interact_target is not None
+                        and mc.has_multiple_warp_components(
+                            gs.map_group, gs.map_num
+                        )
+                    ):
+                        _rt, _rh = mc.region_route_targets(
+                            gs.map_group, gs.map_num, (gs.x, gs.y),
+                            (gs.map_group, gs.map_num), None,
+                            target_tile=interact_target,
+                        )
+                        if _rt and (gs.x, gs.y) in _rt and same_pos_streak <= 2:
+                            # Standing ON the region route's own hole/geyser:
+                            # the step-on warp already fired and this read is
+                            # the mid-fade transient (Lavaridge 1F (8,9)). The
+                            # empty-path handler below never matches here —
+                            # target_tiles still holds the goal's neighbours,
+                            # not _rt — so control used to fall through to
+                            # goal_map_explore, whose stray Up landed in the
+                            # B1F (8,6-8) pocket whose only exit is the geyser
+                            # straight back up: the 07-24 1F<->B1F ride loop.
+                            # B is inert during the fade; next turn re-plans
+                            # from the landing. _rt holds ACTIVE warps only
+                            # (_warps_in_component filters inert pads), so the
+                            # warp always resolves; the streak guard is a
+                            # last-resort escape if a read wedges.
+                            return "B", "region_warp_settle"
+                        if _rt:
+                            bfs_path = mc.bfs_to_tile(
+                                gs.map_group, gs.map_num,
+                                (gs.x, gs.y), _rt,
+                                blocked_tiles=bfs_blocked - _rt,
+                                tile_elevation=knowledge_elev,
+                                ledge_jumps=knowledge_ledges,
+                            )
+                            if not bfs_path and knowledge_elev:
+                                # elevation-relax mirror (same rationale as
+                                # the goal-BFS fallback above)
+                                bfs_path = mc.bfs_to_tile(
+                                    gs.map_group, gs.map_num,
+                                    (gs.x, gs.y), _rt,
+                                    blocked_tiles=bfs_blocked - _rt,
+                                    ledge_jumps=knowledge_ledges,
+                                )
                     if bfs_path:
                         next_btn = bfs_path[0]
                         delta = {
@@ -720,6 +1057,50 @@ def heuristic_button(
                             gs.map_group, gs.map_num, gs.x, gs.y,
                         )
                         if step_btn is not None:
+                            # Just STEPPED ONTO a walkable warp tile this turn
+                            # (same_pos_streak==0): a step-onto warp (Fiery Path
+                            # entry (11,36)) already fired from the step, so the
+                            # read is a mid-fade transient. Pressing warp_step
+                            # here injected an extra move into the fade and
+                            # bounced the agent straight back out (Route112 ->
+                            # Fiery Path -> Route112, never crossing). Settle one
+                            # turn with B (harmless during a fade); if we're still
+                            # on the warp next turn it's a Woods-style
+                            # press-through and warp_step fires then.
+                            _on_warp = any(
+                                w.get("x") == gs.x and w.get("y") == gs.y
+                                for w in getattr(cur_info, "warps", []) or []
+                            )
+                            if (
+                                _on_warp
+                                and cur_info.walkable(gs.x, gs.y)
+                                and same_pos_streak == 0
+                            ):
+                                return "B", "warp_settle"
+                            # Consumed step-on pad: if we warped in and landed ON
+                            # a walkable warp tile that IS the goal target (Fiery
+                            # Path north pad (26,4)), warp_step_direction's door
+                            # heuristic returns the wall side ("Down" into (26,5))
+                            # and we bump forever. A step-on pad only re-fires
+                            # after you leave and step back, so dismount to a
+                            # walkable neighbour; next turn's BFS re-lands on it.
+                            # same_map_streak<=1 = "just warped in" (a Woods-style
+                            # press-through warp reached on foot has a big streak
+                            # and keeps the old behaviour — test_map_data pins it).
+                            if (
+                                same_map_streak <= 1
+                                and cur_info.walkable(gs.x, gs.y)
+                                and any(
+                                    w.get("x") == gs.x and w.get("y") == gs.y
+                                    for w in getattr(cur_info, "warps", []) or []
+                                )
+                            ):
+                                for _d, (_dx, _dy) in (
+                                    ("Up", (0, -1)), ("Left", (-1, 0)),
+                                    ("Right", (1, 0)), ("Down", (0, 1)),
+                                ):
+                                    if cur_info.walkable(gs.x + _dx, gs.y + _dy):
+                                        return _d, f"warp_pad_dismount:{_d}"
                             return step_btn, (
                                 f"mapbfs_warp:{step_btn}->{next_hop_name}"
                             )
@@ -1156,6 +1537,12 @@ def run(
     last_pos: tuple[int, int] | None = None
     last_action = ""
     last_map_key: tuple[int, int] | None = None
+    # Previous stable frame's battle/HP, to fingerprint a WHITEOUT map change
+    # (faint -> teleport to a PC). Such transitions are not walkable edges and
+    # must not be recorded in path_memory (a bogus 0-27->0-2 from_pos=(31,45)
+    # whiteout edge made goal_toward walk toward a fainting spot for ~3500 turns).
+    prev_frame_in_battle = False
+    prev_frame_lead_hp = -1
     same_pos_streak = 0
     same_hash_streak = 0
     same_map_streak = 0
@@ -1171,7 +1558,13 @@ def run(
     catch_seq_queue: list[str] = []
     battle_move_queue: list[str] = []
     battle_trainer_latch = False
+    battle_double_latch = False
     last_ram_battle_turn = -999
+    unknown_ui_streak = 0
+    teach_cooldown_until = 0
+    shop_cooldown_until = 0
+    heal_cooldown_until = 0
+    battle_heal_cooldown_until = 0
     rs = reward_state_mod.RewardState()
     rs.load()
     checkpoint_target: tuple[int, int, int, int] | None = None
@@ -1206,7 +1599,13 @@ def run(
                 same_map_streak += 1
             else:
                 same_map_streak = 0
-                if last_map_key is not None:
+                # Skip WHITEOUT teleports: a map change whose previous frame was
+                # in battle or had a fainted lead is a faint->PC warp, not a
+                # walkable edge. Recording it poisons goal_toward with a
+                # teleport (the (31,45)->Mauville bug). Real warps (doors, cable
+                # car interact) start from an overworld, non-fainted frame.
+                is_whiteout = prev_frame_in_battle or prev_frame_lead_hp == 0
+                if last_map_key is not None and not is_whiteout:
                     pm.record_transition(
                         last_map_key[0], last_map_key[1],
                         last_pos[0] if last_pos else None,
@@ -1224,17 +1623,26 @@ def run(
                         entry_dir = last_action
                         force_explore_until_turn = turn + 30
             last_map_key = map_key
+            prev_frame_in_battle = bool(gs.in_battle)
+            prev_frame_lead_hp = int(getattr(gs, "party0_hp", -1))
             map_visit_counts[map_key] = (
                 map_visit_counts.get(map_key, 0) + 1
             )
             pos_now = (gs.x, gs.y)
             recent_pos.append((map_key[0], map_key[1], gs.x, gs.y))
+            # Only OVERWORLD frames record collision: a direction press during a
+            # battle/menu/unknown-UI freezes the sprite in place, and recording
+            # that as moved=False permanently poisons the tile (the record gate
+            # existed in tile_map but was never wired -> Route112's road self-
+            # contaminated from FLEE presses during grass battles).
+            overworld_frame = getattr(gs, "game_mode", "overworld") == "overworld"
             if last_pos == pos_now:
                 same_pos_streak += 1
                 if last_action in DIRECTIONS:
                     tm.record_attempt(
                         *map_key, gs.x, gs.y,
                         last_action, moved=False,
+                        overworld=overworld_frame,
                     )
             else:
                 same_pos_streak = 0
@@ -1246,8 +1654,18 @@ def run(
                     tm.record_attempt(
                         *map_key, last_pos[0], last_pos[1],
                         last_action, moved=True,
+                        overworld=overworld_frame,
                     )
             last_pos = pos_now
+            # Periodically relax over-blocked tiles (mirror of auto_loop:1077,
+            # which the claude_heuristic loop never wired -> Route112 stayed
+            # poisoned across sessions). With the unblock-on-success semantics
+            # above this is a backstop for tiles the agent no longer walks over.
+            if turn % 50 == 0:
+                try:
+                    tm.decay(*map_key)
+                except (OSError, RuntimeError):
+                    pass
         # gs.in_battle has a known RAM false-negative on English Emerald
         # (the BATTLE_FLAGS_CANDIDATES addresses stay 0 during the
         # move-select screen), so screen vision backs it up. But a lone vision
@@ -1256,12 +1674,46 @@ def run(
         # false-positives it and freezes nav. gs.in_battle here is the raw RAM
         # read (heuristic_button, which overrides it, runs later this turn).
         ss_for_battle = locals().get("screen_signals") or {}
+        # Track consecutive unknown-UI (unwhitelisted cb2) frames so ui_escape
+        # can back out of a menu the loop has no handler for (PokeNav, Trainer
+        # Card, the level-up "forget move?" prompt). NOT gated on
+        # ram_battle_recent: the forget-move screen IS mid-battle, and gating it
+        # out reproduces the 175-turn imprisonment the architect measured.
+        if getattr(gs, "game_mode", "overworld") == "unknown_ui":
+            unknown_ui_streak += 1
+        else:
+            unknown_ui_streak = 0
         if gs.in_battle:
             last_ram_battle_turn = turn
         ram_battle_recent = (turn - last_ram_battle_turn) <= 12
         in_battle_seen = gs.in_battle or (
             bool(ss_for_battle.get("battle_menu")) and ram_battle_recent
         )
+        # VLM tiebreaker (Option-1 / H11): a real battle animates; a FROZEN
+        # "battle" that never resolves is the pixel-heuristic false-positive or
+        # a stale gBattleTypeFlags read on a menu (the 4000-turn Pokedex stall).
+        # When we've believed we're in a battle for a while AND the frame has
+        # been static, ask the VLM once (cached by frame_hash) whether it is
+        # really a battle; if not, drop the false battle so nav resumes. This
+        # generalizes the hardcoded menu-CB2 guard. Cheap: fires only when
+        # genuinely stuck, one Haiku call per static frame.
+        if (
+            in_battle_seen and client is not None
+            and battle_turn >= 20 and same_hash_streak >= 8
+        ):
+            try:
+                verdict = vlm_screen.is_battle_screen(shot, log=print)
+            except Exception:
+                verdict = None
+            if verdict is False:
+                object.__setattr__(gs, "in_battle", False)
+                in_battle_seen = False
+                last_ram_battle_turn = -999  # clear the recency latch
+                print(
+                    f"  [vlm_screen] turn {turn}: frozen 'battle' is NOT a "
+                    f"battle -> dropping false in_battle (battle_turn="
+                    f"{battle_turn}, frozen={same_hash_streak})"
+                )
         if in_battle_seen:
             battle_turn += 1
             # Trainer-battle latch: gBattleTypeFlags DMA-reads 0 on the move-
@@ -1280,9 +1732,24 @@ def run(
                 object.__setattr__(
                     gs, "battle_flags", gs.battle_flags | 0x8,
                 )
+            # Double-battle latch (BATTLE_TYPE_DOUBLE = 0x1): the SAME DMA-read-0
+            # false-negative hits the double bit on the move-select screen. When
+            # 0x1 drops mid-turn the double branch is skipped and control falls to
+            # the single-battle move_select_sequence, which cannot answer the
+            # double target-select prompt and cycles back to the command menu
+            # forever (a Jagged Pass double vs Shroomish+Magnemite froze 25 min at
+            # full-cursor, 07-19). Once the double bit is seen in THIS battle, keep
+            # it set for the rest of the battle so the double handler stays live.
+            if gs.battle_flags & 0x1:
+                battle_double_latch = True
+            if battle_double_latch:
+                object.__setattr__(
+                    gs, "battle_flags", gs.battle_flags | 0x1,
+                )
         else:
             battle_turn = 0
             battle_trainer_latch = False
+            battle_double_latch = False
 
         if turn > 1 and gs.saveblock1_valid:
             r_battle = rs.record_battle_event(
@@ -1414,6 +1881,75 @@ def run(
 
         cur_goal = goals_mod.current_goal(gs) if gs.saveblock1_valid else None
 
+        # HM-teach sub-task hook (Rock Smash chain): teach_rock_smash is a bag/
+        # party MENU operation (target_map=None), not a nav goal. When active and
+        # stable in the overworld, hand off to the VLM-driven menu driver for a
+        # bounded one-shot; it presses its own buttons and returns once a party
+        # mon knows Rock Smash. Placed BEFORE the battle/nav dispatch so the None
+        # target never reaches mapbfs. A cooldown avoids hammering it if a run
+        # gives up.
+        if (
+            cur_goal is not None
+            and cur_goal.name == "teach_rock_smash"
+            and gs.saveblock1_valid
+            and not gs.in_battle
+            and turn >= teach_cooldown_until
+        ):
+            print(f"  [hm_teach] turn {turn}: teaching Rock Smash via VLM…")
+            try:
+                ok = hm_teach.run_teach_subtask(client, log=print)
+            except Exception as _exc:  # noqa: BLE001 — never crash the loop
+                print(f"  [hm_teach] error: {_exc}")
+                ok = False
+            if not ok:
+                teach_cooldown_until = turn + 30
+            last_action = "teach_rock_smash"
+            continue
+
+        # Shop sub-task hook (H14): buy_potions fires inside the Mauville Mart.
+        # The VLM driver walks to the counter, talks to the clerk, and buys Super
+        # Potions. Fires the moment we're in the Mart (before the interact backstop
+        # A-mashes the clerk). Short cooldown so a give-up doesn't hammer it.
+        if (
+            cur_goal is not None
+            and cur_goal.name == "buy_potions"
+            and (gs.map_group, gs.map_num) == (10, 7)
+            and gs.saveblock1_valid
+            and not gs.in_battle
+            and turn >= shop_cooldown_until
+        ):
+            print(f"  [shop] turn {turn}: buying Super Potions via VLM…")
+            try:
+                ok = shop_mod.run_shop_subtask(client, log=print)
+            except Exception as _exc:  # noqa: BLE001 — never crash the loop
+                print(f"  [shop] error: {_exc}")
+                ok = False
+            if not ok:
+                shop_cooldown_until = turn + 15
+            last_action = "buy_potions"
+            continue
+
+        # Field-heal sub-task hook (H14): field_heal_potion (target_map=None) uses
+        # a Super Potion on the lead between gauntlet trainers / in the gym. Out of
+        # battle only, so the battle_move machinery is untouched.
+        if (
+            cur_goal is not None
+            and cur_goal.name == "field_heal_potion"
+            and gs.saveblock1_valid
+            and not gs.in_battle
+            and turn >= heal_cooldown_until
+        ):
+            print(f"  [field_heal] turn {turn}: healing lead via VLM…")
+            try:
+                ok = field_heal.run_heal_subtask(client, log=print)
+            except Exception as _exc:  # noqa: BLE001 — never crash the loop
+                print(f"  [field_heal] error: {_exc}")
+                ok = False
+            if not ok:
+                heal_cooldown_until = turn + 25
+            last_action = "field_heal_potion"
+            continue
+
         # Part B — trainer-battle decision, driven by RAM not vision.
         # H6a root cause: the refill used to be gated on the flaky
         # screen_signals["battle_menu"] vision flag. When it missed the FIGHT
@@ -1438,11 +1974,30 @@ def run(
         # commits (a 3784-turn Route109 stall vs a full-HP Wingull was exactly
         # this). Just mash A: it takes FIGHT -> a move -> the default target for
         # BOTH mons, advancing the turn; the L32 lead overpowers the L13 doubles.
+        # ...but when one of OUR mons faints, the game opens the party list to
+        # pick its replacement, and there A only re-confirms whatever the cursor
+        # already sits on — "GROVYLE is already in battle!" or a fainted mon —
+        # so the cursor never moves and no replacement is ever sent. Observed on
+        # Route111 vs the Twins: 900 turns frozen with BOTH foes still at full
+        # HP. The lead-faint check below cannot catch it either, because battler
+        # slots interleave sides (0/2 ours, 1/3 theirs): our second mon is index
+        # 2, and active_hp() reads index 0. Navigate the list only when a benched
+        # mon actually exists — with no replacement the game keeps playing 1v2
+        # and SEND_OUT_SEQ would thrash the FIGHT menu (the Route109 stall).
         elif (
             not battle_move_queue and gs.in_battle
             and (getattr(gs, "battle_flags", 0) & 0x1)
         ):
-            battle_move_queue = ["A"]
+            try:
+                needs_send_out = battle_moves_mod.double_battle_needs_send_out(
+                    client, gs.party_count,
+                )
+            except (OSError, RuntimeError, EmulatorError):
+                needs_send_out = False
+            battle_move_queue = (
+                list(SEND_OUT_SEQ) if needs_send_out
+                else list(DOUBLE_BATTLE_SEQ)
+            )
         elif not battle_move_queue and gs.in_battle and gs.is_trainer_battle:
             try:
                 active_hp = battle_moves_mod.active_hp(client)
@@ -1466,14 +2021,57 @@ def run(
                     enemy_cur_hp = -1
                 if enemy_cur_hp == 0 and not at_fight_menu:
                     # Opponent fainted and we are NOT choosing a move (a switch
-                    # prompt / victory text is up): B advances the faint/send-
-                    # out text AND answers the switch prompt NO / backs out one
-                    # nested party-menu level. A here would confirm YES and
-                    # open the party menu with no way back. Gated on NOT the
-                    # FIGHT menu so a transient enemy-HP=0 read never skips our
-                    # attack while it is genuinely our turn (Fable F4).
-                    battle_move_queue = ["B"]
+                    # prompt, victory text, or a level-up move-learn prompt is
+                    # up). Drained one-per-turn: B,B answers a SHIFT "Will you
+                    # switch? NO" and backs out nested text; the trailing A
+                    # escapes the move-learn ping-pong that pure-B can NEVER
+                    # leave — after a weak mon KOs a foe and levels, "Delete a
+                    # move? YES/NO" <-> "Stop learning? YES/NO" both take B as
+                    # NO, so ["B"] alone bounces between them forever (the
+                    # ~1500-turn Jagged Pass trainer freeze, 07-24). A answers
+                    # YES: either it stops the learn (protecting Rock Tomb) or
+                    # opens the forget screen (cb2 0x081BFAB5) where the
+                    # ui_escape exception declines it. The A lands only AFTER
+                    # B,B consumed any SHIFT prompt, so it never mis-confirms a
+                    # switch (the old Machop->Makuhita party-menu stall). Gated
+                    # on NOT the FIGHT menu so a transient enemy-HP=0 read never
+                    # skips our attack on our genuine turn (Fable F4).
+                    battle_move_queue = ["B", "B", "A"]
                 else:
+                    # Mid-battle heal (H16, Flannery): Overheat (140, 2x vs
+                    # grass, Sun-boosted, ~85-128 dmg) out-paces Rock Tomb
+                    # unless the lead out-heals it — live runs whiteout with
+                    # move selection alone. On OUR turn, if the lead is under
+                    # the threshold and the bag holds a restore, spend the
+                    # turn on a Super Potion instead of a move. should_heal
+                    # requires enemy_cur_hp > 0 (the ==0 faint transition is
+                    # B-mash territory — spec guard — and -1 means unread),
+                    # and the cooldown keeps a failed VLM run from re-firing
+                    # every turn and starving the battle of attacks. Above
+                    # the threshold / no potion, behavior is byte-identical
+                    # to before.
+                    if battle_heal_mod.should_heal(
+                        gs, enemy_cur_hp, turn, battle_heal_cooldown_until,
+                    ):
+                        print(
+                            f"  [battle_heal] turn {turn}: lead "
+                            f"{gs.party0_hp}/{gs.party0_max_hp}"
+                            f" ({gs.party0_hp_frac:.0%}) <"
+                            f" {battle_heal_mod.HEAL_TRIGGER_FRAC:.0%},"
+                            f" restores={gs.bag_heal_qty}"
+                            " -> Super Potion via VLM"
+                        )
+                        try:
+                            ok = battle_heal_mod.run_battle_heal_subtask(
+                                client, log=print,
+                            )
+                        except Exception as _exc:  # noqa: BLE001
+                            print(f"  [battle_heal] error: {_exc}")
+                            ok = False
+                        if not ok:
+                            battle_heal_cooldown_until = turn + 12
+                        last_action = "battle_heal"
+                        continue
                     # Our turn — pick the best damaging move from RAM. The
                     # sequence now self-corrects (leading B,B backs out of any
                     # menu it might mis-open), so fire it for ANY slot without
@@ -1510,7 +2108,22 @@ def run(
                 enemy_cur_hp = battle_moves_mod.enemy_hp(client)[0]
             except (OSError, RuntimeError, EmulatorError):
                 enemy_cur_hp = -1
-            if enemy_cur_hp == 0:
+            try:
+                our_active_hp = battle_moves_mod.active_hp(client)
+            except (OSError, RuntimeError, EmulatorError):
+                our_active_hp = -1
+            if our_active_hp == 0:
+                # OUR active mon just fainted in a WILD battle -> the game opens
+                # the party list to pick a replacement. The trainer path had
+                # SEND_OUT_SEQ for this; the wild path did NOT, so the agent
+                # looped the low-HP RUN sequence at hp0 forever (Route112: lead
+                # fainted, 33 wild_run_lowhp@hp0 presses, no progress). active_hp
+                # is gBattleMons[0] = the CURRENT active battler, so it reflects
+                # a just-sent replacement (not the still-fainted party slot 0).
+                # SEND_OUT_SEQ navigates to a usable mon; if the whole party is
+                # down its A presses ride the whiteout text out to the Center.
+                battle_move_queue = list(SEND_OUT_SEQ)
+            elif enemy_cur_hp == 0:
                 # Wild enemy fainted -> the battle is ending and post-KO text
                 # plays: XP, and at L29 "Grovyle wants to learn LEAF BLADE /
                 # delete a move?". Mash A: it advances the text AND answers the
@@ -1636,6 +2249,21 @@ def run(
                 client=client,
                 ram_battle_recent=ram_battle_recent,
             )
+        # Unknown-UI escape: an unwhitelisted callback means a menu the loop has
+        # no handler for froze the sprite. Override whatever nav produced (its
+        # direction presses do nothing in a menu) with B,B,B,A to back out.
+        # GATE (2026-07-24): do NOT fire during a battle sub-screen — a real
+        # battle was confirmed within the last few turns (ram_battle_recent) and
+        # its own handler (SEND_OUT_SEQ etc.) must drive it. Blindly B,B,B,A'ing
+        # the in-battle party screen corrupted the send-out (Sceptile fainted +
+        # stuck). The ONE battle sub-screen we DO escape is the level-up
+        # "forget move?" prompt (cb2 0x081BFAB5): A-mash there can overwrite Rock
+        # Tomb, so we deterministically decline it.
+        forced_ui = None
+        if not ram_battle_recent or gs.game_cb2 == 0x081BFAB5:
+            forced_ui = ui_escape_button(unknown_ui_streak)
+        if forced_ui is not None:
+            button, src = forced_ui, f"ui_escape:{forced_ui}@{unknown_ui_streak}"
         if "escape" in src:
             escape_dir_index = (escape_dir_index + 1) % 4
         if src.startswith("wild_catch_try_screen:init") and not catch_seq_queue:
@@ -1659,6 +2287,9 @@ def run(
                     "button": button,
                     "src": src,
                     "inb": bool(gs.in_battle),
+                    "cb2": gs.game_cb2,
+                    "bfl": gs.battle_flags,
+                    "lvl": gs.party0_level,
                 }) + "\n")
         except OSError:
             pass
@@ -1752,7 +2383,7 @@ def run(
             )
             if visited_count < 30:
                 anomaly_kind = "map_lockin"
-        goal_directed = src.startswith(("mapbfs", "rival_seek", "rival_talk", "goal_"))
+        goal_directed = src.startswith(GOAL_DIRECTED_SRC_PREFIXES)
         if (
             anomaly_kind is not None
             and gs.saveblock1_valid
@@ -1806,24 +2437,15 @@ def run(
                     decisions.get("door_pingpong_break", 0) + 1
                 )
 
+        # forward_force: see forward_force_override's docstring. The src
+        # gate inside it (goal_directed skip) is the 07-22 Jagged Pass
+        # overshoot fix — extracted to a module function so the offline
+        # descent replay (test_jagged_nav) exercises the REAL logic.
         if (
-            entry_dir is not None
-            and turn < force_explore_until_turn
-            and button in DIRECTIONS
-            and not gs.in_battle
+            not gs.in_battle
             and gs.saveblock1_valid
             and not door_pingpong
         ):
-            opp = {
-                "Up": "Down", "Down": "Up",
-                "Left": "Right", "Right": "Left",
-            }.get(entry_dir)
-            perp_map = {
-                "Up": ("Right", "Left"),
-                "Down": ("Left", "Right"),
-                "Left": ("Up", "Down"),
-                "Right": ("Down", "Up"),
-            }[entry_dir]
             mk_av = tm._map_key(gs.map_group, gs.map_num)
             rec_av = tm._store.get(mk_av, {}).get(
                 tm._tile_key(gs.x, gs.y)
@@ -1831,15 +2453,10 @@ def run(
             cur_blocked_now = (
                 set(rec_av.blocked) if rec_av is not None else set()
             )
-            forced_btn: str | None = None
-            if entry_dir not in cur_blocked_now and button != entry_dir:
-                forced_btn = entry_dir
-            elif button == opp:
-                perp_options = [
-                    d for d in perp_map if d not in cur_blocked_now
-                ]
-                if perp_options:
-                    forced_btn = perp_options[turn % len(perp_options)]
+            forced_btn = forward_force_override(
+                entry_dir, turn < force_explore_until_turn,
+                button, src, cur_blocked_now, turn,
+            )
             if forced_btn is not None:
                 button = forced_btn
                 src = f"forward_force:{button},entry={entry_dir}"

@@ -21,6 +21,9 @@ from .io import MGBAClient, EmulatorError
 # gPlayerParty[0] and the in-battle mon structs (gBattleMons[]) and the ROM
 # move-data table (gBattleMoves), all USA Emerald.
 PLAYER_PARTY_ADDR = 0x020244EC
+PARTY_STRUCT_SIZE = 100
+PARTY_SIZE = 6
+PARTY_HP_OFFSET = 0x56         # u16 current HP (outside the encrypted substructs)
 GBATTLEMONS = 0x02024084       # BattleMon[], 0x58 bytes each; [1] = opponent
 BATTLEMON_SIZE = 0x58
 BATTLEMON_MOVES = 0x0C         # 4 x u16 (active battler's current moves)
@@ -108,6 +111,68 @@ def active_hp(client: MGBAClient) -> int:
     battle sub-states apart from reliable RAM instead of the flaky
     battle_menu vision signal (the H6a opening-thrash root cause)."""
     return client.read16(GBATTLEMONS + BATTLEMON_HP)
+
+
+def player_battler_hps(client: MGBAClient, double: bool = False) -> list[int]:
+    """Current HP of the player's active battler(s).
+
+    Battler slots interleave sides — 0/2 are ours, 1/3 the foe's — so in a
+    double battle our SECOND mon is index 2. active_hp() reads index 0 only
+    and is therefore blind to it fainting (the Route111 Twins soft-lock).
+    """
+    slots = (0, 2) if double else (0,)
+    return [
+        client.read16(GBATTLEMONS + b * BATTLEMON_SIZE + BATTLEMON_HP)
+        for b in slots
+    ]
+
+
+def is_egg(client: MGBAClient, slot: int) -> bool:
+    """Whether a party slot holds an EGG rather than a usable Pokemon.
+
+    An egg has HP > 0 but can never be sent into battle, so an HP-only count
+    would see a replacement that does not exist. The flag is bit 30 of the IV
+    word in the encrypted Misc ('M') substruct — same personality-keyed decode
+    as the species read in state.py.
+    """
+    base = PLAYER_PARTY_ADDR + slot * PARTY_STRUCT_SIZE
+    pv = client.read32(base + 0x00)
+    key = pv ^ client.read32(base + 0x04)
+    m_off = 0x20 + _PERMS[pv % 24].index("M") * 12
+    return bool((client.read32(base + m_off + 4) ^ key) & (1 << 30))
+
+
+def sendable_party_count(client: MGBAClient, party_count: int) -> int:
+    """Party members that could actually be sent into battle: HP > 0 and not an
+    egg. Tells "a benched mon can replace the fainted one" from "this is all we
+    have" — a double battle with no replacement keeps playing 1v2 and must not
+    be driven into the party list.
+
+    HP lives outside the encrypted substructs, so only the egg check decodes.
+    """
+    return sum(
+        1
+        for slot in range(max(0, min(party_count, PARTY_SIZE)))
+        if client.read16(
+            PLAYER_PARTY_ADDR + slot * PARTY_STRUCT_SIZE + PARTY_HP_OFFSET
+        ) > 0
+        and not is_egg(client, slot)
+    )
+
+
+def double_battle_needs_send_out(client: MGBAClient, party_count: int) -> bool:
+    """True when a double battle is parked on the 'choose a POKEMON' list.
+
+    One of our two battlers is down AND a benched mon is alive to replace it.
+    Both halves matter: without the faint check we would drive the party list
+    while it is our turn to attack; without the bench check we would drive it
+    during a legitimate 1v2 (no replacement exists, so the game never asks).
+    """
+    hps = player_battler_hps(client, double=True)
+    if not any(h == 0 for h in hps):
+        return False
+    alive_battlers = sum(1 for h in hps if h > 0)
+    return sendable_party_count(client, party_count) > alive_battlers
 
 
 def active_move_ids(client: MGBAClient) -> list[int]:

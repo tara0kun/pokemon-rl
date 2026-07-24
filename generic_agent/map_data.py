@@ -39,6 +39,126 @@ MAP_GROUPS_URL = f"{POKEEMERALD_RAW}/data/maps/map_groups.json"
 # layouts.json fetch.
 _DEFAULT_DIM = (20, 20)
 
+# Ledge JUMP behavior byte -> jump (dx, dy) (pokeemerald
+# metatile_behaviors.h MB_JUMP_*). Canonical definition lives here so both
+# map_data (region component edges) and map_knowledge (per-tile ledge
+# seeding) read ONE table; map_knowledge aliases it.
+LEDGE_JUMP_BEHAVIORS: dict[int, tuple[int, int]] = {
+    0x38: (1, 0),    # JUMP_EAST
+    0x39: (-1, 0),   # JUMP_WEST
+    0x3A: (0, -1),   # JUMP_NORTH
+    0x3B: (0, 1),    # JUMP_SOUTH
+    0x3C: (1, -1),   # JUMP_NORTHEAST
+    0x3D: (-1, -1),  # JUMP_NORTHWEST
+    0x3E: (1, 1),    # JUMP_SOUTHEAST
+    0x3F: (-1, 1),   # JUMP_SOUTHWEST
+}
+
+# Metatile behaviors that are IMPASSABLE ON FOOT even though their collision
+# bits read 0 (pokeemerald field_player_avatar.c):
+#   0xD1 MB_BUMPY_SLOPE / 0xD3-0xD6 MB_*_RAIL: CheckAcroBikeCollision turns
+#     any move onto them into a non-zero collision (COLLISION_WHEELIE_HOP /
+#     rail collisions) — only an Acro Bike trick state may enter; on foot the
+#     player just bumps. 0xD0 MB_MUDDY_SLOPE: ForcedMovement_MuddySlope
+#     force-slides the player south unless on a Mach Bike at full speed, so
+#     it can never be stood on or ascended on foot.
+# The agent never rides a bike, so the BFS walk model must treat these as
+# walls. Jagged Pass is the motivating case (07-22): its only collision-
+# "walkable" routes up to the bottom grass are 0xD1 bumpy-slope strips
+# ((9,30-32) etc.), so BFS claimed an Up-path the game refuses — the agent
+# bumped, wandered off the one-way south ledges into the bottom funnel and
+# bounced JaggedPass <-> Route112 pocket forever. Audited over all 277
+# cached maps: 8 maps carry these behaviors (JaggedPass, Route111/115/119,
+# GraniteCave_B1F, 3 SafariZone maps), none on a live-verified foot route
+# (they were never enterable on foot in-game to begin with).
+FOOT_IMPASSABLE_BEHAVIORS = frozenset({0xD0, 0xD1, 0xD3, 0xD4, 0xD5, 0xD6})
+
+
+def _tileset_dirname(label: str) -> str:
+    """gTileset_MeteorFalls -> "meteor_falls" (pokeemerald data/tilesets dir).
+
+    CamelCase label from layouts.json to the snake_case directory that holds
+    metatile_attributes.bin. Verified against general / rustboro / fallarbor /
+    meteor_falls / lavaridge / mauville / petalburg (all download OK)."""
+    s = label.replace("gTileset_", "")
+    out: list[str] = []
+    for i, ch in enumerate(s):
+        if ch.isupper() and i > 0 and (s[i - 1].islower() or s[i - 1].isdigit()):
+            out.append("_")
+        out.append(ch.lower())
+    return "".join(out)
+
+
+def layout_tilesets(layout_id: str) -> tuple[str, str] | None:
+    """(primary_tileset, secondary_tileset) labels for a layout id.
+
+    Read from the cached layouts.json (already downloaded by MapCache on
+    first map fetch). None when the file or the entry is missing — callers
+    fall back to the General-primary-only table."""
+    try:
+        ly = json.loads(
+            (CACHE_DIR / "layouts.json").read_text(encoding="utf-8")
+        )
+        for lay in ly.get("layouts") or ly:
+            if isinstance(lay, dict) and lay.get("id") == layout_id:
+                p = lay.get("primary_tileset")
+                s = lay.get("secondary_tileset")
+                return (p, s) if p and s else None
+    except (OSError, json.JSONDecodeError):
+        pass
+    return None
+
+
+def tileset_attr_path(kind: str, tileset_label: str) -> Path | None:
+    """Cached metatile_attributes.bin for one tileset, downloading on first
+    use. kind: "primary" | "secondary". Cache filename {kind}_{dir}_attr.bin
+    matches the two files that predate this helper (primary_general_attr.bin,
+    secondary_rustboro_attr.bin) so they are reused, not re-fetched."""
+    dirname = _tileset_dirname(tileset_label)
+    dest = CACHE_DIR / f"{kind}_{dirname}_attr.bin"
+    if dest.exists():
+        return dest
+    url = f"{POKEEMERALD_RAW}/data/tilesets/{kind}/{dirname}/metatile_attributes.bin"
+    try:
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "pokemon-rl-cache/1.0"},
+        )
+        with urllib.request.urlopen(req, timeout=30) as r:  # noqa: S310
+            dest.write_bytes(r.read())
+        return dest
+    except (urllib.error.URLError, OSError):
+        return None
+
+
+def _norm_map_name(s: str) -> str:
+    """MAP_ROUTE_111 -> Route111 (connection/warp normalized form)."""
+    out: list[str] = []
+    for p in s.replace("MAP_", "").split("_"):
+        if not p:
+            continue
+        out.append(p[0].upper() + p[1:].lower() if p[0].isalpha() else p)
+    return "".join(out)
+
+
+def _parse_connections(raw) -> dict[str, list[dict]]:
+    """Group raw pokeemerald connections by direction into a LIST per side.
+
+    A side can hold more than one connection (Route111 left, Route124 right);
+    a dict[direction] would keep only the last and silently drop the others.
+    Pure function so the clobber invariant is unit-testable without a cache.
+    """
+    conns: dict[str, list[dict]] = {}
+    for c in raw or []:
+        d = c.get("direction")
+        if not d:
+            continue
+        conns.setdefault(d, []).append({
+            "map_name": _norm_map_name(c.get("map", "")),
+            "offset": int(c.get("offset", 0)),
+        })
+    return conns
+
 
 @dataclass
 class MapInfo:
@@ -49,7 +169,11 @@ class MapInfo:
     width: int
     height: int
     collision: list[list[int]] = field(default_factory=list)  # [y][x] 0=walkable
-    connections: dict[str, dict] = field(default_factory=dict)  # "up": {"map_name":..., "offset":...}
+    # direction -> LIST of connections. A map can connect to more than one
+    # neighbour on the same side (Route111 left = Route113 offset0 + Route112
+    # offset20; Route124 right = Route125 + MossdeepCity). A dict[direction]
+    # dropped all but the last, losing Route113 -> the Fallarbor route (07-17).
+    connections: dict[str, list[dict]] = field(default_factory=dict)  # {"up": [{"map_name":..,"offset":..}, ...]}
     warps: list[dict] = field(default_factory=list)  # [{x,y,dest_map,dest_warp_id}]
     object_events: list[dict] = field(default_factory=list)  # [{x,y,script,flag}]
 
@@ -76,6 +200,18 @@ class MapCache:
         self._components_cache: dict[tuple[int, int], tuple[dict, list]] = {}
         self._multicomp_cache: dict[tuple[int, int], bool] = {}
         self._indoor_cache: dict[tuple[int, int], bool] = {}
+        # Segment 4b (Lavaridge hole/geyser nav): per-map metatile behavior
+        # grid + directed ledge edges between walkable components. Memoized.
+        self._behavior_grid_cache: dict[
+            tuple[int, int], dict[tuple[int, int], int]
+        ] = {}
+        self._ledge_edge_cache: dict[
+            tuple[int, int], list[tuple[int, int]]
+        ] = {}
+        # Per-map set of on-foot-impassable tiles (FOOT_IMPASSABLE_BEHAVIORS).
+        self._foot_impassable_cache: dict[
+            tuple[int, int], set[tuple[int, int]]
+        ] = {}
 
     def is_indoor(self, map_g: int, map_n: int) -> bool:
         """True if the map is a building interior (MAP_TYPE_INDOOR).
@@ -222,25 +358,7 @@ class MapCache:
                 b = struct.unpack_from("<H", data, off)[0]
                 row.append((b >> 10) & 0x3)
             collision.append(row)
-        conns: dict[str, dict] = {}
-        def _norm(s: str) -> str:
-            parts = s.replace("MAP_", "").split("_")
-            out: list[str] = []
-            for p in parts:
-                if not p:
-                    continue
-                if p[0].isalpha():
-                    out.append(p[0].upper() + p[1:].lower())
-                else:
-                    out.append(p)
-            return "".join(out)
-        for c in map_json.get("connections") or []:
-            d = c.get("direction")
-            if d:
-                conns[d] = {
-                    "map_name": _norm(c.get("map", "")),
-                    "offset": int(c.get("offset", 0)),
-                }
+        conns = _parse_connections(map_json.get("connections"))
         warps_raw = map_json.get("warp_events") or []
         def _safe_int(v) -> int:
             try:
@@ -251,7 +369,7 @@ class MapCache:
             {
                 "x": _safe_int(w.get("x", 0)),
                 "y": _safe_int(w.get("y", 0)),
-                "dest_map": _norm(str(w.get("dest_map", ""))),
+                "dest_map": _norm_map_name(str(w.get("dest_map", ""))),
                 "dest_warp_id": _safe_int(w.get("dest_warp_id", 0)),
             }
             for w in warps_raw
@@ -300,46 +418,77 @@ class MapCache:
 
         if not _walk(*start):
             return None
-        blocked = blocked_tiles or set()
+        # On-foot impassable metatiles (bumpy/muddy slopes, Acro rails) are
+        # walls no matter what the caller passes: behavior is a STATIC
+        # tileset attribute, so neither the water-/elevation-relax retries
+        # nor a live-grid extra_walkable override may re-open them (the live
+        # grid reads the same collision-0 bits that lie about these tiles).
+        blocked = set(blocked_tiles or ()) | self._foot_impassable_tiles(
+            map_g, map_n,
+        )
         elev = tile_elevation or {}
         ledges = ledge_jumps or {}
-        q: deque[tuple[tuple[int, int], list[str]]] = deque([(start, [])])
-        visited: set[tuple[int, int]] = {start}
+
+        # Game-accurate elevation gating (pokeemerald GetCollisionAtCoords ->
+        # IsElevationMismatchAt + ObjectEventUpdateElevation). The elevation
+        # nibble means: 0 = transition (enter from any level, then you carry
+        # 0 = wildcard), 15 = multi-level/bridge (enter from any level, carry
+        # is PRESERVED across it), any other value must EQUAL the player's
+        # carried elevation to enter. The carried value becomes the entered
+        # tile's elevation except across 15-tiles. This is stateful — a
+        # stateless e1==e2-with-{0,15}-wildcards edge rule mis-blocks/allows
+        # 0- and 15-mediated chains — so BFS state is (x, y, carried_e).
+        # Route114 (21,57)e3 -> Down (21,58)e4 is the motivating hard block
+        # (collision 0, behavior MB_MOUNTAIN_TOP, i.e. NOT a ledge: only the
+        # elevation rule blocks it; the agent burned ~130 turns pressing into
+        # it). Tiles missing from tile_elevation read 0 (wildcard), so legacy
+        # callers that pass no elevation keep collision-only behavior.
+        def _e(x: int, y: int) -> int:
+            return elev.get((x, y), 0)
+
+        e0 = _e(*start)
+        if e0 == 15:
+            e0 = 0  # standing on a bridge: carry history unknown -> wildcard
+        first = (start[0], start[1], e0)
+        q: deque[tuple[tuple[int, int, int], list[str]]] = deque([(first, [])])
+        visited: set[tuple[int, int, int]] = {first}
         dirs = [(0, -1, "Up"), (0, 1, "Down"), (-1, 0, "Left"), (1, 0, "Right")]
         while q:
-            (x, y), path = q.popleft()
+            (x, y, e), path = q.popleft()
             if (x, y) in targets:
                 return path
-            cur_e = elev.get((x, y))
             for dx, dy, btn in dirs:
                 nx, ny = x + dx, y + dy
-                # Ledge: pressing into a wall-collision tile that has
-                # ledge_jumps behavior makes agent JUMP over it.
-                # press direction must match jump direction.
+                # Ledge (JUMP_* behavior tile): pressing its jump direction
+                # vaults it and lands 2 tiles out (the jump preempts the
+                # tile's own collision, pokeemerald CheckForObjectEvent-
+                # Collision). Any OTHER approach direction never enters a
+                # jump tile in-game (they carry the wall collision bit /
+                # elevation of the upper side), so skip instead of walking on.
                 jump = ledges.get((nx, ny))
-                if jump is not None and (dx, dy) == jump:
-                    final = (nx + jump[0], ny + jump[1])
-                    if final in visited or not _walk(*final):
-                        continue
-                    if final in blocked:
-                        continue
-                    visited.add(final)
-                    q.append((final, path + [btn]))
+                if jump is not None:
+                    if (dx, dy) == jump:
+                        fx, fy = nx + jump[0], ny + jump[1]
+                        if _walk(fx, fy) and (fx, fy) not in blocked:
+                            fe = _e(fx, fy)
+                            ne = e if (fe == 15 or _e(x, y) == 15) else fe
+                            st = (fx, fy, ne)
+                            if st not in visited:
+                                visited.add(st)
+                                q.append((st, path + [btn]))
                     continue
                 if not _walk(nx, ny):
                     continue
                 if (nx, ny) in blocked:
                     continue
-                if (nx, ny) in visited:
-                    continue
-                # NOTE: elev mismatch BFS check temporarily disabled
-                # (was 28 fix). Real grass (behavior-based, 31 fix)
-                # requires elev=3 → elev=1 transitions in canon-walkable
-                # tiles. (24, 16) Down 200 fail empirical via tile_map
-                # direction-edge accumulation handles the actual blocked
-                # transitions; let BFS find canon-walkable paths.
-                visited.add((nx, ny))
-                q.append(((nx, ny), path + [btn]))
+                me = _e(nx, ny)
+                if e != 0 and me not in (0, 15) and me != e:
+                    continue  # COLLISION_ELEVATION_MISMATCH
+                ne = e if (me == 15 or _e(x, y) == 15) else me
+                st = (nx, ny, ne)
+                if st not in visited:
+                    visited.add(st)
+                    q.append((st, path + [btn]))
         return None
 
     def neighbor_maps(self, map_g: int, map_n: int) -> set[str]:
@@ -349,9 +498,10 @@ class MapCache:
         if info is None:
             return set()
         out: set[str] = set()
-        for d, conn in info.connections.items():
-            if conn["map_name"]:
-                out.add(conn["map_name"])
+        for conns in info.connections.values():
+            for conn in conns:
+                if conn["map_name"]:
+                    out.add(conn["map_name"])
         for w in info.warps:
             if w["dest_map"]:
                 out.add(w["dest_map"])
@@ -377,11 +527,21 @@ class MapCache:
         self, start_g: int, start_n: int,
         target_g: int, target_n: int,
         max_hops: int = 8,
+        banned_first_hops: set[str] | None = None,
     ) -> list[tuple[int, int]] | None:
         """Graph BFS over (connection + warp) neighbors. Returns list of
-        intermediate maps from start (exclusive) to target (inclusive)."""
+        intermediate maps from start (exclusive) to target (inclusive).
+
+        `banned_first_hops` (normalized map names) blocks expansion of the START
+        node into those neighbours only — used when a first hop turns out to be a
+        connection-lie (an edge that is all-wall on this side) or physically
+        unreachable, so the router re-plans through a different neighbour. Deeper
+        hops are NOT banned: a lie edge from A is valid when entered from another
+        side, and the ban re-applies once the agent actually stands on that map.
+        """
         if (start_g, start_n) == (target_g, target_n):
             return []
+        banned = {b.replace("_", "").lower() for b in (banned_first_hops or set())}
         q: deque[tuple[tuple[int, int], list[tuple[int, int]]]] = deque([
             ((start_g, start_n), [])
         ])
@@ -391,6 +551,8 @@ class MapCache:
             if len(path) >= max_hops:
                 continue
             for nbr_name in self.neighbor_maps(*cur):
+                if not path and nbr_name.replace("_", "").lower() in banned:
+                    continue  # ban applies to first hop from start only
                 nbr_pos = self.find_map_by_name(nbr_name)
                 if nbr_pos is None or nbr_pos in visited:
                     continue
@@ -435,27 +597,42 @@ class MapCache:
 
     def exit_tiles_toward(
         self, map_g: int, map_n: int, direction: str,
+        dest_name: str | None = None,
     ) -> set[tuple[int, int]]:
         """Boundary tiles in this map that walking `direction` will cross
-        into the connected map."""
+        into a connected map.
+
+        A side may hold several connections (Route111 left = Route113 + Route112);
+        their edge-strips are disjoint (offset-separated). Pass `dest_name` to get
+        only the strip for that neighbour — the router MUST do this, else the union
+        of strips would let BFS aim at the wrong neighbour's edge. Omitting it
+        returns the union (legacy callers / diagnostics).
+        """
         # Prefer empirical override when available (catches canon-game
-        # walkable mismatches like Route 104 → Rustboro).
+        # walkable mismatches like Route 104 → Rustboro). Keyed by direction
+        # only; today's single override is on a single-connection side.
         key = (map_g, map_n, direction)
-        if key in self._EMPIRICAL_EXIT_TILES:
+        if key in self._EMPIRICAL_EXIT_TILES and dest_name is None:
             return set(self._EMPIRICAL_EXIT_TILES[key])
         info = self.get(map_g, map_n)
         if info is None or direction not in info.connections:
             return set()
-        conn = info.connections[direction]
+        want = (dest_name or "").replace("_", "").lower()
+        out: set[tuple[int, int]] = set()
+        for conn in info.connections[direction]:
+            if want and conn.get("map_name", "").replace("_", "").lower() != want:
+                continue
+            out |= self._exit_strip_for(info, direction, conn)
+        return out
+
+    def _exit_strip_for(
+        self, info: "MapInfo", direction: str, conn: dict,
+    ) -> set[tuple[int, int]]:
+        """Walkable edge tiles for ONE connection. A tile only warps if both
+        sides are walkable and it lies in the offset-overlap of the dest map
+        (Route106 down->Dewford offset 60: only x60-79 overlap). Dest
+        unresolvable offline -> whole walkable edge (old behaviour)."""
         offset = int(conn.get("offset", 0))
-        # A tile only warps across a connection if BOTH sides are walkable and
-        # it lies in the stretch of the edge that overlaps the destination map
-        # (offset..offset+dest_span-1). Route106 down->DewfordTown (offset 60)
-        # is 80 wide but only x60-79 overlap Dewford, and of those only the
-        # ones landing on a walkable Dewford tile actually warp — returning the
-        # whole edge (or the whole overlap) made the planner aim at a
-        # non-warping tile like (62,19) and press Down forever. When the dest
-        # map can't be resolved offline, fall back to the whole walkable edge.
         dest = self._info_of(conn.get("map_name", ""))
 
         def dest_ok(src_along: int, dest_edge_is_far: bool, horizontal: bool) -> bool:
@@ -496,6 +673,127 @@ class MapCache:
         return None
 
     # --- Region-aware routing (H4a) ------------------------------------------
+    def behavior_grid(
+        self, map_g: int, map_n: int,
+    ) -> dict[tuple[int, int], int]:
+        """(x,y) -> metatile behavior byte for every tile of the map, read
+        from the layout's OWN primary/secondary metatile_attributes tables
+        (same per-layout resolution as map_knowledge._load_behavior_table;
+        duplicated here because map_knowledge imports map_data). Returns {}
+        when map.bin or the tileset pair can't be resolved (synthetic test
+        maps, offline) — callers must treat a MISSING tile as
+        behavior-UNKNOWN, never as MB_NORMAL. Memoized per map (lazy attr:
+        several test fixtures build MapCache via __new__ without __init__,
+        and bfs_to_tile's foot-impassable block now reaches here)."""
+        key = (map_g, map_n)
+        cache = getattr(self, "_behavior_grid_cache", None)
+        if cache is None:
+            cache = self._behavior_grid_cache = {}
+        cached = cache.get(key)
+        if cached is not None:
+            return cached
+        grid: dict[tuple[int, int], int] = {}
+        try:
+            info = self.get(map_g, map_n)
+            pair = layout_tilesets(info.layout_id) if info else None
+            bin_path = CACHE_DIR / f"{info.name}.map.bin" if info else None
+            if info and pair and bin_path and bin_path.exists():
+                beh: dict[int, int] = {}
+                pp = tileset_attr_path("primary", pair[0])
+                if pp is not None:
+                    pd = pp.read_bytes()
+                    for m in range(min(0x200, len(pd) // 2)):
+                        beh[m] = struct.unpack_from("<H", pd, m * 2)[0] & 0xFF
+                sp = tileset_attr_path("secondary", pair[1])
+                if sp is not None:
+                    sd = sp.read_bytes()
+                    for i in range(len(sd) // 2):
+                        beh[0x200 + i] = (
+                            struct.unpack_from("<H", sd, i * 2)[0] & 0xFF
+                        )
+                raw = bin_path.read_bytes()
+                for y in range(info.height):
+                    for x in range(info.width):
+                        off = (y * info.width + x) * 2
+                        if off + 2 > len(raw):
+                            continue
+                        meta = struct.unpack_from("<H", raw, off)[0] & 0x3FF
+                        bv = beh.get(meta)
+                        if bv is not None:
+                            grid[(x, y)] = bv
+        except (OSError, struct.error):
+            grid = {}
+        self._behavior_grid_cache[key] = grid
+        return grid
+
+    def _foot_impassable_tiles(
+        self, map_g: int, map_n: int,
+    ) -> set[tuple[int, int]]:
+        """Tiles whose metatile behavior is on-foot impassable (see
+        FOOT_IMPASSABLE_BEHAVIORS). Memoized per map; empty when behavior
+        data can't be resolved (synthetic test maps, offline) — those keep
+        the collision-only walk model unchanged. Lazy attr like
+        behavior_grid's, for __new__-built test caches."""
+        key = (map_g, map_n)
+        cache = getattr(self, "_foot_impassable_cache", None)
+        if cache is None:
+            cache = self._foot_impassable_cache = {}
+        cached = cache.get(key)
+        if cached is None:
+            cached = {
+                t for t, bv in self.behavior_grid(map_g, map_n).items()
+                if bv in FOOT_IMPASSABLE_BEHAVIORS
+            }
+            cache[key] = cached
+        return cached
+
+    def _warp_active(self, map_g: int, map_n: int, w: dict) -> bool:
+        """False iff this warp_event provably NEVER fires: its tile's
+        metatile behavior is KNOWN and MB_NORMAL (0). pokeemerald
+        TryStartWarpEventScript gates every warp on IsWarpMetatileBehavior,
+        so a behavior-0 warp_event is inert data. Audited 2026-07-19 over
+        861 cached warps: the 65 behavior-0 ones are all (a) Lavaridge Gym
+        hole/geyser LANDING pads (the pair's passive half), (b) event-gated
+        hidden entrances (Terra/Altering Cave, Steven's Cave), or
+        (c) script-opened doors still closed in the static map (Petalburg
+        Gym rooms, Trick House, E4 halls) — no always-active door/stair
+        warp reads 0. Unknown behavior (attr data missing) keeps the warp
+        (legacy behavior)."""
+        beh = self.behavior_grid(map_g, map_n).get((w.get("x"), w.get("y")))
+        return beh != 0
+
+    def _ledge_component_edges(
+        self, map_g: int, map_n: int,
+    ) -> list[tuple[int, int]]:
+        """Directed (from_cid, to_cid) edges between walkable components of
+        ONE map created by ledge jumps: entering a JUMP tile in its jump
+        direction vaults the (usually non-walkable) tile and lands 2 tiles
+        out, so a component can spill one-way into another. Lavaridge Gym
+        B1F is the motivating case: the geyser room that pops up in front
+        of Flannery is fully walled in raw collision — the jump row above
+        it is its ONLY entrance. bfs_to_tile already walks these edges
+        (ledge_jumps param); the region graph must model them too or it
+        under-connects such maps. Memoized; sorted for determinism."""
+        key = (map_g, map_n)
+        cached = self._ledge_edge_cache.get(key)
+        if cached is not None:
+            return cached
+        edges: set[tuple[int, int]] = set()
+        grid = self.behavior_grid(map_g, map_n)
+        if grid:
+            tile2cid, _ = self._components(map_g, map_n)
+            for (x, y), bv in grid.items():
+                d = LEDGE_JUMP_BEHAVIORS.get(bv)
+                if d is None:
+                    continue
+                ca = tile2cid.get((x - d[0], y - d[1]))
+                cl = tile2cid.get((x + d[0], y + d[1]))
+                if ca is not None and cl is not None and ca != cl:
+                    edges.add((ca, cl))
+        result = sorted(edges)
+        self._ledge_edge_cache[key] = result
+        return result
+
     def _components(
         self, map_g: int, map_n: int,
     ) -> tuple[dict[tuple[int, int], int], list[set[tuple[int, int]]]]:
@@ -588,14 +886,20 @@ class MapCache:
         if info is None:
             return []
         tile2cid, _ = self._components(map_g, map_n)
+        # Inert warp_events (KNOWN behavior MB_NORMAL — Lavaridge landing
+        # pads etc., see _warp_active) never fire in-game, so they are NOT
+        # region-graph edges; keeping them made the router aim at tiles
+        # that do nothing.
         return [
             w for w in info.warps
             if tile2cid.get((w["x"], w["y"])) == cid
+            and self._warp_active(map_g, map_n, w)
         ]
 
     def region_route_targets(
         self, map_g: int, map_n: int, pos: tuple[int, int],
         goal_map: tuple[int, int], mh_chain: list[tuple[int, int]] | None,
+        target_tile: tuple[int, int] | None = None,
     ) -> tuple[set[tuple[int, int]], str | None]:
         """First-hop warp tile(s) on the CURRENT map, and that warp's dest map
         name, to reach `goal_map` when the current map is split into components.
@@ -603,9 +907,17 @@ class MapCache:
         BFS over the (map, component) warp graph from the player's component.
         primary target = the final goal_map (NOT mh_chain's next hop: following
         the map-level next hop re-enters the entrance component and ping-pongs).
-        secondary = mh_chain's next hop (keeps cross-map exits like the heal PC
-        routable). Returns (set(), None) when no warp-graph route exists so the
-        caller uses legacy connection/warp routing unchanged."""
+        secondary = mh_chain hops tried END-first (keeps cross-map exits like
+        the heal PC routable while never aiming at the map we came from when a
+        farther hop is warp-reachable). `target_tile` (the goal's target_pos
+        on goal_map) narrows
+        the primary target to the COMPONENT holding that tile — required for
+        hole/geyser gyms where any-component landing bounces the agent around
+        the right map but never into the goal's walled-off room; an
+        any-component fallback is kept for cross-map goals in case the exact
+        component can't be reached. Returns (set(), None) when no warp-graph
+        route exists so the caller uses legacy connection/warp routing
+        unchanged."""
         info = self.get(map_g, map_n)
         if info is None:
             return set(), None
@@ -613,11 +925,44 @@ class MapCache:
         start_cid = tile2cid.get((pos[0], pos[1]))
         if start_cid is None:
             return set(), None
-        next_hop = mh_chain[0] if mh_chain else None
-        for target in (goal_map, next_hop):
-            if target is None:
-                continue
-            res = self._region_bfs(map_g, map_n, start_cid, tuple(target))
+        # Component of the goal tile on the goal map (the tile itself or a
+        # walkable 4-neighbour — an NPC target may sit on a blocked tile).
+        goal_cid: int | None = None
+        if target_tile is not None:
+            gt2c, _ = self._components(*tuple(goal_map))
+            tx, ty = target_tile
+            for cand in ((tx, ty), (tx, ty + 1), (tx, ty - 1),
+                         (tx - 1, ty), (tx + 1, ty)):
+                goal_cid = gt2c.get(cand)
+                if goal_cid is not None:
+                    break
+        same_map_goal = tuple(goal_map) == (map_g, map_n)
+        attempts: list[tuple[tuple[int, int], int | None]] = []
+        if goal_cid is not None and not (
+            same_map_goal and goal_cid == start_cid
+        ):
+            attempts.append((tuple(goal_map), goal_cid))
+        # Any-component match on the CURRENT map is vacuous (any warp that
+        # lands back here "succeeds") — only offer it for cross-map goals.
+        if not same_map_goal:
+            attempts.append((tuple(goal_map), None))
+        # mh_chain fallback: aim at the FARTHEST warp-reachable hop of the
+        # map-level chain, not blindly at chain[0]. From an intermediate
+        # floor of a warp maze, chain[0] is the map we just came FROM (gym
+        # B1F's only map-level neighbour is 1F), and an any-component match
+        # on it is satisfied by the warp straight back into the start
+        # component — the agent rode hole->geyser->hole forever (Lavaridge
+        # (0,17) bounce, 2026-07-21). Walking the chain END-first always
+        # prefers forward progress; chain[0] stays as the last resort so
+        # single-hop chains (the heal-PC exit case) behave as before.
+        if mh_chain:
+            for hop in reversed(mh_chain):
+                h = tuple(hop)
+                if h == tuple(goal_map) or h == (map_g, map_n):
+                    continue  # duplicate of the goal attempts / vacuous
+                attempts.append((h, None))
+        for target, tcid in attempts:
+            res = self._region_bfs(map_g, map_n, start_cid, target, tcid)
             if res is not None:
                 return res
         return set(), None
@@ -625,39 +970,55 @@ class MapCache:
     def _region_bfs(
         self, map_g: int, map_n: int, start_cid: int,
         target_map: tuple[int, int],
+        target_cid: int | None = None,
     ) -> tuple[set[tuple[int, int]], str] | None:
-        """Shortest region path from (map_g,map_n,start_cid) to any component of
-        target_map; returns (first-hop warp tiles on the start map, first-hop
-        dest map name) or None. Warps are iterated in canonical order so the
-        result is deterministic."""
+        """Shortest region path from (map_g,map_n,start_cid) to target_map —
+        any component, or ONE component when target_cid is given. Edges:
+        firing warps (_warps_in_component filters inert ones) plus one-way
+        ledge jumps between components of a single map. Returns (first-hop
+        warp tiles on the start map, first-hop dest map name) or None.
+
+        The payload is the FIRST WARP on the path. Ledge hops taken before
+        it stay on the start map, so bfs_to_tile (which walks ledges) can
+        still reach that warp on foot. A ledge-only path to the target
+        carries no payload and is NOT returned — the plain tile BFS covers
+        it. Warps iterate in canonical order and ledge edges are sorted, so
+        the result is deterministic."""
         start = (map_g, map_n, start_cid)
         visited: set[tuple[int, int, int]] = {start}
-        queue: deque[tuple[tuple[int, int, int], set[tuple[int, int]], str]] = (
-            deque()
-        )
-        # Seed with the start component's warps, remembering the first hop.
-        for w in self._warps_in_component(map_g, map_n, start_cid):
-            land = self._warp_landing(w)
-            if land is None:
-                continue
-            first_tiles = {(w["x"], w["y"])}
-            first_dest = w["dest_map"]
-            if (land[0], land[1]) == target_map:
-                return first_tiles, first_dest
-            if land not in visited:
-                visited.add(land)
-                queue.append((land, first_tiles, first_dest))
+        queue: deque[
+            tuple[
+                tuple[int, int, int],
+                tuple[set[tuple[int, int]], str] | None,
+            ]
+        ] = deque([(start, None)])
         while queue:
-            (ng, nn, ncid), first_tiles, first_dest = queue.popleft()
+            (ng, nn, ncid), first = queue.popleft()
             for w in self._warps_in_component(ng, nn, ncid):
                 land = self._warp_landing(w)
                 if land is None:
                     continue
-                if (land[0], land[1]) == target_map:
-                    return set(first_tiles), first_dest
+                nfirst = first or ({(w["x"], w["y"])}, w["dest_map"])
+                if (land[0], land[1]) == target_map and (
+                    target_cid is None or land[2] == target_cid
+                ):
+                    return set(nfirst[0]), nfirst[1]
                 if land not in visited:
                     visited.add(land)
-                    queue.append((land, first_tiles, first_dest))
+                    queue.append((land, nfirst))
+            for ca, cl in self._ledge_component_edges(ng, nn):
+                if ca != ncid:
+                    continue
+                nxt = (ng, nn, cl)
+                if (
+                    first is not None
+                    and (ng, nn) == target_map
+                    and (target_cid is None or cl == target_cid)
+                ):
+                    return set(first[0]), first[1]
+                if nxt not in visited:
+                    visited.add(nxt)
+                    queue.append((nxt, first))
         return None
 
     def warp_tiles_for(
@@ -671,6 +1032,8 @@ class MapCache:
         for w in info.warps:
             if w["dest_map"].replace("_", "").lower() != target_key:
                 continue
+            if not self._warp_active(map_g, map_n, w):
+                continue  # inert landing pad / closed scripted door
             wx, wy = w["x"], w["y"]
             # Interior door warps (Gym/PC/Mart/house entrances) sit on a
             # tile the collision map marks NON-walkable, so bfs_to_tile can

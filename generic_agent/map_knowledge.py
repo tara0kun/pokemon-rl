@@ -42,6 +42,14 @@ from . import config, map_data as md
 
 KNOWLEDGE_DIR = config.MEMORY_DIR / "map_knowledge"
 
+# Canon-seed schema version. Bump when the seeding tables/logic change so
+# stale persisted files re-derive on next load (empirical data is carried
+# over in _reseed). v2 = per-tileset behavior tables: v1 applied ONE fixed
+# secondary attr table (rustboro) to every map, so e.g. Route114 (secondary
+# gTileset_Fallarbor) read behavior 0x00 for all 51 of its ledge metatiles
+# -> ledge_jumps empty, grass/water wrong outside the rustboro cluster.
+SEED_VERSION = 2
+
 # 🎯 灯台下暗し fix (06-28): GRASS_METATILES = {0x208, 0x209} was wrong
 # — those are MB_POND_WATER (behavior 0x10) in Rustboro tileset.
 # Real encounter grass is determined by BEHAVIOR byte from metatile
@@ -73,17 +81,9 @@ WATER_BEHAVIORS = {
 # to (dx, dy) direction the agent jumps when stepping onto the tile.
 # Ledges are 1-way edges: stepping onto a JUMP tile from the OPPOSITE
 # direction lands the agent on (x+dx, y+dy) regardless of the next
-# tile's elevation.
-LEDGE_JUMP_BEHAVIORS = {
-    0x38: (1, 0),    # JUMP_EAST
-    0x39: (-1, 0),   # JUMP_WEST
-    0x3A: (0, -1),   # JUMP_NORTH
-    0x3B: (0, 1),    # JUMP_SOUTH
-    0x3C: (1, -1),   # JUMP_NORTHEAST
-    0x3D: (-1, -1),  # JUMP_NORTHWEST
-    0x3E: (1, 1),    # JUMP_SOUTHEAST
-    0x3F: (-1, 1),   # JUMP_SOUTHWEST
-}
+# tile's elevation. Canonical table lives in map_data (also used for the
+# region graph's ledge component edges); aliased here for existing users.
+LEDGE_JUMP_BEHAVIORS = md.LEDGE_JUMP_BEHAVIORS
 
 # LOS direction deltas. trainer_los expansion walks `sight` cells in
 # the trainer's facing direction(s).
@@ -128,11 +128,22 @@ class MapKnowledge:
     ledge_jumps: dict[tuple[int, int], tuple[int, int]] = field(
         default_factory=dict,
     )
+    # blocked_triggers: coord_event tiles that PUSH THE PLAYER BACK (a story/item
+    # gate we can't pass), e.g. Route111's Route111_EventScript_ViciousSandstorm-
+    # Trigger* which checkitem GO_GOGGLES and shove you off the tile. BFS must
+    # treat them as walls so it routes AROUND the desert to the pre-desert exit,
+    # instead of dead-ending against the invisible push-back (the static
+    # collision shows these tiles walkable). Seeded from canon coord_events.
+    blocked_triggers: set[tuple[int, int]] = field(default_factory=set)
     warps: dict[tuple[int, int], dict] = field(default_factory=dict)
     npcs: list[dict] = field(default_factory=list)
     encounters_seen: list[dict] = field(default_factory=list)
     exits: dict[str, set[tuple[int, int]]] = field(default_factory=dict)
     canon_loaded: bool = False
+    # Version of the canon-seed schema this object was derived with. Fresh
+    # seeds get the current SEED_VERSION; legacy files (no field) load as 1
+    # and are re-derived by MapKnowledgeStore.get().
+    seed_version: int = SEED_VERSION
 
     def understanding_score(self) -> float:
         """0.0-1.0 self-rating.
@@ -170,11 +181,13 @@ class MapKnowledge:
             "ledge_jumps": {
                 f"{x},{y}": list(d) for (x, y), d in self.ledge_jumps.items()
             },
+            "blocked_triggers": sorted(list(self.blocked_triggers)),
             "warps": {f"{x},{y}": v for (x, y), v in self.warps.items()},
             "npcs": self.npcs,
             "encounters_seen": self.encounters_seen,
             "exits": {d: sorted(list(t)) for d, t in self.exits.items()},
             "canon_loaded": self.canon_loaded,
+            "seed_version": self.seed_version,
             "understanding_score": self.understanding_score(),
         }
 
@@ -198,6 +211,9 @@ class MapKnowledge:
             tuple(map(int, k.split(","))): tuple(v)
             for k, v in data.get("ledge_jumps", {}).items()
         }
+        mk.blocked_triggers = {
+            tuple(t) for t in data.get("blocked_triggers", [])
+        }
         mk.warps = {
             tuple(map(int, k.split(","))): v
             for k, v in data.get("warps", {}).items()
@@ -209,6 +225,10 @@ class MapKnowledge:
             for d, tiles in data.get("exits", {}).items()
         }
         mk.canon_loaded = data.get("canon_loaded", False)
+        try:
+            mk.seed_version = int(data.get("seed_version", 1))
+        except (TypeError, ValueError):
+            mk.seed_version = 1
         return mk
 
 
@@ -219,6 +239,8 @@ class MapKnowledgeStore:
         KNOWLEDGE_DIR.mkdir(parents=True, exist_ok=True)
         self._cache: dict[tuple[int, int], MapKnowledge] = {}
         self._mc = md.get_cache()
+        # behavior tables memoized per (primary, secondary) tileset pair
+        self._beh_cache: dict[tuple[str, str | None], dict[int, int]] = {}
 
     def _path(self, map_g: int, map_n: int) -> Path:
         return KNOWLEDGE_DIR / f"{map_g}-{map_n}.json"
@@ -231,6 +253,11 @@ class MapKnowledgeStore:
         if p.exists():
             try:
                 mk = MapKnowledge.from_json(json.loads(p.read_text()))
+                if mk.seed_version < SEED_VERSION:
+                    fresh = self._reseed(mk)
+                    if fresh is not mk:  # only persist a SUCCESSFUL re-derive
+                        mk = fresh
+                        self.save(mk)
                 self._cache[key] = mk
                 return mk
             except (json.JSONDecodeError, KeyError):
@@ -269,36 +296,79 @@ class MapKnowledgeStore:
         mk.trainer_los.add((x, y))
         self.save(mk)
 
-    def _load_behavior_table(self) -> dict[int, int]:
-        """Cache primary tileset metatile → behavior mapping (2-byte/entry)."""
-        if hasattr(self, "_beh_cache"):
-            return self._beh_cache
+    def _reseed(self, old: MapKnowledge) -> MapKnowledge:
+        """Re-derive canon fields with the current tables, keeping empirical
+        data. Canon sets (grass/water/elevation/ledges/warps/npcs/exits/
+        triggers) are replaced wholesale — the old ones may come from a wrong
+        secondary tileset table (pre-SEED_VERSION 2). Empirical carry-over:
+        encounters_seen (plus the grass tiles those encounters proved) and
+        trainer_los additions from record_trainer_battle (canon LOS is a
+        subset of both old and new, so the union only re-adds empirical).
+        Returns `old` unchanged when canon is unavailable (offline)."""
+        fresh = MapKnowledge(map_g=old.map_g, map_n=old.map_n)
+        self._seed_from_canon(fresh)
+        if not fresh.canon_loaded:
+            return old
+        fresh.encounters_seen = old.encounters_seen
+        fresh.grass_tiles |= {
+            (e["x"], e["y"]) for e in old.encounters_seen
+            if "x" in e and "y" in e
+        }
+        fresh.trainer_los |= old.trainer_los
+        return fresh
+
+    def _load_behavior_table(self, map_name: str | None = None) -> dict[int, int]:
+        """Metatile id → behavior byte for THIS map's tileset pair.
+
+        Metatile ids < 0x200 index the layout's PRIMARY tileset attribute
+        table; ids >= 0x200 index its SECONDARY table (at id - 0x200). Every
+        layout names its own pair in layouts.json, so resolve per map and
+        memoize per (primary, secondary) pair. Missing attr files download
+        from pokeemerald into map_cache (md.tileset_attr_path). When the pair
+        can't be resolved, fall back to General-primary-only: UNDER-
+        classifying (no grass/water/ledges in the 0x200+ range) is safer than
+        applying another tileset's table, which is exactly the v1 bug this
+        replaces (rustboro attrs applied to Route114 hid all 51 of its
+        ledges)."""
+        prim, sec = "gTileset_General", None
+        if map_name:
+            try:
+                jp = (config.MEMORY_DIR / "map_cache"
+                      / f"{map_name}.map.json")
+                layout_id = json.loads(
+                    jp.read_text(encoding="utf-8")
+                ).get("layout")
+                pair = md.layout_tilesets(layout_id) if layout_id else None
+                if pair:
+                    prim, sec = pair
+            except (OSError, json.JSONDecodeError):
+                pass
+        key = (prim, sec)
+        cached = self._beh_cache.get(key)
+        if cached is not None:
+            return cached
         cache: dict[int, int] = {}
-        try:
-            prim = (config.MEMORY_DIR / "map_cache"
-                    / "primary_general_attr.bin").read_bytes()
-            for meta in range(min(0x200, len(prim) // 2)):
-                cache[meta] = struct.unpack_from(
-                    "<H", prim, meta * 2,
-                )[0] & 0xFF
-        except OSError:
-            pass
-        # Secondary tileset metatiles are indexed 0x200.. (meta - 0x200 into
-        # the secondary attr table). Needed to classify water/grass that the
-        # primary table (0..0x1FF) doesn't cover — e.g. Route104 pond edges.
-        # NOTE: only maps using this secondary tileset are correct; with a
-        # single secondary_*.bin extracted (rustboro cluster) this is fine.
-        try:
-            cache_dir = config.MEMORY_DIR / "map_cache"
-            for sec in sorted(cache_dir.glob("secondary_*_attr.bin")):
-                sd = sec.read_bytes()
-                for i in range(len(sd) // 2):
-                    cache[0x200 + i] = struct.unpack_from(
-                        "<H", sd, i * 2,
+        pp = md.tileset_attr_path("primary", prim)
+        if pp is not None:
+            try:
+                prim_data = pp.read_bytes()
+                for meta in range(min(0x200, len(prim_data) // 2)):
+                    cache[meta] = struct.unpack_from(
+                        "<H", prim_data, meta * 2,
                     )[0] & 0xFF
-        except OSError:
-            pass
-        self._beh_cache = cache
+            except OSError:
+                pass
+        sp = md.tileset_attr_path("secondary", sec) if sec else None
+        if sp is not None:
+            try:
+                sec_data = sp.read_bytes()
+                for i in range(len(sec_data) // 2):
+                    cache[0x200 + i] = struct.unpack_from(
+                        "<H", sec_data, i * 2,
+                    )[0] & 0xFF
+            except OSError:
+                pass
+        self._beh_cache[key] = cache
         return cache
 
     def _seed_from_canon(self, mk: MapKnowledge) -> None:
@@ -307,7 +377,7 @@ class MapKnowledgeStore:
         info = self._mc.get(mk.map_g, mk.map_n)
         if info is None:
             return
-        beh_table = self._load_behavior_table()
+        beh_table = self._load_behavior_table(info.name)
         mk.name = info.name
         mk.width = info.width
         mk.height = info.height
@@ -395,12 +465,26 @@ class MapKnowledgeStore:
                         "sight": sight,
                         "script": script,
                     })
+                # Push-back coord_event triggers (item/story gates that shove
+                # the player off the tile — e.g. the Route111 Go-Goggles desert
+                # ViciousSandstorm gate). BFS must treat these as walls. We match
+                # by script keyword (canon-name reference, not a hardcoded coord),
+                # and ONLY the "Vicious" variants push back — the plain
+                # SandstormTrigger just starts the weather and is harmless.
+                for ce in map_json.get("coord_events") or []:
+                    cx = ce.get("x", -1)
+                    cy = ce.get("y", -1)
+                    cs = str(ce.get("script", "") or "")
+                    if cx >= 0 and cy >= 0 and "ViciousSandstorm" in cs:
+                        mk.blocked_triggers.add((cx, cy))
         except (OSError, json.JSONDecodeError):
             pass
         # Exits per direction from canon connections (no empirical fix here;
         # heur or map_data layer can override at decision time).
-        for direction, conn in info.connections.items():
-            offset = conn.get("offset", 0) if isinstance(conn, dict) else 0
+        # Coarse per-direction exit hint = whole walkable edge (offset/dest
+        # filtering happens in map_data.exit_tiles_toward, not here). A side
+        # may hold >1 connection now; the whole-edge union is the right hint.
+        for direction in info.connections:
             tiles: set[tuple[int, int]] = set()
             if direction == "up":
                 y_edge = 0
@@ -416,7 +500,6 @@ class MapKnowledgeStore:
                 tiles = {(x_edge, y) for y in range(info.height) if info.walkable(x_edge, y)}
             if tiles:
                 mk.exits[direction] = tiles
-            _ = offset
         mk.canon_loaded = True
 
     def all_maps(self) -> list[tuple[int, int]]:

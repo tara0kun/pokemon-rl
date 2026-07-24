@@ -48,16 +48,81 @@ def _peeko_done(gs) -> bool:
     return False
 
 
+# Route112 (0,27) is one map split by Mt.Chimney into two walkable blobs that
+# only connect through the Fiery Path cave. The SOUTH blob (entered from
+# Route111) can reach Fallarbor ONLY by crossing Fiery Path; the NORTH blob
+# reaches it via Route111 north -> Route113. The map graph collapses a map to
+# one node, so it can't express "Route112 -> Fiery Path -> Route112" and the
+# router ping-pongs Route111<->Route112. fiery_path_cross fixes that: while in
+# the south blob it routes to Fiery Path. "South blob" = the component holding
+# the higher-y Fiery Path warp (derived from map data, not a hardcoded tile).
+_ROUTE112 = (0, 27)
+_FIERY_PATH = (24, 14)
+
+
+def _in_route112_fiery_south(gs) -> bool:
+    if (getattr(gs, "map_group", None), getattr(gs, "map_num", None)) != _ROUTE112:
+        return False
+    try:
+        from . import map_data as _md
+        mc = _md.get_cache()
+        info = mc.get(*_ROUTE112)
+        if info is None:
+            return False
+        fiery = [
+            (w["x"], w["y"]) for w in (info.warps or [])
+            if "Fiery" in str(w.get("dest_map", ""))
+        ]
+        if not fiery:
+            return False
+        south_warp = max(fiery, key=lambda t: t[1])  # higher y = south side
+        tile2cid, _ = mc._components(*_ROUTE112)
+        south_cid = tile2cid.get(south_warp)
+        return south_cid is not None and tile2cid.get((gs.x, gs.y)) == south_cid
+    except (OSError, RuntimeError, KeyError, AttributeError):
+        return False
+
+
+# H17 (Flannery numbers wall, 07-19 night): Rock Tomb 50-power + Super Potion
+# (+50) loses the numbers race at L42 — Sunny-boosted Overheat measured ~128
+# vs the lead's 137 max HP, so a full-HP lead drops to single digits before
+# battle_heal's window even opens, and +50 never out-heals the next hit.
+# Grinding the lead to this level flips both races (scaled from the measured
+# L42 numbers): HP ~155 / SpD +13% puts the first Overheat at ~73% (survivable
+# from full, healable after the White-Herb reset), and Atk ~95 puts Rock Tomb
+# (2x vs Fire) into 2HKO range on Torkoal (Def140) / OHKO on Numel+Slugma, so
+# at most ~two Overheats land per fight instead of a KO per turn.
+# 48: the L42 lead LOST Flannery even with Rock Tomb + battle_heal (verified
+# 2026-07-22 — Super Potion +50 can't out-heal Torkoal's Overheat ~128; Sceptile
+# healed 2->52 HP and the next Overheat re-KO'd it). So the grind IS needed.
+# Nav: bfs_to_tile's ledge model and the pin were CORRECT all along — the
+# descent overshoot was run()'s forward_force explore override rewriting the
+# BFS's grass-branch turn into "Down" for 30 turns after map entry (fixed
+# 2026-07-22, forward_force_override src gate; TestJaggedDescentReplay pins
+# the full descent). See daily 2026-07-22.
+# 46 (was 48): user decision 2026-07-24 to test Flannery at the current L46
+# rather than the slow L46->L48 grind (~1-3h on Fiery Path's L14-16 wild XP).
+# Sceptile L46 holds Rock Tomb (Rock 2x vs Fire) + 2 Super Potions for the
+# mid-battle heal (H16), and the whiteout is re-homed to Lavaridge, so a loss
+# is a cheap short retry from the adjacent PC — not the old cross-mountain
+# cascade. At level>=46 grind_fiery_path retires and lavaridge_gym_flannery
+# fires. Raise back to 48 if L46 proves too thin.
+FLANNERY_GRIND_TARGET_LEVEL = 46
+
 LETTER_DONE_MARKER = config.MEMORY_DIR / "steven_letter_done.marker"
 DEVON_DELIVERED_MARKER = config.MEMORY_DIR / "devon_delivered.marker"
+ROCK_SMASH_TAUGHT_MARKER = config.MEMORY_DIR / "rock_smash_taught.marker"
 
 
 def _latched(gs, attr: str, marker) -> bool:
-    """Monotonic story-flag latch, immune to the SaveBlock1 DMA flicker. Once
-    the flag has been observed True, a disk marker keeps it True forever — the
-    flag reading False for a single frame otherwise flips the goal (e.g. the
-    Steven-letter flag flicker flipped the goal between the Dewford sail and the
-    deep-cave letter, churning the agent in place). Mirrors _peeko_done."""
+    """Monotonic story-flag latch, immune to the SaveBlock1 DMA drop-flicker.
+    Once the flag has been observed True, a disk marker keeps it True forever —
+    the flag reading False for a single frame otherwise flips the goal (e.g. the
+    Steven-letter flicker flipped the goal between the Dewford sail and the
+    deep-cave letter). RISE-flicker protection (a spurious True must not
+    false-latch) lives in state.read_state for the future-event gate flags 0x333
+    /0x8B, which is where a single garbage read once wrote meteor_theft_done.
+    marker and skipped the theft. Mirrors _peeko_done."""
     if marker.exists():
         return True
     if bool(getattr(gs, attr, False)):
@@ -76,6 +141,62 @@ def _letter_done(gs) -> bool:
 
 def _devon_delivered(gs) -> bool:
     return _latched(gs, "flag_devon_goods_delivered", DEVON_DELIVERED_MARKER)
+
+
+def _rock_smash_taught(gs) -> bool:
+    """Latched 'a party mon knows Rock Smash'. party_moves reads empty on a DMA
+    flicker frame -> knows_rock_smash False -> teach_rock_smash re-fires and
+    hm_teach re-opens the bag/teach menu long after it was taught (a Route114
+    'Teach which POKeMON?' stall, 07-18). Once taught it never un-learns."""
+    return _latched(gs, "knows_rock_smash", ROCK_SMASH_TAUGHT_MARKER)
+
+
+THEFT_DONE_MARKER = config.MEMORY_DIR / "meteor_theft_done.marker"
+MTCHIMNEY_DONE_MARKER = config.MEMORY_DIR / "mtchimney_done.marker"
+
+
+def _theft_done(gs) -> bool:
+    """Latched Meteor Falls theft (FLAG_HIDE_ROUTE_112_TEAM_MAGMA, 0x333). The
+    whole Badge4 arc is split by this flag: the four pre-cable-car goals gate on
+    NOT done, the cable-car..Lavaridge goals gate on done. A single DMA-flicker
+    frame reading 0x333 False would re-fire meteor_falls_theft (cur-ungated) and
+    yank the agent back north — the reach_mauville<->deliver_devon flip mechanism.
+    Genuinely-True-once past event, so a disk latch is the correct discipline."""
+    return _latched(gs, "flag_route112_magma_cleared", THEFT_DONE_MARKER)
+
+
+def _mtchimney_done(gs) -> bool:
+    """Latched Mt.Chimney Team Magma defeat (FLAG_DEFEATED_EVIL_TEAM_MT_CHIMNEY,
+    0x8B). Gates the Jagged Pass descent + Lavaridge approach. Same DMA-flicker
+    discipline as _theft_done."""
+    return _latched(gs, "flag_mtchimney_magma_defeated", MTCHIMNEY_DONE_MARKER)
+
+
+def _in_route112_jagged_pocket(gs) -> bool:
+    """True when the player stands in Route112's SW pocket -- the component that
+    holds the JaggedPass landing warp, reached only by descending Jagged Pass.
+    Mirror of _in_route112_fiery_south. ride_cable_car goes silent here: the
+    pocket cannot reach the cable-car station on foot (a one-way ledge seals it),
+    so re-targeting the station from the pocket would strand the agent."""
+    if (getattr(gs, "map_group", None), getattr(gs, "map_num", None)) != _ROUTE112:
+        return False
+    try:
+        from . import map_data as _md
+        mc = _md.get_cache()
+        info = mc.get(*_ROUTE112)
+        if info is None:
+            return False
+        jagged = [
+            (w["x"], w["y"]) for w in (info.warps or [])
+            if "Jagged" in str(w.get("dest_map", ""))
+        ]
+        if not jagged:
+            return False
+        tile2cid, _ = mc._components(*_ROUTE112)
+        pocket_cid = tile2cid.get(jagged[0])
+        return pocket_cid is not None and tile2cid.get((gs.x, gs.y)) == pocket_cid
+    except (OSError, RuntimeError, KeyError, AttributeError):
+        return False
 
 
 _GOAL_ORDER_WEIGHT = {
@@ -147,6 +268,33 @@ _GOAL_BYPASS_VISITED = {
     "heal_at_slateport",
     # Mauville PC: re-targetable for every heal cycle through the Wattson gym.
     "heal_at_mauville",
+    # Fiery Path is a CROSSING, not a one-shot waypoint: FieryPath (24,14) gets
+    # marked visited the instant the agent steps in, but it must keep routing
+    # there (and back in on each pass) until it exits into Route112's NORTH
+    # blob. Without the bypass, one visit disabled fiery_path_cross and the
+    # agent fell to reach_fallarbor, oscillating Route111<->Route112 south.
+    "fiery_path_cross",
+    # Meteor Falls gets marked visited the instant the agent steps in, but the
+    # theft cutscene may not have fired yet (it's mid-room); keep re-targeting
+    # the event zone until FLAG 0x333 flips.
+    "meteor_falls_theft",
+    # Badge4 arc legs 3-6 + final. Each target map is marked visited on first
+    # entry, but a whiteout (Flannery beats a Grass lead) sends the agent back to
+    # re-board the cable car / re-descend / re-heal / re-fight until the badge is
+    # won, so all must stay re-targetable. exit_fiery_path_south is intentionally
+    # NOT here: it only fires when cur == FieryPath, where visited-suppression
+    # (target_map != cur) can't apply (same as exit_fiery_path_north).
+    "ride_cable_car", "mtchimney_defeat_magma", "descend_jagged_pass",
+    "heal_at_lavaridge", "lavaridge_gym_flannery", "reach_lavaridge",
+    # Flannery grind loop (H17): FieryPath (24,14) is marked visited the instant
+    # the agent steps in, but the grind goal must keep re-targeting it (and the
+    # cave floor pin) every heal cycle until the lead reaches the target level
+    # (the grind_granite_cave / fiery_path_cross bypass, mirrored).
+    "grind_fiery_path",
+    # The Mauville Mart is marked visited on first entry, but buy_potions must
+    # stay re-targetable to restock (a whiteout back to Mauville, or before the
+    # Flannery gym). field_heal_potion has target_map=None so it never needs it.
+    "buy_potions",
 }
 
 
@@ -501,7 +649,7 @@ class Goal:
             # whiteout point to Mauville so a gym faint is a short setback, not a
             # Dewford strand. Re-entering the gym resets the barrier puzzle, but
             # the live-collision + frontier-explore machinery re-solves it.
-            return (
+            wattson = (
                 _devon_delivered(gs)
                 and gs.badge_count < 3
                 and gs.party0_hp_frac < 0.5
@@ -509,6 +657,15 @@ class Goal:
                 # reach_mauville routes the agent back out -> bounce, never heals.
                 and cur in {(0, 2), (10, 0), (10, 5)}
             )
+            # NB: the Fiery grind's hurt-lead heal is NOT here. Routing to
+            # Mauville crosses Route111's boulder maze / desert-gate and the
+            # loop's multi-hop connection routing stalls there (2026-07-23 live).
+            # The grind heals at LAVARIDGE via the cable car instead — WARP
+            # routing (ride_cable_car -> Mt.Chimney -> descend -> reach_lavaridge
+            # -> heal_at_lavaridge), which is live-proven and avoids Route111. A
+            # hurt grind lead on Route112 cid12 falls through to ride_cable_car
+            # (cur-negative there); heal_at_lavaridge's grind gate does the rest.
+            return wattson
         if c == "mauville_gym_wattson":
             # At Mauville City or inside the Gym: route to / interact with
             # Wattson (5,2). Gated to those two maps so table-order selection
@@ -517,6 +674,297 @@ class Goal:
                 _devon_delivered(gs)
                 and gs.badge_count < 3
                 and cur in {(0, 2), (10, 0)}
+            )
+        # --- Lavaridge / Flannery (Badge 4) arc — docs/PLAN_lavaridge_flannery ---
+        # Segment 0: Rock Smash chain (Route111 north is gated by a BREAKABLE_ROCK).
+        if c == "get_rock_smash":
+            # Get HM06 from the Mauville House1 RockSmashDude (4,4). Retires once
+            # received (FLAG_RECEIVED_HM_ROCK_SMASH 0x6B). Existing nav + interact
+            # + dialog A-mash complete it; re-talk is idempotent (goto_if_set).
+            return (
+                gs.badge_count >= 3
+                and not gs.flag_badge04_get
+                and not gs.flag_rock_smash_hm
+            )
+        if c == "teach_rock_smash":
+            # HM06 received but no party member knows Rock Smash yet -> teach it.
+            # This is a bag/party UI SUB-TASK (target_map=None), driven by the VLM
+            # in hm_teach via the claude_heuristic hook. Retires when a party mon
+            # knows MOVE_ROCK_SMASH (249).
+            return (
+                gs.badge_count >= 3
+                and not gs.flag_badge04_get
+                and gs.flag_rock_smash_hm
+                and not _rock_smash_taught(gs)
+                and not gs.in_battle
+            )
+        if c == "smash_route111_rock":
+            # Know Rock Smash and standing on Route111 with the rock still a live
+            # object_event -> walk up and smash it (existing interact machinery;
+            # the YES/NO defaults to YES so the dialog A-mash confirms). The rock
+            # is FLAG_TEMP so it reappears on map reload -> re-fires + re-smashes
+            # (cost 0). (19,100) is the east-lane rock; the tip-guy at (19,101)
+            # vanished when HM06 was received (0x34B).
+            if not (
+                gs.knows_rock_smash
+                and gs.badge_count >= 3
+                and not gs.flag_badge04_get
+                and cur == (0, 26)
+            ):
+                return False
+            return any(
+                (nx, ny) == (19, 100)
+                for (nx, ny, _g) in getattr(gs, "npcs_on_map", []) or []
+            )
+        if c == "fiery_path_cross":
+            # On Route112 SOUTH, the only way to Fallarbor is across Fiery Path
+            # (the map graph can't route Route112->FieryPath->Route112, so
+            # reach_fallarbor + hop-fallback ping-pongs Route111<->Route112).
+            # Fire here to route to the Fiery Path warp; deactivates once we
+            # cross into the north blob (reach_fallarbor then takes over via
+            # Route111 north -> Route113). Same Badge4-arc gate as below.
+            return (
+                gs.badge_count >= 3
+                and not gs.flag_badge04_get
+                and not _theft_done(gs)
+                and _in_route112_fiery_south(gs)
+            )
+        if c == "exit_fiery_path_north":
+            # Inside Fiery Path: head to the NORTH warp pad regardless of which
+            # side we entered from. fiery_path_cross only got us IN (its
+            # condition needs Route112); once on the FieryPath map neither it nor
+            # reach_fallarbor fire, so the agent wandered (goal=None, 1243 turns,
+            # never reached the y4 exit). Deactivates the instant cur leaves
+            # FieryPath -> Route112 north is picked up by reach_fallarbor.
+            # Stateless + direction-agnostic = loop-safe. Same Badge4-arc gate.
+            return (
+                gs.badge_count >= 3
+                and not gs.flag_badge04_get
+                and not _theft_done(gs)
+                and (gs.map_group, gs.map_num) == _FIERY_PATH
+            )
+        if c == "reach_fallarbor":
+            # First leg of the Lavaridge arc: Mauville -> Route111 -> Route112
+            # SOUTH -> [fiery_path_cross routes across Fiery Path] -> Route112
+            # NORTH -> Route111 north -> Route113 -> Fallarbor. Route112 is one
+            # map split by Mt.Chimney into two blobs joined only by Fiery Path;
+            # the crossing is handled by the higher-priority fiery_path_cross
+            # goal, not the map graph. Gated to the pre-Fallarbor maps so
+            # meteor_falls_theft takes over once we're at/past Fallarbor.
+            return (
+                gs.badge_count >= 3
+                and not gs.flag_badge04_get
+                and not _theft_done(gs)
+                # (10,0)/(10,5) = the Mauville gym / PC we exit after Wattson.
+                and cur in {(0, 2), (10, 0), (10, 5), (0, 26), (0, 27), (0, 28)}
+            )
+        if c == "meteor_falls_theft":
+            # Badge4 arc leg 2. Once at/past Fallarbor (reach_fallarbor's
+            # cur-set no longer matches, so this takes over), Prof. Cozmo is at
+            # Meteor Falls studying the meteorite; Team Magma takes it and
+            # leaves. In Emerald this is a cutscene only (no battle here) that
+            # sets FLAG_HIDE_ROUTE_112_TEAM_MAGMA (0x333), clearing the grunt
+            # that blocks the Route112 cable car. Nav brings us into the event
+            # zone (target_pos); the A-mash dialog brain plays the cutscene.
+            # Retire is the flag flip, not reaching the tile. Ungated on cur so
+            # it stays live across Fallarbor / Route114 / Meteor Falls' rooms.
+            return (
+                gs.badge_count >= 3
+                and not gs.flag_badge04_get
+                and not _theft_done(gs)
+            )
+        if c == "exit_fiery_path_south":
+            # Post-theft mirror of exit_fiery_path_north. To reach the cable car
+            # (Route112's SOUTH blob, cid12) from the north the region nav routes
+            # us into Fiery Path via its north warp; once IN, walk to the SOUTH
+            # warp pad and drop into cid12. Neither ride_cable_car (needs to not
+            # be in Fiery) nor anything else routes the inner leg, so without this
+            # the agent ping-pongs on the north pad (the exit_fiery_path_north
+            # failure, mirrored). Direction chosen by _theft_done: pre-theft =
+            # north (to Fallarbor), post-theft = south (to the cable car).
+            return (
+                gs.badge_count >= 3
+                and not gs.flag_badge04_get
+                and _theft_done(gs)
+                and (gs.map_group, gs.map_num) == _FIERY_PATH
+            )
+        if c == "ride_cable_car":
+            # Badge4 arc leg 3: board the Route112 cable car (attendant interact)
+            # up to Mt.Chimney. Cur-NEGATIVE gated (not positive) + retires on
+            # badge04 (not 0x8B): a post-0x8B whiteout that sends us back to
+            # Mauville must re-board here, and a positive cur-set would go
+            # goal-less inside the Fallarbor PC etc. Silent on the Mt.Chimney
+            # side (24,12)/(19,1)/JaggedPass, in Lavaridge town (0,12) / its
+            # indoor group 4, and in the SW pocket (can't reach the station on
+            # foot) so we never re-target the station from a dead end.
+            return (
+                gs.badge_count >= 3
+                and not gs.flag_badge04_get
+                and _theft_done(gs)
+                and cur not in {(24, 12), (24, 13), (19, 1), (0, 12)}
+                and gs.map_group != 4
+                and not _in_route112_jagged_pocket(gs)
+            )
+        if c == "mtchimney_defeat_magma":
+            # Badge4 arc leg 4: at Mt.Chimney, beat Tabitha then Maxie (talk-
+            # trigger at (13,6)); the win sets FLAG_DEFEATED_EVIL_TEAM_MT_CHIMNEY
+            # (0x8B). Cur-ungated (like meteor_falls_theft); ride_cable_car sits
+            # above it and wins on the approach side, and goes silent on the
+            # Mt.Chimney maps so this wins there.
+            return (
+                gs.badge_count >= 3
+                and not gs.flag_badge04_get
+                and _theft_done(gs)
+                and not _mtchimney_done(gs)
+            )
+        if c == "descend_jagged_pass":
+            # Badge4 arc leg 5: descend Jagged Pass (foot path, ledges are all
+            # walls in the static collision) to Route112's SW pocket, the only
+            # on-foot approach to Lavaridge. Gated to the Mt.Chimney-side maps
+            # so it doesn't fire once we're already down in the pocket / town.
+            return (
+                gs.badge_count >= 3
+                and not gs.flag_badge04_get
+                and _mtchimney_done(gs)
+                and cur in {(24, 12), (19, 1), (24, 13)}
+            )
+        if c == "grind_fiery_path":
+            # H17 grind (Fiery Path CAVE — replaces the leaky JaggedPass grass).
+            # Root cause of the leak (live-pinned 07-22): the post-arrival wander
+            # is bfs_frontier_direction(prefer=nearest) = seek the nearest
+            # UNVISITED tile. Once cluster0's 10 grass tiles are all visited the
+            # frontier is ALWAYS outside the block (past the y=26 JUMP_SOUTH ledge
+            # row), so the wander systematically Down-vaulted out of the grass and
+            # drifted to the bottom funnel (71 turns, 2 wild battles). A CAVE has
+            # no such trap: Fiery Path's 272 floor tiles are all MB_CAVE (0x08)
+            # land-encounter with ZERO ledges, so wherever the frontier points the
+            # step still rolls a wild — grind_granite_cave's proven property. Both
+            # Fiery warps drop into Route112, single component, so any leak self-
+            # recovers (cur-set includes Route112). Gates mirror the old grind:
+            # under-level (< TARGET) + not-too-hurt (hp >= 0.4, complement of the
+            # heal goals). cur = FieryPath (grind at the pin) OR Route112 (region
+            # nav drives the entry: post-theft fiery_path_cross is disabled, so
+            # this goal owns Route112-south -> Fiery entry via target_map, exactly
+            # like fiery_path_cross). Listed ABOVE exit_fiery_path_south so the
+            # under-level lead grinds instead of exiting; at TARGET it yields and
+            # exit-south -> ride_cable_car -> descend -> reach_lavaridge -> gym
+            # carries the Flannery approach unchanged.
+            # cur-set = the Lavaridge heal loop only: FieryPath (grind at the
+            # pin), Route112 (entry + cable-car boarding), and the Lavaridge side
+            # (town/PC/gym) so an under-level lead that reached Lavaridge routes
+            # BACK toward Fiery instead of walking into the losing Flannery fight.
+            # Route111/Mauville are NOT here — the Mauville heal route stalls in
+            # Route111's boulder maze; the grind heals via the cable car up to
+            # Lavaridge (a hurt lead yields to ride_cable_car, not this goal).
+            return (
+                gs.badge_count >= 3
+                and not gs.flag_badge04_get
+                and _mtchimney_done(gs)
+                and gs.party0_level < FLANNERY_GRIND_TARGET_LEVEL
+                and gs.party0_hp_frac >= 0.4
+                # 0 damaging PP -> best_move_index=-1 -> the grind flees every
+                # wild forever. Yield to the cable-car heal (a PC refills PP).
+                # -1 (unreadable) is treated as "keep grinding".
+                and gs.party0_damaging_pp != 0
+                and cur in {
+                    _FIERY_PATH, _ROUTE112,
+                    (0, 12), (4, 5), (4, 1), (4, 2),
+                }
+            )
+        if c == "heal_at_lavaridge":
+            # Flannery (Fire) beats a Grass lead, so whiteout is realistic. One
+            # heal at the Lavaridge PC re-homes the whiteout point to Lavaridge,
+            # so a loss re-tries the gym locally instead of the long Mauville ->
+            # cable car -> Jagged loop (the Slateport/Mauville re-home strategy).
+            # (0,27) = the Route112 pocket, the grind loop's walk home: a hurt
+            # sub-target lead descends out of Jagged Pass (grind yields on hp,
+            # descend walks it down) and lands here, and must route on into the
+            # PC instead of going goal-less. South-blob (0,27) frames never
+            # reach this: ride_cable_car sits above and wins outside the pocket.
+            return (
+                gs.badge_count >= 3
+                and not gs.flag_badge04_get
+                and _mtchimney_done(gs)
+                and gs.party0_max_hp > 0
+                # hurt OR out of damaging PP (the Fiery grind heals here via the
+                # cable car — Route112->Route111->Mauville stalls in the boulder
+                # maze). PP0 must heal too: a full-HP/0-PP lead would otherwise
+                # walk into Flannery and lose. A PC visit refills HP and PP.
+                and (gs.party0_hp_frac < 0.5 or gs.party0_damaging_pp == 0)
+                and not gs.in_battle
+                and cur in {(0, 12), (0, 27), (4, 1), (4, 2), (4, 5)}
+            )
+        if c == "lavaridge_gym_flannery":
+            # Badge4 arc leg 6: beat Flannery (13,9) for FLAG_BADGE04_GET (0x86A).
+            # cur-set includes gym B1F (4,2): the hot-spring hole puzzle drops us
+            # to B1F mid-fight and the goal must persist (target 1F != cur there,
+            # so nav routes back up). Retire = raw badge04 (same as other gyms).
+            return (
+                gs.badge_count >= 3
+                and not gs.flag_badge04_get
+                and _mtchimney_done(gs)
+                and cur in {(0, 12), (4, 1), (4, 2)}
+            )
+        if c == "reach_lavaridge":
+            # Badge4 arc final leg: from the SW pocket, walk the left exit strip
+            # into Lavaridge. Cur-ungated but placed BELOW the gym goal (the
+            # mauville_gym_wattson-above-reach_mauville pattern) so inside the gym
+            # the gym goal wins; only in the pocket / en route does this drive.
+            return (
+                gs.badge_count >= 3
+                and not gs.flag_badge04_get
+                and _mtchimney_done(gs)
+            )
+        if c == "buy_potions":
+            # H14: before the Mt.Chimney Team Magma gauntlet (no PC, ~10-13 mons
+            # back-to-back), stock Super Potions at the Mauville Mart. Fire when
+            # heal items run low AND we can afford at least one (money -1 =
+            # unreadable still fires; only a confirmed 0..699 wallet stops it,
+            # since whiteout halves money and buying is the whole point). cur-set
+            # is Mauville + Route111/112 so it can pull the agent back from the
+            # arc approach, never from Fiery/Lavaridge. Retires when heal >= 6
+            # (bought) or the wallet drops below one Super Potion.
+            return (
+                gs.badge_count >= 3
+                and not gs.flag_badge04_get
+                and _theft_done(gs)
+                and not _mtchimney_done(gs)   # only pre-Magma; (0,27) is also the
+                # post-Jagged SW pocket, and post-0x8B whiteout re-homes to
+                # Lavaridge (heal_at_lavaridge), never Mauville -- so restocking
+                # there is unreachable and firing at the pocket would yank the
+                # agent all the way back to Mauville instead of into Lavaridge.
+                and gs.bag_heal_qty < 6
+                and not (0 <= gs.money < 700)
+                and cur in {(0, 2), (10, 5), (10, 7), (0, 26), (0, 27)}
+            )
+        if c == "field_heal_potion":
+            # H14: heal the lead with a Super Potion BETWEEN gauntlet trainers /
+            # in the Lavaridge gym (no PC on Mt.Chimney). Fires only with a
+            # restore in the bag (empty -> falls through to fight / PC heal, the
+            # anti-loop guard), out of battle, below 65% (so a full-HP entry
+            # survives Maxie's worst turn). target_map None = UI sub-task, like
+            # teach_rock_smash. Placed above mtchimney_defeat_magma / the gym goal.
+            return (
+                gs.badge_count >= 3
+                and not gs.flag_badge04_get
+                and gs.party0_max_hp > 0
+                # A fainted lead (hp 0) can't be Potion-revived — no Revive in
+                # bag. Without this guard, hp_frac 0.0 < 0.50 fired a doomed VLM
+                # Potion sub-task (~22 steps, always fails) every 25-turn
+                # cooldown and blocked the Jagged Pass descent to a PC (07-24
+                # deadlock). Let a faint fall through to the fight/descent so the
+                # loop reaches a PC (whiteout or on foot) and full-heals there.
+                and gs.party0_hp > 0
+                # 0.50 (was 0.80 for the now-cleared Maxie boss): on the Jagged
+                # Pass descent the lead takes constant chip damage, and firing at
+                # <80% churned — a heal sub-task after every trainer that barely
+                # dented it, each one pausing the descent. The Lavaridge PC
+                # (heal_at_lavaridge) tops the lead to full before Flannery, so
+                # here field_heal only needs to prevent a faint: fire on real dips.
+                and gs.party0_hp_frac < 0.50
+                and gs.bag_heal_qty > 0
+                and not gs.in_battle
+                and cur in {(24, 12), (24, 13), (4, 1), (4, 2)}
             )
         return False
 
@@ -767,6 +1215,169 @@ GOAL_TABLE: list[Goal] = [
         target_map=(0, 2),        # MauvilleCity (north via Route110 from Slateport)
         condition="reach_mauville",
         desc="Devon Goods 配達後: Route110 北上 → Mauville City 到達 (Wattson へ)",
+    ),
+    # --- Lavaridge / Flannery (Badge 4) arc — see docs/PLAN_lavaridge_flannery ---
+    # Segment 0: Rock Smash chain (before reach_fallarbor; flag-serialized).
+    Goal(
+        name="get_rock_smash",
+        target_map=(10, 2),       # MauvilleCity_House1
+        target_pos=(4, 4),        # RockSmashDude — interact to receive HM06
+        condition="get_rock_smash",
+        desc="Route111 の岩用に Mauville House1 (4,4) で HM06 Rock Smash 受領",
+    ),
+    Goal(
+        name="teach_rock_smash",
+        target_map=None,          # UI sub-task, not a nav goal (hm_teach via VLM)
+        condition="teach_rock_smash",
+        desc="HM06 を Poochyena に教える (bag/party UI, VLM 委譲)",
+    ),
+    Goal(
+        # H14: stock Super Potions at the Mauville Mart before the Mt.Chimney
+        # gauntlet. target_pos (2,3) = the counter tile in front of the clerk
+        # (1,3); the interact machinery stands the agent at (3,3) and faces Left
+        # + A over the MB_COUNTER (nurse-counter geometry). The shop VLM sub-task
+        # takes over on arrival.
+        name="buy_potions",
+        target_map=(10, 7),       # MauvilleCity_Mart
+        target_pos=(2, 3),
+        condition="buy_potions",
+        desc="Mt.Chimney gauntlet 用に Mauville Mart で Super Potion 購入 (VLM shop)",
+    ),
+    Goal(
+        name="smash_route111_rock",
+        target_map=(0, 26),       # Route111
+        target_pos=(19, 100),     # east-lane BREAKABLE_ROCK (approach from (19,101))
+        condition="smash_route111_rock",
+        desc="Route111 (19,100) の岩を Rock Smash で砕いて北へ",
+    ),
+    Goal(
+        # Higher priority than reach_fallarbor: on Route112 south, cross Fiery
+        # Path first (the map graph can't route the two-Route112 crossing).
+        name="fiery_path_cross",
+        target_map=(24, 14),      # FieryPath (region nav routes to the in-blob warp)
+        condition="fiery_path_cross",
+        desc="Route112 南で Fiery Path を横断して北 blob へ (Fallarbor 手前)",
+    ),
+    Goal(
+        # Inner leg of the crossing: once IN Fiery Path, walk to the north warp
+        # pad (min-y Fiery->Route112 warp, canon-walkable step-on pad) and warp
+        # out into Route112's north blob.
+        name="exit_fiery_path_north",
+        target_map=(24, 14),      # FieryPath
+        target_pos=(26, 4),       # north warp pad (step-on; BFS lands + warps)
+        condition="exit_fiery_path_north",
+        desc="Fiery Path 内: 北 warp (26,4) を踏んで Route112 北 blob へ抜ける",
+    ),
+    Goal(
+        name="reach_fallarbor",
+        target_map=(0, 13),       # FallarborTown (via Route111->112->[FieryPath]->113)
+        condition="reach_fallarbor",
+        desc="Badge4 arc leg1: Mauville→Route112(Fiery Path横断)→Route113→Fallarbor",
+    ),
+    Goal(
+        # Badge4 arc leg2: enter Meteor Falls (Route114 warp (8,63)→ land ~
+        # (27,18)) and walk WEST along the y=18 corridor. The theft is a single
+        # coord_event at (14,18) (MagmaStealsMeteoriteScene, VAR_METEOR_FALLS_
+        # STATE==0) that fires on STEP-ON, not on A. target_pos is (13,18), the
+        # trigger's WEST neighbour: the interact machinery adds the target's
+        # neighbours to the BFS set, so approaching from the east it stops on
+        # (14,18) (the nearest set member) — a guaranteed step onto the trigger.
+        # Targeting (14,18) itself would stop one tile EAST (15,18) and A-mash
+        # without stepping on. Cutscene sets FLAG_HIDE_ROUTE_112_TEAM_MAGMA
+        # (0x333), which retires the goal and clears the cable-car grunt.
+        name="meteor_falls_theft",
+        target_map=(24, 0),       # MeteorFalls1F1R
+        target_pos=(13, 18),
+        condition="meteor_falls_theft",
+        desc="Badge4 arc leg2: Meteor Falls (14,18) coord_event で隕石強奪 (0x333 set)",
+    ),
+    Goal(
+        # H17 grind (Fiery Path — replaces the leaky Jagged Pass grass grind).
+        # JaggedPass cluster0's y=26 edge is a full JUMP_SOUTH ledge row; the
+        # frontier-explore wander (bfs_frontier_direction, prefer=nearest) seeks
+        # the nearest UNVISITED tile, which after a few turns is always OUTSIDE
+        # the 10-tile grass block (beyond the ledge), so it systematically Down-
+        # vaulted out of the grass and drifted to the bottom funnel (live: 71
+        # turns, 2 wild battles). Fiery Path is a CAVE: all 272 floor tiles are
+        # MB_CAVE (0x08) land-encounter, ZERO ledges, both warps -> Route112, a
+        # single walk component — so the frontier wander stays on the encounter
+        # floor and rolls a wild EVERY step, exactly like grind_granite_cave
+        # (the Badge2 grind that worked). Pin (26,23): canon cave floor, all 4
+        # neighbours 0x08 walkable, 13 steps from the south warp, >=17 from any
+        # Strength boulder. Placed ABOVE exit_fiery_path_south so an under-level
+        # lead grinds instead of exiting; post-theft fiery_path_cross is disabled
+        # so this goal ALSO drives Route112 -> Fiery entry (target_map region nav
+        # to the in-blob warp, like fiery_path_cross). At L48 it yields and the
+        # existing exit-south -> cable car -> Mt.Chimney -> Lavaridge chain
+        # carries the Flannery approach; a hurt lead (hp<0.4) yields to the heal
+        # goals. Gen3 has no over-level XP penalty so L14-16 wilds pay full XP.
+        name="grind_fiery_path",
+        target_map=(24, 14),      # FieryPath (region nav routes to in-blob warp)
+        target_pos=(26, 23),      # cave-floor interior pin (all-0x08 neighbours)
+        condition="grind_fiery_path",
+        desc="Sceptile < L48 → Fiery Path 洞窟 (26,23) で野生戦 grind → Flannery",
+    ),
+    Goal(
+        # Inner leg of the southbound Fiery re-cross (post-theft): once IN Fiery
+        # Path, walk to the SOUTH warp pad and drop into Route112's cid12 (cable
+        # car blob). Mirror of exit_fiery_path_north.
+        name="exit_fiery_path_south",
+        target_map=(24, 14),      # FieryPath
+        target_pos=(26, 36),      # south warp pad -> Route112 (11,36) cid12
+        condition="exit_fiery_path_south",
+        desc="Fiery Path 内(post-theft): 南 warp (26,36) で Route112 南 blob へ抜ける",
+    ),
+    Goal(
+        name="ride_cable_car",
+        target_map=(19, 0),       # Route112_CableCarStation
+        target_pos=(6, 6),        # attendant NPC (interact -> YES -> ride)
+        condition="ride_cable_car",
+        desc="Badge4 arc leg3: Route112 cable car で Mt.Chimney へ",
+    ),
+    Goal(
+        # H14: heal the lead between gauntlet trainers (Mt.Chimney has no PC).
+        # target_map None = VLM UI sub-task (field_heal.py), like teach_rock_smash.
+        # Placed above mtchimney_defeat_magma so a low-HP frame heals before the
+        # next trainer, and above the Lavaridge gym goal so it heals in-place
+        # rather than leaving to the PC (which resets the hot-spring puzzle).
+        name="field_heal_potion",
+        target_map=None,
+        condition="field_heal_potion",
+        desc="戦間に Super Potion で lead 回復 (Mt.Chimney gauntlet / Lavaridge gym)",
+    ),
+    Goal(
+        name="mtchimney_defeat_magma",
+        target_map=(24, 12),      # MtChimney
+        target_pos=(13, 6),       # Maxie (Tabitha/grunts en route) -> 0x8B
+        condition="mtchimney_defeat_magma",
+        desc="Badge4 arc leg4: Mt.Chimney で Tabitha+Maxie 撃破 (0x8B set)",
+    ),
+    Goal(
+        name="descend_jagged_pass",
+        target_map=(24, 13),      # JaggedPass
+        target_pos=(14, 40),      # bottom warp pad -> Route112 SW pocket (6,46)
+        condition="descend_jagged_pass",
+        desc="Badge4 arc leg5: Jagged Pass 降下 → Route112 SW pocket",
+    ),
+    Goal(
+        name="heal_at_lavaridge",
+        target_map=(4, 5),        # LavaridgeTown_PokemonCenter_1F
+        target_pos=(7, 3),        # nurse counter (stand (7,4), Up+A). Re-homes whiteout
+        condition="heal_at_lavaridge",
+        desc="Lavaridge PC で heal (whiteout 先を Lavaridge に固定、Flannery 敗北 loop 対策)",
+    ),
+    Goal(
+        name="lavaridge_gym_flannery",
+        target_map=(4, 1),        # LavaridgeTown_Gym_1F
+        target_pos=(13, 9),       # Flannery -> FLAG_BADGE04_GET (0x86A)
+        condition="lavaridge_gym_flannery",
+        desc="Badge4 arc leg6: Lavaridge Gym Flannery 撃破 (Heat Badge)",
+    ),
+    Goal(
+        name="reach_lavaridge",
+        target_map=(0, 12),       # LavaridgeTown (from SW pocket left strip)
+        condition="reach_lavaridge",
+        desc="Badge4 arc: SW pocket → LavaridgeTown (gym approach)",
     ),
 ]
 

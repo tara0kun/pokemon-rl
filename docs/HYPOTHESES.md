@@ -3,6 +3,103 @@
 > Last verified: 2026-07-06。各仮説に「これを実行してこうなれば棄却」を付す。
 > 実行前に RESUME.md で現在地を確認。診断の第一手は常に `logs/decisions_*.jsonl` の grep。
 
+## H17. Lavaridge PC の nurse counter から退出できず ~28 turn 空回り — ⚠️ OPEN (2026-07-24、低優先・自己解消する)
+
+**症状**: `heal_at_lavaridge` で PC (4,5) の nurse (7,3) に (7,4) から Up+A で回復後、goal が
+`grind_fiery_path` に切替わっても、char が counter (7,4) に居座り退出できない。log 実測
+(decisions_20260724T150506, turn 111-138): 全 turn (4,5)(7,4)、`dialog_visible:A` と
+`hidden_battle_probe:A@streak=N`(N=8→30) を交互。**turn 139 で自己解消**(streak≥30 で
+hidden_battle_probe が停止→mapbfs の Down が dialog なし frame で通り退出)。
+
+**真因(推定)**: 回復後も nurse の closing dialog が残る/A で「回復しますか?」を再誘発 →
+`dialog_visible` 検出が A を優先し、mapbfs の Down(退出)が dialog に食われる。streak<30 の間
+hidden_battle_probe(A,A,A,B)が A を押し続けて dialog を再点火するので、streak が 30 に達して
+probe が止むまで抜けられない。**~28 turn(~3分)の一過性 stall**で自己解消するため blocker で
+ないが、faint→heal を繰り返すと毎回発生し非効率。
+
+**棄却条件**: heal 後 counter(7,4)で `goal != heal_at_lavaridge` かつ dialog 検出時、A でなく
+退出方向(Down)を優先する gate を入れて、heal→退出が 5 turn 以内で完了すれば解決。関連:
+[[menu-automation]]、GOTCHAS の nurse counter 記述。**Flannery 戦で faint→Lavaridge heal が
+頻発するなら優先度を上げる**。
+
+## H14. Mt.Chimney の Team Magma ガントレットで弱パーティが whiteout ループ — ⚠️ OPEN (2026-07-18、現行 blocker)
+
+**症状**: Lavaridge arc の nav/goal/latch は全て機能し、agent は elevation fix 後に
+Route114→Meteor Falls→theft(0x333)→cable car 乗車→Mt.Chimney まで **live で到達**。だが
+`mtchimney_defeat_magma`(Tabitha+grunts+Maxie)で敗北 → **Mauville(0,2)へ whiteout →
+arc 全行程(700+ turn)を再ナビ → また敗北**の無限ループ。
+
+**真因(実測)**: party = **Sceptile L40 単騎 + dead-weight 4匹**(Poochyena/Mightyena×3 +
+Lotad、全て Tackle/Bite/Absorb)。Sceptile の moves は Rock Smash/Leer/**Crunch(80)**/Quick
+Attack で **強 Grass STAB(Leaf Blade)を失っている**。pokeballs=0、回復アイテム=0。
+Mt.Chimney は PC 無し・trainer 連戦(7-8匹)を**回復なし**で抜ける必要があり、131 HP の
+Sceptile 単騎では総被弾に attrition 負け(特に Maxie の Camerupt=Fire で Sceptile 2x 被弾)。
+whiteout 先は最後の PC=Mauville(heal_at_lavaridge は 0x8B gate で circular、到達前は効かない)。
+
+**これは nav でなく戦力の問題**。arc の infra(H13 elevation, false-latch guard ×2, goal
+chain)は完成・検証済で、ここが唯一の残 blocker。
+
+**対策候補(要方針決定)**:
+1. **回復アイテム**: Mart で Potion/Super Potion を購入 → Magma 連戦の間に使用。
+   → **shopping 機構**(Mart で買う)+ **battle 中 item 使用**の2新機能が要る。連戦 attrition の
+   直接対処。最有力だが実装量中。
+2. **Water 捕獲**: Route111/117 等で Marill 捕獲 → Azumarill(Water、Camerupt=Fire/Ground に
+   4x)。→ pokeballs 購入(shopping)+ catch 機構 + 育成。Flannery(炎)にも有効。実装量大。
+3. **Sceptile grind**: L40→L50+ で bulk 増。既存 grind 機構で可能だが、回復なし連戦の
+   attrition は level では根本解決しない(HP 上限が上がるだけ)。補助的。
+4. **Leaf Blade 再習得** + dead-weight を sacrifice 順に配置(fodder で Sceptile の HP 温存)。
+   party 並べ替え + move 管理 + 交代戦術 = battle-handling 拡張。
+
+**推奨**: (1) shopping + Potion 使用が連戦 attrition への最短対処。捕獲(2)は Flannery も
+見据えるなら並行価値大。まず shopping 機構(Mart 入店→Poke Mart 店員 interact→購入 UI)を
+実装し、Potion を数個買って Magma 戦・Flannery 戦を回復で支える。
+
+## H13. overworld の elevation-barrier を BFS が越えられず徘徊 — ✅ RESOLVED (2026-07-18)
+
+**解決**: architect が per-tileset behavior loading(secondary tileset の
+metatile_attributes を per-map で正しくロード、Route114 ledge 0→51)+ game-accurate な
+elevation-carry BFS((x,y,carried_e) state、0=transition/15=bridge)を実装。**live 検証**:
+Route114 を dist 123→42 で両方向 traverse、標高境界を合法地点で越え Meteor Falls 到達。
+commit 4c601aa1b。詳細は daily 2026-07-18。以下は解決前の記録。
+
+**症状**: Route114 で agent が (21,57) から南進不可。BFS は Down(→(21,58))を出し続けるが
+game-block で動けず、`front_blocked_pivot` と `hidden_battle_probe`(A)を交互に ~130 turn、
+最後は北へ逃げて warp(8,63、南)から遠ざかる。decisions trace で goal は一貫
+meteor_falls_theft、mapbfs dest も MeteorFalls のみ（**oscillation ではない**、H12/badge
+修正で goal flicker は根治済）。
+
+**真因（実測確定）**: **elevation 差**。(21,57)=elev3 / (21,58)=elev4。map.bin collision は
+両方 0(walkable)で標高を encode しない。map_knowledge: Route114 **ledges=0**（未検出）だが
+`tile_elevation` は 3200 tiles populated。→ ledge でなく **elevation が壁**。
+
+**なぜ BFS が越える**: `bfs_to_tile`(map_data.py:350-355)の **elevation-mismatch check が
+意図的に無効化**。コメント曰く「28 fix で入れ、31 fix(behavior-based grass)で無効化。
+canon-walkable な **elev 3→1** 遷移が実在するため。(24,16) Down 200-fail の empirical
+direction-edge accumulation が実 blocked 遷移を処理する」。→ empirical 頼みだが、
+pocket の2タイル(21,57)/(22,57)に fail が分散して 200-fail(または 30-fail の 3-blocked)
+閾値に達せず、脱出が極めて遅い/不安定。
+
+**難所**: 単純な「異なる非ゼロ標高間ブロック」ルールは、コメントの canon-walkable な
+elev 3→1 を over-block し既存 traversal を壊す（badge3 まで到達した経路が動かなくなる）。
+Emerald の elevation セマンティクス（elev 0 = transition/inherit、15 = multi-level、
+tileset 依存の behavior）を踏まえ、**どの遷移が本物の壁か data 由来のノイズか**を
+判別する必要がある。
+
+**次の一手（棄却/確定条件付き）**:
+1. まず反証: (21,57)→(21,58) が本当に elevation で不可か、制御タップで確認
+   （Down 連打で動かない ↔ 別ルートなら動く）。→ elevation 説の確定。
+2. Emerald 正ルール `blocked if cur_e!=0 and next_e!=0 and cur_e!=next_e` を bfs に
+   **試験的に**再有効化し、**offline で既存踏破済みの複数 map（Route104/110/116/Fiery/
+   Route112）の代表 start→goal が依然 path を返すか**を一括検証（返さなくなる map が
+   あれば over-block 確定 → tileset 依存の elevation-data 精度が真因）。
+3. over-block するなら architect にて: (a) tileset ごとの正しい elevation/behavior ロード
+   （map_knowledge の primary_general+secondary_rustboro 全 map 適用を修正）、または
+   (b) elev-0/15 を transition として許容する緩和ルール + empirical の per-edge 学習を
+   高速化（front_blocked 即時 edge 記録）。
+- **これが直れば Lavaridge arc goal chain（実装・offline 検証済）を live で
+  theft→cable car→…→Flannery まで通し検証できる。** それまで agent は overworld route を
+  確実には traverse できない。
+
 ## H1. Dewford Town で Gym door 手前振動 — ✅ RESOLVED (2026-07-06)
 
 **症状(だった)**: agent が (6-7,18-19) で振動し、door approach (8,18) → door (8,17) の最終ステップに乗れない。mapbfs の dist が 2→4 に増える。
@@ -85,6 +182,161 @@ Route109 上陸 → SlateportCity (0,1) 北上 → Devon Goods を Capt.Stern �
 自動生成タスクの Codex 実装が gate 不合格になりやすい(RESUME.md 未解決#3)。
 - **H5a: タスク粒度が大きすぎる** — 対処: task_gen に「単一関数+テスト」粒度を強制、`--allow-path` を 1-2 ファイルに絞る。
 - **H5b: ゲートが厳しすぎる**(diff 上限・dirty 判定) — 検証: 直近 fail の GateReport を集計し、落ちた理由の分布を見る。hard_hits でなく diff_lines 超過が多数なら上限調整の余地。
+
+## H7. ダブル交代修正が tag battle で誤発火する(未検証・Badge7 まで無害)
+
+07-16 の `double_battle_needs_send_out` は「自分の battler slot = 0/2」を前提にしている。
+これは通常のダブル戦では正しいが、**tag battle(Mossdeep の Steven 同行戦)では slot 2 は
+パートナーのポケモン**で、倒れても交代を選ぶのは相手側。誤って SEND_OUT_SEQ を出しうる
+= 修正前の A 連打では起きなかった**新規リスク**(verifier 指摘 07-16)。
+
+- 想定ガード: `gBattleTypeFlags` の **BATTLE_TYPE_INGAME_PARTNER = 1<<20 (0x100000)** を
+  見て、立っていたら slot 2 を自分の battler として扱わない。
+- **ただしこのビット値は未実測**。該当戦闘は Badge 7 相当で遠く、当面発火しない。
+  ライブで tag battle に入る前に、`battle_flags` を実測してから実装すること
+  (実測なしにビットを埋め込むのは「知らない値の捏造」)。
+- 検証方法: Mossdeep 到達時に tag battle 中の `battle_flags` を dump → 0x100000 が立つか確認。
+
+## H8. SEND_OUT_SEQ の double パーティ画面での決定性(部分検証のみ)
+
+`SEND_OUT_SEQ = ("A","B","Down","A","A")` のコメント(claude_heuristic.py:800-817)は
+**シングル配置前提**で書かれている(「Down で瀕死の先頭から健康な個体へ」)。double の
+パーティ画面は 2 列レイアウトで異なる。07-16 の実測では 10 押し(= 5押し×2サイクル)で
+交代成立 = **1 サイクル目は外して 2 サイクル目で決まった可能性が高い**。
+queue が空になるたび再充填されるので self-syncing に働くが、**決定論的に外し続ける
+カーソル配置があれば新たな無限ループになる**(verifier 指摘)。
+
+- 検証方法: 次にダブル戦でひんしが出たら `logs/decisions_<session>.jsonl` の src 分布を見て、
+  send_out が何押しで抜けたかを複数サンプル集める。10 押しを大きく超えるケースが出たら
+  レイアウト対応(Down だけでなく Right も混ぜる等)を検討。
+
+## H9. HM-teach は VLM でなく決定論 RAM 駆動にすべき(2026-07-16 実機検証)
+
+teach_rock_smash が繰り返し失敗(前セッション 53/59 turn 費やし knows_rs=False)。
+1ステップずつ実機観察して真因を2つ特定:
+1. **VLM がメニューが開いているのに Start を再出力 → メニューが閉じる**。以降ずっと
+   overworld なのに VLM は「party 画面」と幻覚して Down/A を空打ち。→ cb2 guard で修正済
+   (overworld なら Start で開く / メニュー中は Start 禁止、hm_teach.py)。
+2. **修正後も VLM は 240x160 の GBA メニューを読めない**。reason が幻覚だらけ
+   ("CRY OF SHADOWISH"、"Nuzleaf Shroomish"、"VU meter")。カーソル位置も画面種別も
+   当てずっぽう。**この精密メニュー操作に VLM は根本的に不向き** ← **2026-07-17 一部訂正(下記)**。
+
+### ★ 2026-07-17 訂正: 「VLM が読めない」は画像が原因だった([[vlm-image-resolution]])
+真因は VLM の能力でなく、送っていた画像が **240x160 の q70 JPEG** で潰れていたこと。
+`preprocess` を **拡大3x(nearest)+PNG** に変えたら(commit d5ae95e20)、Haiku ですら
+bag/party/context を正読するようになった。teach 経路(rescue_brain._call_haiku)の replay:
+- **読解 hallucination は解消**。onrs/ctx/party3/plist2 で正しい画面認識・判断。
+- **プロンプトに移動知識**(party 左→右は Right、CLOSE BAG から Up 等)を足して party3(YES→A)
+  と plist2(Grovyle 回避 Right)も修正。
+- **残存**: bagp(cursor=CLOSE BAG)で「ROCK SMASH が選択中」と**期待バイアスの誤認**。
+  → 曖昧なカーソル状態では VLM はまだ取りこぼす。self-correcting ループ(誤押下→bag 閉→
+  cb2 で再オープン)が吸収するが、**精密な一度きり操作は決定論(下記)の方が依然安全**。
+
+**結論の更新**: 「VLM は精密操作に不向き」は言い過ぎ。正しくは「**読解は画像修正で解決。
+精密な固定操作は VLM 単独より VLM+RAM検証/決定論のハイブリッドが確実**」。VLM の真価は
+ambiguous/一般判断(navigate/rescue)側。次はそこを再測定(task #2)。
+
+### ★ 実機で手動完遂した検証済み決定論シーケンス(これを hm_teach に焼くべき)
+- **最重要教訓: 単発・遅め(frames≈10-12, sleep≈0.6s)なら入力は確実。速い連打はアニメ中に
+  落ちる**(Up×8 を高速で送ると SAVE で止まる=途中欠落)。
+- 経路: overworld→`Start`→(遅い `Up`×8 で最上段 POKéDEX)→`Down`×2→`BAG`→`A`
+- bag pocket: **Right/Left は「カーソルがリスト内(CLOSE BAG 以外)」の時だけ pocket 切替**。
+  bag は最後の pocket を記憶。TMs&HMs 到達は要 pocket-index RAM 特定(未了、下記 TODO)
+- TMHM pocket の中身は **SB1+0x690**(ItemSlot[64], {u16 id, u16 qty_enc})。HM06=item 344。
+  実機では index 5(TM08,TM34,TM39,TM47,HM05,HM06)。RAM で HM06 の index を求めてカーソル移動
+- HM06 で `A`→context menu **USE**(既定・左上)→`A`
+- ダイアログ3枚: `A`×3("Booted up an HM." / "It contained ROCK SMASH." / "Teach to POKéMON? YES")
+- party list: **cursor slot = RAM 0x0203CED1**(実測: Right で 0→1、Down で 1→2、唯一変化したバイト)。
+  slot0=Grovyle(選ぶな) / slot1-3=Poochyena(ABLE!,空き技枠→即習得) / slot4=Lotad(NOT ABLE!)。
+  **slot0→slot1 は Right**(Down は別枠/CANCEL 方向)。目標 slot に置いて `A`
+- 成功判定: `knows_rock_smash`(move 249 が party のどれかに存在)を複数回読み(flicker 対策)
+
+### 未了 TODO(socket を止められる時に)
+- **bag pocket-index の RAM アドレス特定**(party cursor と同じ read_range diff 法で)。
+  これが取れれば TMs&HMs へ決定論的に到達でき、full 決定論 teach が完成する
+- 完成後の live テストは「次の HM(Strength/Surf 等)」でのみ可能(Rock Smash は習得済で
+  run_teach_subtask が即 True を返すため再テスト不可)
+
+## H10. connections clobber → Fallarbor 直通不可(2026-07-17 ✅ RESOLVED A+B+C1)
+
+8000turn 完走で Route112(26,44)に 5595turn stuck。真因 = `map_data` が connections を
+`dict[direction]` に変換していたため、Route111 の **left 接続2つ**(Route113 offset0 /
+Route112 offset20)のうち **Route113 が Route112 に上書きされて消失** → BFS が
+Route111→Route113→Fallarbor 直通を知らず遠回りで詰まった。
+
+- **Part A(123cb3073)**: `dict[str, list[dict]]` に変更。全 518 map 監査で clobber は
+  Route111 left / Route124 right の 2 件のみ(Route124 は post-Surf で顕在化)。
+- **Part B(7be859742)**: A 単独は Route111 南で regression(Route113 strip は sandstorm
+  trigger で南から封鎖)。map_path の最短 hop が「connection-lie(Route112→Route113 up=
+  全壁)」や「南から封鎖」の時、hop-probe(permanent+trigger のみ block した BFS)で
+  ban して re-plan。
+- **Part C1**: A+B だけだと Route111⇄Route112 ping-pong(map graph が Route112→FieryPath→
+  Route112 の再入不能)。`fiery_path_cross` goal で Route112 南 blob(高y Fiery warp と同
+  component)から Fiery Path 横断を明示。
+- **検証済み全区間**(offline BFS): Route111南→(left y66-71)Route112南→[Fiery Path]→
+  Route112北→(right)Route111北(y28-31)→(left y7-10)Route113→Fallarbor。
+- **残 follow-up**: C2(region graph に connection edge 追加, Segment3 の Lavaridge SW
+  pocket で必要) / Route124 clobber の live 確認(Badge7 頃)。
+
+## H11. VLM 画面分類 >> pixel heuristic(screen_features)(2026-07-17 実測、Option1 task#2)
+
+拡大PNG化([[vlm-image-resolution]])後、脆い `screen_features`(白比率)を VLM で置換できるか
+実測。ground-truth 5 フレームで比較(同一 Haiku 経路):
+
+| frame | 正解 | screen_features | VLM |
+|---|---|---|---|
+| Pokedex list | MENU | **battle_menu=True(誤)** | region_map/pokedex ✓ |
+| region map | MENU | all False(誤) | region_map/pokedex ✓ |
+| double戦 party選択 | BATTLE | all False(誤) | party_select ✓ |
+| 戦闘前 dialog | BATTLE | letter_entry(誤) | pre-battle dialog ✓ |
+| overworld(PC内) | OVERWORLD | **dialog=True(誤)** | overworld ✓ |
+
+**VLM 5/5 正解 vs screen_features 1/5**。`battle_menu` false-positive(Pokedex)がまさに
+4000turn stall の元凶で、その対策に入れた cb2-guard + ram_battle_recent + menu-CB2 hardcode
+(0x080BB775)は全部この脆い heuristic を patch していたもの。
+
+**移行方針(patch tower 脱却)**: screen_features を毎ターン VLM 置換はコスト不可($0.0005/call ×
+数千turn)。正しくは **FrameCache(frame_hash)でキャッシュした VLM 分類を tiebreaker** に使う:
+pixel heuristic と RAM が食い違う時(例: battle_menu=True かつ in_battle stale)だけ VLM に
+「これは本当に battle か?」を確認させる。稀 & キャッシュ効くのでコスト無視でき、hardcode CB2
+群を一般解に置換できる。H-cb2(battle CB2 whitelist)も VLM tiebreaker で代替可能。
+→ **次の実装候補**(hot loop に VLM を差すのでコスト設計を user 確認してから)。
+
+## H12. Mauville⇄Route111 南バウンス(2026-07-17 ✅ RESOLVED)
+
+**真因 = 1行の変数 shadowing**(commit ad13077c5)。heuristic_button の main BFS 内に
+`from . import map_knowledge as mk_mod` のローカル import があり、mk_mod が関数全体で
+ローカル変数化。前方の Part B probe が mk_mod 参照で UnboundLocalError → `except: _seal=set()`
+で seal 空 → sandstorm 壁を見ず Route113(封鎖)を reachable と誤判定 → ban せず →
+main BFS が封鎖 Route113 strip を狙って None → path_memory fallback が Mauville へ戻す。
+NAV_DEBUG live trace で seal=0 を捕捉して確定。修正後 seal=10, Route113 ban, next=Route112(bfs=91)。
+
+
+回復パーティが Fallarbor へ向かえず Mauville⇄Route111 南(y130-139)で往復。全修正
+(nav A+B+C1 / wild-faint / VLM tiebreaker / badge latch)込みでも継続。
+
+**切り分け済み(全部 offline で反証)**:
+- tile_map 汚染: 否定(Route111 は 3+blocked が 4 タイルのみ)
+- blocked set: seal/water/warps/**elevation/ledges 全部込みでも BFS は Route112 strip
+  (0,66-71)に到達(dist 89、start (19,130)/(133)/(137) 全部 reach)
+- Part B probe: offline は (19,133) 等から正しく Route113 のみ ban、chain=[Route112,
+  Route113, Fallarbor]
+- **FRESH path_memory + tile_map で実 `heuristic_button` を呼ぶと Up(北・正解)を返す**
+  (reward_pick:Up@north_outdoor 経由)。→ **live の path_memory バウンス履歴が
+  toward_exit:Down / path_memory_exit:Down を自己強化**して南へ引く
+
+**未解明(offline 再現不能・live instrumentation 要)**:
+- live turn4 で `mapbfs:Down->MauvilleCity` = probe が **Route112 も** ban(offline は
+  しない)。両 hop ban で map_path が MauvilleCity(南)を最短に選ぶ。live/offline の
+  probe 差の原因が不明(seal は canon 10 triggers で一致するはず)
+- primary mapbfs が大半の turn で何も返さず fallback(path_memory→reward_pick)に落ちる
+
+**次の一手**: heuristic_button の mapbfs block に env-gate した debug print を足し
+(map_path chain / banned_hops / target_tiles / bfs_path を Route111 で dump)、1 run で
+live の probe が何を ban しているか・BFS が何故 None かを確定する。その上で
+(a) probe の live/offline 差を潰す or (b) path_memory fallback に anti-bounce
+(直前 map へ戻る exit を抑制)を入れる。**reward_pick は正しく北を指すので、
+path_memory が南を強制しなければ抜けられる**はず。
 
 ## 記録規則
 
