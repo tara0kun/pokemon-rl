@@ -709,10 +709,30 @@ class Goal:
             # is FLAG_TEMP so it reappears on map reload -> re-fires + re-smashes
             # (cost 0). (19,100) is the east-lane rock; the tip-guy at (19,101)
             # vanished when HM06 was received (0x34B).
+            #
+            # NO badge04 retire-gate (removed 2026-07-26, live-pinned): the rock
+            # respawns on every map load, and the static cache marks (19,100)
+            # WALKABLE, so BFS plans straight through it — the SOUTHBOUND
+            # Lavaridge->Mauville leg (reach_mauville_b5) wedged at (16-19,
+            # 99-100) for 255 turns because `not flag_badge04_get` silenced
+            # this goal after the badge (the heal_at_lavaridge badge04-gate bug
+            # class). Smashing is direction-agnostic: the interact machinery
+            # routes to the nearest walkable neighbour ((19,99) from the north,
+            # (19,101) from the south) and face+A's. The npcs_on_map presence
+            # check below is the real scope gate — object events only populate
+            # near the rock, and once smashed it leaves the list and the goal
+            # retires for the rest of the map session.
+            # NB: canon has a SECOND rock at (18,101) (FLAG_TEMP_11), staggered
+            # diagonally across the 2-wide choke — that's why the wedge was
+            # total (x=19 lane blocked at y100, x=18 lane at y101). It is NOT
+            # targeted: BFS's shortest lane is x=19 (live: toward_exit Down->
+            # (19,139)), which one smash of (19,100) fully opens in both
+            # directions (northbound live-proven with the same single smash),
+            # and an x=18 bump self-recovers via npc_avoid once (19,100) is
+            # clear.
             if not (
                 gs.knows_rock_smash
                 and gs.badge_count >= 3
-                and not gs.flag_badge04_get
                 and cur == (0, 26)
             ):
                 return False
@@ -1291,9 +1311,12 @@ GOAL_TABLE: list[Goal] = [
     Goal(
         name="smash_route111_rock",
         target_map=(0, 26),       # Route111
-        target_pos=(19, 100),     # east-lane BREAKABLE_ROCK (approach from (19,101))
+        target_pos=(19, 100),     # east-lane BREAKABLE_ROCK — approach tile is the
+        # nearest reachable neighbour ((19,101) northbound, (19,99) southbound);
+        # the interact machinery targets all walkable neighbours, so both
+        # directions work. Fires post-badge4 too (southbound Mauville leg).
         condition="smash_route111_rock",
-        desc="Route111 (19,100) の岩を Rock Smash で砕いて北へ",
+        desc="Route111 (19,100) の岩を Rock Smash で砕く (南北両方向の通行に必要)",
     ),
     Goal(
         # Higher priority than reach_fallarbor: on Route112 south, cross Fiery

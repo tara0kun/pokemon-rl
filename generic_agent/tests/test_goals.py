@@ -923,6 +923,31 @@ class TestPostBadge4(GoalsTestBase):
             self._name(map_group=0, map_num=27, x=26, y=44, party0_hp=40),
             "reach_mauville_b5")
 
+    def test_route111_rock_smashed_southbound(self) -> None:
+        # Live 07-26 stall: the southbound Mauville leg wedged at (16,99) —
+        # the static cache marks the FLAG_TEMP rock tile (19,100) walkable, so
+        # BFS plans through it and the game blocks the step. The smash goal
+        # must fire post-badge4 (the badge04-gate bug class, again) and win
+        # table order over reach_mauville_b5 so the descent pauses, smashes,
+        # then resumes. (16,99) = the live wedge tile.
+        # npcs_on_map = the exact live RAM read at the wedge (both canon rocks:
+        # (19,100) FLAG_TEMP_12 targeted, (18,101) FLAG_TEMP_11 not — see the
+        # condition comment).
+        g = goals_mod.current_goal(self._gs(
+            map_group=0, map_num=26, x=16, y=99,
+            npcs_on_map=[(19, 100, 86), (18, 101, 86)]))
+        self.assertIsNotNone(g)
+        self.assertEqual(g.name, "smash_route111_rock")
+        self.assertEqual(g.target_pos, (19, 100))
+
+    def test_route111_no_rock_pushes_to_mauville(self) -> None:
+        # Rock smashed (gone from the object-event list) -> the smash goal
+        # retires for the map session and the Mauville leg resumes.
+        self.assertEqual(
+            self._name(map_group=0, map_num=26, x=19, y=101,
+                       npcs_on_map=[]),
+            "reach_mauville_b5")
+
     def test_badge5_retires_leg1_heal_stays_generic(self) -> None:
         # Norman beaten (badge_count 5) -> leg 1 retires (the next increment's
         # seam: healthy at Mauville -> None until the westward legs land), but
