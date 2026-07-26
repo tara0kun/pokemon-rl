@@ -100,6 +100,16 @@ DOUBLE_BATTLE_SEQ = ("A", "A", "A", "A", "A", "A", "B")
 # to leave any wild battle we don't want to fight (traversal, or no damaging
 # move left). A wild battle can always be run from.
 FLEE_SEQ = ("B", "B", "Up", "Up", "Left", "Right", "Down", "A")
+# Give fleeing this many battle turns (~3 full FLEE_SEQ cycles) before
+# escalating to a FIGHT. A flee that is going to work lands well inside this
+# window (07-26 Rusturf live: every successful flee completed in <=18 battle
+# turns INCLUDING intro text). Past it, fleeing is failing for a reason a
+# retry cannot fix (emulator-side input delivery corrupted, as in the 07-26
+# Whismur stall, or an encounter that cannot be run from), while a traversal
+# lead typically out-levels tunnel wilds massively - one best_move commit ends
+# the battle in a single clean turn. Without this escalation the Whismur
+# battle retried FLEE_SEQ for 58 straight turns and would have forever.
+FLEE_GIVE_UP_BATTLE_TURNS = 3 * len(FLEE_SEQ)
 # src prefixes whose button came from GOAL-DIRECTED navigation (a BFS path
 # step, or a scripted interaction). run()'s post-processing EXPLORE overrides
 # (anomaly_escape, forward_force) must never clobber these: the planner is
@@ -108,6 +118,19 @@ FLEE_SEQ = ("B", "B", "Up", "Up", "Left", "Right", "Down", "A")
 GOAL_DIRECTED_SRC_PREFIXES = ("mapbfs", "rival_seek", "rival_talk", "goal_")
 
 _UI_ESCAPE_CYCLE = ("B", "B", "B", "A")
+
+
+def catch_intent_active(goal) -> bool:
+    """True only when the CURRENT goal explicitly asks to catch something
+    (goal name prefixed 'catch', mirroring the 'grind' prefix convention).
+
+    Throwing a ball used to be gated on opportunity (balls in bag + party
+    size / HP), not intent, so a wild mon the agent was merely walking past
+    could eat the bag - the 07-26 Rusturf traversal lost its only Great Ball
+    with zero catch value. Catching is an intent, not an opportunity: no
+    catch goal active -> never throw. All three catch sites (the battle-menu
+    pre-empt and both Part-A catch_priority/catch_ready legs) gate on this."""
+    return goal is not None and goal.name.startswith("catch")
 
 
 def ui_escape_button(unknown_ui_streak: int) -> str | None:
@@ -282,8 +305,11 @@ def heuristic_button(
         # detected via vision means we ARE in battle. Trigger catch on
         # first detect — caller manages a state machine to follow through
         # the bag-select sequence even after battle_menu visibility flips.
+        # Intent-gated (07-26): only when a catch goal is active, never as
+        # an opportunistic throw during traversal.
         if (
-            gs.bag_pokeball_count > 0
+            catch_intent_active(current_goal)
+            and gs.bag_pokeball_count > 0
             and gs.party_count <= 2
             and gs.party0_hp_frac >= 0.3
             and not gs.is_trainer_battle
@@ -1207,9 +1233,11 @@ def heuristic_button(
             # solo in the party. Treecko at Lv10+ one-shots most wild
             # Pokemon on turn 1 if we just press A → we'd never get to
             # capture anything, so when party is mono and we have balls,
-            # throw IMMEDIATELY.
+            # throw IMMEDIATELY. Intent-gated (07-26): a catch goal must be
+            # active — traversal battles must not spend balls.
             catch_priority = (
-                gs.bag_pokeball_count > 0
+                catch_intent_active(current_goal)
+                and gs.bag_pokeball_count > 0
                 and gs.party_count <= 2
                 and gs.party0_hp_frac >= 0.3
             )
@@ -1222,8 +1250,12 @@ def heuristic_button(
                     catch_seq[battle_turn % len(catch_seq)],
                     "wild_catch_try",
                 )
+            # NOTE: this leg had NO party-size gate at all — with a full
+            # party and balls in the bag it fired on any wild battle every
+            # 8th turn. The intent gate is what stops traversal throws.
             catch_ready = (
-                gs.bag_pokeball_count > 0
+                catch_intent_active(current_goal)
+                and gs.bag_pokeball_count > 0
                 and gs.party0_hp_frac >= 0.5
                 and battle_turn >= 4
             )
@@ -1964,7 +1996,14 @@ def run(
         # move_select_sequence queued during the win/faint dialogue (in_battle
         # still True) would otherwise leak its remaining direction+A presses
         # into the overworld (Fable review F2/F5).
-        if not gs.in_battle and (battle_move_queue or llm_buttons_queue):
+        # Keyed on in_battle_seen, NOT raw gs.in_battle: the battle-flags word
+        # DMA-flickers to 0 for a single turn mid-battle, and flushing on that
+        # flicker threw away a mid-drain FLEE_SEQ (07-26 Rusturf turns 258/265:
+        # the queue died at rem1/rem2, the final A on RUN was never sent, and
+        # heuristic_button's fight_cursor_reset pressed a stray A instead —
+        # opening BAG/FIGHT mid-flee). in_battle_seen already carries the
+        # vision latch + VLM correction, so a real battle end still flushes.
+        if not in_battle_seen and (battle_move_queue or llm_buttons_queue):
             battle_move_queue = []
             llm_buttons_queue = []
         # Double battle (BATTLE_TYPE_DOUBLE = battle_flags & 0x1; e.g. the Route
@@ -2092,8 +2131,17 @@ def run(
             # active_hp == -1 (unreadable): leave queue empty -> heuristic
             # SEND_OUT_SEQ fallback, harmless and self-corrects next turn.
         elif (
-            not battle_move_queue and gs.in_battle
+            # in_battle_seen, not raw gs.in_battle: the raw flag DMA-flickers
+            # to 0 for a turn mid-battle, and on a refill turn that handed
+            # control to heuristic_button's fight_cursor_reset, whose stray A
+            # fought FLEE_SEQ for the cursor (07-26 Rusturf). battle_trainer_
+            # latch must ALSO be excluded explicitly: is_trainer_battle is a
+            # property requiring raw in_battle, so on the same flicker turn a
+            # TRAINER battle reads is_trainer_battle=False and would otherwise
+            # queue FLEE_SEQ here (the Route110 "No running!" soft-lock family).
+            not battle_move_queue and in_battle_seen
             and not gs.is_trainer_battle
+            and not battle_trainer_latch
             # gs.in_battle (0x02022FEC) STAYS True in the overworld after a
             # battle; without a live battle-UI vision signal this branch fired
             # move_select in the dark Granite Cave overworld and froze there.
@@ -2136,7 +2184,15 @@ def run(
                 # (a low-HP KO hits the same learn prompt, and decide()'s run
                 # sequence would navigate the YES/NO cursor the wrong way).
                 battle_move_queue = ["A"]
-            elif gs.party0_hp_frac >= 0.4 and gs.bag_pokeball_count == 0:
+            elif gs.party0_hp_frac >= 0.4 and (
+                # Balls in the bag used to disable this branch entirely so the
+                # heuristic's catch machinery could throw. Catching is now
+                # intent-gated (catch_intent_active), so holding balls must
+                # not stop traversal fleeing — defer to the catch machinery
+                # ONLY when a catch goal is actually active.
+                gs.bag_pokeball_count == 0
+                or not catch_intent_active(cur_goal)
+            ):
                 # Only the grind goal wants wild XP. For every other goal we are
                 # just crossing an encounter zone (the Granite Cave letter/sail
                 # trek, later routes), where fighting each wild mon is slow and
@@ -2167,10 +2223,21 @@ def run(
                 # FLEE_SEQ's Up presses walked the agent onto stairs, bouncing
                 # it across the Shipyard 1F<->2F during a vision-battle_menu
                 # false positive (the phantom-battle trap north of the museum).
-                if not is_grind and not indoor and gs.saveblock1_valid:
+                # ESCALATION (07-26): if fleeing hasn't worked after ~3 full
+                # cycles (FLEE_GIVE_UP_BATTLE_TURNS), stop retrying it and
+                # fall through to the FIGHT leg below — best_move ends the
+                # battle in one commit for a traversal-grade level gap,
+                # whatever made the flee fail (corrupted input delivery, an
+                # unrunnable encounter). PP cost: one move use per escalated
+                # battle, vs. an unbounded stall.
+                if (
+                    not is_grind and not indoor and gs.saveblock1_valid
+                    and battle_turn <= FLEE_GIVE_UP_BATTLE_TURNS
+                ):
                     battle_move_queue = list(FLEE_SEQ)
                 else:
-                    # Grind or indoor trainer battle: pick a move with PP from
+                    # Grind, indoor trainer battle, or flee escalation: pick
+                    # a move with PP from
                     # RAM instead of decide()'s blind "A" on the highlighted
                     # (often depleted) first move — a depleted "A" only pops
                     # "There's no PP left!" and the turn never resolves (the old
