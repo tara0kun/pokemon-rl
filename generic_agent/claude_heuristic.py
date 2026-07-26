@@ -2764,6 +2764,15 @@ def run(
 
 
 def main() -> int:
+    # Windows consoles default to cp932/mbcs, which can't encode the em-dashes /
+    # arrows / Japanese in our diagnostic prints (a battle_watchdog print with a
+    # U+2014 crashed the whole loop mid-catch, 07-27). Make stdout/stderr lossy
+    # instead of fatal so a log line can never kill the run.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
     parser = argparse.ArgumentParser()
     parser.add_argument("--turns", type=int, default=500)
     parser.add_argument("--dataset", action="store_true")
