@@ -841,6 +841,116 @@ class TestFlanneryGrind(GoalsTestBase):
             self.assertEqual(bg.get((px + dx, py + dy)), 0x08, (dx, dy))
 
 
+class TestWaterCatch(GoalsTestBase):
+    """User-directed Water-catch sub-project (2026-07-26): buy Poke Balls at
+    the Rustboro Mart, hunt Marill (ROM-verified 20% land share, L4-5) in
+    Route104 NORTH grass. Pins the buy->catch->restock->retire cycle."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        for m in (goals_mod.PEEKO_DONE_MARKER, goals_mod.LETTER_DONE_MARKER,
+                  goals_mod.DEVON_DELIVERED_MARKER, goals_mod.THEFT_DONE_MARKER,
+                  goals_mod.MTCHIMNEY_DONE_MARKER):
+            m.write_text("1", encoding="utf-8")
+
+    def _gs(self, **kw):
+        base = dict(
+            badge_count=4, party_count=5, party0_level=47,
+            party0_hp=152, party0_max_hp=152,
+            bag_heal_qty=2, money=6407,          # live wallet at design time
+            flag_badge04_get=True,
+            flag_steven_letter_delivered=True,
+            flag_dock_rejected_devon=True,
+            flag_devon_goods_delivered=True,
+            flag_rock_smash_hm=True, party_moves=[[249, 0, 0, 0]],
+        )
+        base.update(kw)
+        return make_gs(**base)
+
+    def _name(self, **kw):
+        g = goals_mod.current_goal(self._gs(**kw))
+        return g.name if g else None
+
+    def test_no_balls_buys_at_rustboro_mart(self) -> None:
+        # The live state: Rustboro, 0 balls, $6407 -> buy first (above catch,
+        # which is silent without balls anyway).
+        g = goals_mod.current_goal(self._gs(
+            map_group=0, map_num=3, x=30, y=30, bag_pokeball_count=0))
+        self.assertIsNotNone(g)
+        self.assertEqual(g.name, "buy_pokeballs")
+        self.assertEqual(g.target_map, (11, 7))
+        self.assertEqual(g.target_pos, (2, 3))
+
+    def test_low_balls_restock_before_hunt(self) -> None:
+        # < 5 balls at Rustboro -> restock outranks the hunt (table order).
+        self.assertEqual(
+            self._name(map_group=0, map_num=3, x=30, y=30,
+                       bag_pokeball_count=2),
+            "buy_pokeballs")
+
+    def test_stocked_hunts_route104_grass(self) -> None:
+        # Balls stocked -> the catch goal drives to the Route104 north grass
+        # pin; inside the Mart (11,7) too (walks back out, target != cur).
+        g = goals_mod.current_goal(self._gs(
+            map_group=0, map_num=3, x=30, y=30, bag_pokeball_count=11))
+        self.assertIsNotNone(g)
+        self.assertEqual(g.name, "catch_water_route104")
+        self.assertEqual(g.target_map, (0, 19))
+        self.assertEqual(g.target_pos, (3, 11))
+        # on Route104 itself the pin is returned (target==cur + target_pos)
+        self.assertEqual(
+            self._name(map_group=0, map_num=19, x=19, y=0,
+                       bag_pokeball_count=11),
+            "catch_water_route104")
+
+    def test_balls_out_on_route104_pulls_back_through_rustboro(self) -> None:
+        # Balls exhausted mid-hunt: catch goes silent, the containment goal
+        # pulls east — and map_path R104->Mauville's first hop is Rustboro
+        # (probe), where buy_pokeballs re-fires = the restock cycle.
+        self.assertEqual(
+            self._name(map_group=0, map_num=19, x=5, y=12,
+                       bag_pokeball_count=0),
+            "reach_mauville_b5")
+
+    def test_broke_and_ballless_abandons_hunt(self) -> None:
+        # No balls AND a confirmed wallet below one ball: both project goals
+        # silent -> parking at Rustboro (documented safe end state; the
+        # westward push continues next increment).
+        self.assertEqual(
+            self._name(map_group=0, map_num=3, x=30, y=30,
+                       bag_pokeball_count=0, money=100, party_count=6),
+            "reach_rustboro_b5")
+
+    def test_party_full_retires_project(self) -> None:
+        # Slot 6 filled (the catch landed): buy and catch both retire; the
+        # leg goals resume (Rustboro parking / Route104 containment).
+        self.assertEqual(
+            self._name(map_group=0, map_num=3, x=30, y=30,
+                       bag_pokeball_count=8, party_count=6),
+            "reach_rustboro_b5")
+        self.assertEqual(
+            self._name(map_group=0, map_num=19, x=5, y=12,
+                       bag_pokeball_count=8, party_count=6),
+            "reach_mauville_b5")
+
+    def test_grass_pin_is_canon_tall_grass(self) -> None:
+        # No hardcoded-coord drift: the pin must be canon MB_TALL_GRASS (0x02)
+        # with all 4 neighbours also tall grass (the grind-pin discipline:
+        # frontier wander stays on encounter tiles), in the NORTH half (y<34).
+        from generic_agent import config as _config, map_data as _md
+        goal = next(g for g in goals_mod.GOAL_TABLE
+                    if g.name == "catch_water_route104")
+        self.assertEqual(goal.target_map, (0, 19))
+        if not (_config.MEMORY_DIR / "map_cache" / "Route104.map.bin").exists():
+            self.skipTest("Route104 canon cache not present")
+        bg = _md.get_cache().behavior_grid(0, 19)
+        px, py = goal.target_pos
+        self.assertLess(py, 34)  # north half — reachable without the Woods
+        self.assertEqual(bg.get((px, py)), 0x02)
+        for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+            self.assertEqual(bg.get((px + dx, py + dy)), 0x02, (dx, dy))
+
+
 class TestPostBadge4(GoalsTestBase):
     """Post-Badge4 first increment: badge-independent Lavaridge heal + Badge5
     (Norman) leg-1 routing to the Mauville hub. Pins the live 2026-07-24
@@ -1022,12 +1132,15 @@ class TestPostBadge4(GoalsTestBase):
         # At Rustboro (target==cur) the umbrella is the returned fallback —
         # reach_mauville_b5 is silenced there (exclusion set) or the scan
         # would pick it and drag the agent back east. Same from an indoor
-        # group-11 map (walks back out to the town).
-        g = goals_mod.current_goal(self._gs(map_group=0, map_num=3, x=30, y=30))
+        # group-11 map (walks back out to the town). party_count=6 = the
+        # Water-catch project is DONE (at 5 the buy/catch goals own Rustboro
+        # — covered by TestWaterCatch).
+        g = goals_mod.current_goal(self._gs(
+            map_group=0, map_num=3, x=30, y=30, party_count=6))
         self.assertIsNotNone(g)
         self.assertEqual(g.name, "reach_rustboro_b5")
         self.assertEqual(
-            self._name(map_group=11, map_num=3, x=4, y=6),
+            self._name(map_group=11, map_num=3, x=4, y=6, party_count=6),
             "reach_rustboro_b5")
 
     def test_badge1_peeko_return_regression(self) -> None:

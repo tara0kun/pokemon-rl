@@ -143,6 +143,37 @@ def catch_intent_active(goal) -> bool:
     return goal is not None and goal.name.startswith("catch")
 
 
+# Type filter for typed catch goals, keyed by goal-name prefix. Gen3 internal
+# type ids (battle_moves._CHART's axis): 11 = TYPE_WATER. A goal named
+# catch_water_* only throws when the live opponent (gBattleMons[1]) is
+# Water-typed — without this the Route104 Marill hunt would spend balls on the
+# 40% Poochyena share, and a wrong catch permanently fills the LAST party slot
+# (later catches go to the PC box, so the goal's party_count retire would fire
+# with the wrong mon). Other catch* names stay unfiltered.
+_CATCH_TYPE_BY_PREFIX = {"catch_water": 11}
+
+
+def catch_target_type_ok(goal, client) -> bool:
+    """True when the active opponent matches the catch goal's target type.
+
+    client None (offline harness) skips the filter — production always has a
+    client. RAM read failure is FAIL-CLOSED (skip the throw this turn): a
+    garbage read that green-lights a throw can poison the last party slot,
+    while a missed frame merely delays the catch one turn."""
+    want = None
+    if goal is not None:
+        for pfx, t in _CATCH_TYPE_BY_PREFIX.items():
+            if goal.name.startswith(pfx):
+                want = t
+                break
+    if want is None or client is None:
+        return True
+    try:
+        return want in battle_moves_mod.enemy_types(client)
+    except Exception:  # noqa: BLE001 — any read hiccup means "not confirmed"
+        return False
+
+
 def ui_escape_button(unknown_ui_streak: int) -> str | None:
     """Escape an unknown-UI screen the loop has no handler for — PokeNav
     (cb2 0x081C7401), Trainer Card, the level-up "forget move?" prompt. Returns
@@ -316,11 +347,16 @@ def heuristic_button(
         # first detect — caller manages a state machine to follow through
         # the bag-select sequence even after battle_menu visibility flips.
         # Intent-gated (07-26): only when a catch goal is active, never as
-        # an opportunistic throw during traversal.
+        # an opportunistic throw during traversal. party gate < 6 (was <= 2,
+        # a mono-party-era relic): with intent gating the residual question
+        # is only "is there room for the catch". Type-gated for catch_water*
+        # goals (fail-closed) so off-type wilds fall through to the Part-B
+        # flee instead of eating balls.
         if (
             catch_intent_active(current_goal)
+            and catch_target_type_ok(current_goal, client)
             and gs.bag_pokeball_count > 0
-            and gs.party_count <= 2
+            and gs.party_count < 6
             and gs.party0_hp_frac >= 0.3
             and not gs.is_trainer_battle
             and not indoor_battle
@@ -1247,8 +1283,14 @@ def heuristic_button(
             # active — traversal battles must not spend balls.
             catch_priority = (
                 catch_intent_active(current_goal)
+                # party < 6 (was <= 2, mono-party era): throw from turn 1
+                # whenever there's room — an over-leveled lead (Sceptile L47
+                # vs the L4-5 Route104 targets) KOs on the first FIGHT, so
+                # waiting for catch_ready's turn>=4 window would kill most
+                # targets before the first ball. Type gate: see pre-empt.
+                and catch_target_type_ok(current_goal, client)
                 and gs.bag_pokeball_count > 0
-                and gs.party_count <= 2
+                and gs.party_count < 6
                 and gs.party0_hp_frac >= 0.3
             )
             if catch_priority and battle_turn >= 1:
@@ -1265,6 +1307,7 @@ def heuristic_button(
             # 8th turn. The intent gate is what stops traversal throws.
             catch_ready = (
                 catch_intent_active(current_goal)
+                and catch_target_type_ok(current_goal, client)
                 and gs.bag_pokeball_count > 0
                 and gs.party0_hp_frac >= 0.5
                 and battle_turn >= 4
@@ -1984,6 +2027,29 @@ def run(
             last_action = "buy_potions"
             continue
 
+        # Shop sub-task hook (Water-catch project): buy_pokeballs fires inside
+        # the Rustboro Mart (11,7) — same interior geometry as Mauville's
+        # (clerk (1,3), counter stand (3,3)), so the same walk-in machinery
+        # drives; only the item/prompt differ (run_pokeball_subtask).
+        if (
+            cur_goal is not None
+            and cur_goal.name == "buy_pokeballs"
+            and (gs.map_group, gs.map_num) == (11, 7)
+            and gs.saveblock1_valid
+            and not gs.in_battle
+            and turn >= shop_cooldown_until
+        ):
+            print(f"  [shop] turn {turn}: buying Poke Balls via VLM…")
+            try:
+                ok = shop_mod.run_pokeball_subtask(client, log=print)
+            except Exception as _exc:  # noqa: BLE001 — never crash the loop
+                print(f"  [shop] error: {_exc}")
+                ok = False
+            if not ok:
+                shop_cooldown_until = turn + 15
+            last_action = "buy_pokeballs"
+            continue
+
         # Field-heal sub-task hook (H14): field_heal_potion (target_map=None) uses
         # a Super Potion on the lead between gauntlet trainers / in the gym. Out of
         # battle only, so the battle_move machinery is untouched.
@@ -2212,9 +2278,14 @@ def run(
                 # heuristic's catch machinery could throw. Catching is now
                 # intent-gated (catch_intent_active), so holding balls must
                 # not stop traversal fleeing — defer to the catch machinery
-                # ONLY when a catch goal is actually active.
+                # ONLY when a catch goal is actually active AND the opponent
+                # matches the goal's target type (catch_water_*): an off-type
+                # wild (the 40% Poochyena share on Route104) takes this flee
+                # branch so the encounter cycles fast instead of stalling in
+                # a battle the catch legs refuse to throw at.
                 gs.bag_pokeball_count == 0
                 or not catch_intent_active(cur_goal)
+                or not catch_target_type_ok(cur_goal, client)
             ):
                 # Only the grind goal wants wild XP. For every other goal we are
                 # just crossing an encounter zone (the Granite Cave letter/sail

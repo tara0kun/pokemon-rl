@@ -309,6 +309,10 @@ _GOAL_BYPASS_VISITED = {
     # RusturfTunnel, where visited-suppression (target_map != cur) can't apply
     # (the exit_fiery_path_* precedent).
     "reach_rustboro_b5",
+    # Water-catch project: the Mart gets visited on the FIRST buy but the
+    # restock loop must re-target it (the buy_potions precedent), and Route104
+    # has been visited since the badge-1 era.
+    "buy_pokeballs", "catch_water_route104",
 }
 
 
@@ -1082,6 +1086,43 @@ class Goal:
                 and cur not in {(0, 32), (0, 14), (24, 4), (0, 31), (0, 3)}
                 and gs.map_group not in (6, 11)
             )
+        if c == "buy_pokeballs":
+            # Water-catch sub-project (user-directed, 2026-07-26): stock Poke
+            # Balls at the Rustboro Mart before/while hunting on Route104.
+            # bag < 5 (not == 0) keeps the RESTOCK loop alive mid-hunt: when
+            # the balls run out on Route104 the containment pull routes back
+            # through Rustboro (map_path R104->Mauville first hop = Rustboro,
+            # probe 07-26) and this re-fires. party_count < 6 retires the
+            # whole project once the catch lands. Money gate mirrors
+            # buy_potions: unreadable (-1) fires; only a confirmed wallet
+            # below one Poke Ball ($200) stays silent.
+            return (
+                4 <= gs.badge_count < 5
+                and gs.party_count < 6
+                and gs.bag_pokeball_count < 5
+                and not (0 <= gs.money < 200)
+                and cur in {(0, 3), (11, 7)}
+            )
+        if c == "catch_water_route104":
+            # Water-catch sub-project: hunt MARILL in Route104 NORTH grass.
+            # ROM gWildMonHeaders (parsed 07-26 @0x08552D48): Route104 land =
+            # Marill 20% L4-5 / Wingull 10% L3-5 (also Water — acceptable
+            # backup) / Poochyena 40% / Wurmple 20% / Taillow 10%. Encounter
+            # tables are per-MAP, so the north-half grass (reachable from
+            # Rustboro WITHOUT the Woods) rolls the same table. The 'catch'
+            # name prefix is LOAD-BEARING (catch_intent_active gates every
+            # ball throw on it) and the 'catch_water' prefix additionally
+            # type-gates throws on the live opponent being Water-typed
+            # (gBattleMons[1], fail-closed) — off-type wilds are fled, so the
+            # 40% Poochyena can neither eat balls nor steal the last party
+            # slot. Retires when the party fills (slot 6 = the catch) or the
+            # balls run out (buy_pokeballs above restocks).
+            return (
+                4 <= gs.badge_count < 5
+                and 1 <= gs.party_count < 6
+                and gs.bag_pokeball_count > 0
+                and cur in {(0, 3), (0, 19)}
+            )
         if c == "smash_rusturf_rock":
             # Badge5 arc: the Rusturf Tunnel mid-wall. TWO BREAKABLE_ROCK
             # object_events at tiles (24,4)/(24,5) seal the only corridor rows
@@ -1591,6 +1632,27 @@ GOAL_TABLE: list[Goal] = [
     # Listed LAST so every "hurt now" goal above (heal_at_lavaridge, un-gated
     # from badge04 the same day) wins first; once the party is healed this is
     # the only live badge-4 match and drives the southbound corridor.
+    # --- Water-catch sub-project (user-directed): buy balls, hunt Marill.
+    # buy ABOVE catch (restock priority when both match at Rustboro); both
+    # ABOVE the leg-3 umbrella so they own Rustboro/Route104 while active.
+    Goal(
+        name="buy_pokeballs",
+        target_map=(11, 7),       # RustboroCity_Mart — identical interior to
+        # Mauville's (clerk MART_EMPLOYEE (1,3), counter column x=2, probe
+        # 07-26): stand (3,3), face Left + A over the counter.
+        target_pos=(2, 3),
+        condition="buy_pokeballs",
+        desc="Water捕獲用に Rustboro Mart で Poke Ball 購入 (VLM shop)",
+    ),
+    Goal(
+        name="catch_water_route104",
+        target_map=(0, 19),       # Route104 NORTH half (Rustboro side)
+        target_pos=(3, 11),       # interior grass pin — MB_TALL_GRASS with all
+        # 4 neighbours grass (grind-pin discipline); Rustboro entry (19,0) ->
+        # pin len 51 (probe 07-26). Canon-pinned by test.
+        condition="catch_water_route104",
+        desc="Route104 北草むらで MARILL 捕獲 (20%/L4-5, Water 補強)",
+    ),
     # --- Badge5 leg 3: Verdanturf -> Rusturf Tunnel -> Route116 -> Rustboro.
     # Inner tunnel goals first (most specific), then the umbrella; all ABOVE
     # the leg-2/leg-1 goals so the westernmost live leg wins the scan.

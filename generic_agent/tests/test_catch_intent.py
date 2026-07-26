@@ -135,6 +135,92 @@ class TestCatchIntentGate(unittest.TestCase):
         )
         self.assertTrue(ch.catch_intent_active(_catch_goal()))
 
+    def test_full_party_room_still_throws(self) -> None:
+        # party gate relaxed <=2 -> <6 (Water-catch project): a 5-mon party
+        # with a free slot must still pre-empt throw under a catch goal.
+        button, src = _call(
+            _wild_gs(party_count=5), screen_signals={"battle_menu": True},
+            goal=_catch_goal(),
+        )
+        self.assertEqual((button, src), ("Right", "wild_catch_try_screen:init"))
+        # ...but a FULL party (no room — the catch would go to the box and the
+        # party_count retire could fire on the wrong mon) must not.
+        button, src = _call(
+            _wild_gs(party_count=6), screen_signals={"battle_menu": True},
+            goal=_catch_goal(),
+        )
+        self.assertNotEqual(src, "wild_catch_try_screen:init")
+
+
+def _water_goal() -> goals_mod.Goal:
+    return goals_mod.Goal(
+        name="catch_water_route104", target_map=(0, 19),
+        condition="test", desc="water catch",
+    )
+
+
+class TestCatchTypeGate(unittest.TestCase):
+    """catch_water_* goals throw ONLY at Water-typed opponents (gBattleMons[1]
+    via battle_moves.enemy_types; Gen3 TYPE_WATER=11). Fail-closed on RAM
+    error; untyped catch* goals and a None client skip the filter."""
+
+    def setUp(self) -> None:
+        p = mock.patch.object(
+            ch.map_data_mod, "get_cache",
+            side_effect=RuntimeError("offline"),
+        )
+        p.start()
+        self.addCleanup(p.stop)
+        self.client = object()  # non-None sentinel; only enemy_types sees it
+
+    def _src(self, types, goal):
+        if isinstance(types, Exception):
+            patcher = mock.patch.object(
+                ch.battle_moves_mod, "enemy_types", side_effect=types)
+        else:
+            patcher = mock.patch.object(
+                ch.battle_moves_mod, "enemy_types", return_value=types)
+        with patcher:
+            _btn, src = ch.heuristic_button(
+                _wild_gs(party_count=5),
+                tile_map_mod.TileMap(),
+                path_memory_mod.TransitionMemory(),
+                map_visit_counts={},
+                same_pos_streak=1, same_hash_streak=0, same_map_streak=5,
+                last_pos=(26, 4), last_action="Down", recent_pos=[],
+                battle_turn=1, escape_dir_index=0,
+                screen_signals={"battle_menu": True},
+                current_goal=goal, client=self.client,
+                ram_battle_recent=True,
+            )
+        return src
+
+    def test_water_opponent_throws(self) -> None:
+        # Marill (11,11) and Wingull (11,2) both pass the Water filter.
+        self.assertEqual(self._src((11, 11), _water_goal()),
+                         "wild_catch_try_screen:init")
+        self.assertEqual(self._src((11, 2), _water_goal()),
+                         "wild_catch_try_screen:init")
+
+    def test_off_type_opponent_does_not_throw(self) -> None:
+        # Poochyena (Dark 17): no ball — the Part-B flee handles the battle.
+        self.assertNotEqual(self._src((17, 17), _water_goal()),
+                            "wild_catch_try_screen:init")
+
+    def test_read_failure_fails_closed(self) -> None:
+        self.assertNotEqual(
+            self._src(RuntimeError("dma"), _water_goal()),
+            "wild_catch_try_screen:init")
+
+    def test_untyped_catch_goal_unfiltered(self) -> None:
+        # A plain catch_* goal keeps the old contract: any species.
+        self.assertEqual(self._src((17, 17), _catch_goal()),
+                         "wild_catch_try_screen:init")
+
+    def test_helper_none_client_skips_filter(self) -> None:
+        self.assertTrue(ch.catch_target_type_ok(_water_goal(), None))
+        self.assertTrue(ch.catch_target_type_ok(None, None))
+
 
 if __name__ == "__main__":
     unittest.main()
