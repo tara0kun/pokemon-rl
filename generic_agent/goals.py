@@ -295,6 +295,10 @@ _GOAL_BYPASS_VISITED = {
     # stay re-targetable to restock (a whiteout back to Mauville, or before the
     # Flannery gym). field_heal_potion has target_map=None so it never needs it.
     "buy_potions",
+    # Badge5 leg 1: Mauville (0,2) has been visited since badge 3, so without
+    # the bypass the post-badge4 routing goal would be suppressed instantly
+    # and the loop would go goal-less again (the exact bug this goal fixes).
+    "reach_mauville_b5",
 }
 
 
@@ -881,10 +885,24 @@ class Goal:
             # descend walks it down) and lands here, and must route on into the
             # PC instead of going goal-less. South-blob (0,27) frames never
             # reach this: ride_cable_car sits above and wins outside the pocket.
-            return (
+            #
+            # NO badge04 retire-gate (removed 2026-07-26): "hurt now" is a raw
+            # current-state signal, not a story milestone — the Flannery fight
+            # ends with most of the party fainted, and the old
+            # `not flag_badge04_get` term silenced this heal the moment the
+            # badge latched, leaving 4/5 fainted mons unhealed forever (the
+            # post-Badge4 aimless-loop bug). Pre-badge4 semantics unchanged.
+            # badge>=4 stands in for the mtchimney latch (vacuously done by
+            # then) so a wiped marker dir + a 0x8B flicker frame can't strand
+            # the heal. Post-badge4 the (0,27) case narrows to the JAGGED
+            # POCKET component: pre-badge4 the south blob was shielded by
+            # ride_cable_car above, but that goal retires with the badge, and
+            # the south blob cannot walk back up (one-way ledges) — routing it
+            # to the Lavaridge PC would strand; it pushes on to Mauville
+            # (reach_mauville_b5) instead.
+            hurt = (
                 gs.badge_count >= 3
-                and not gs.flag_badge04_get
-                and _mtchimney_done(gs)
+                and (_mtchimney_done(gs) or gs.badge_count >= 4)
                 and gs.party0_max_hp > 0
                 # hurt OR out of damaging PP (the Fiery grind heals here via the
                 # cable car — Route112->Route111->Mauville stalls in the boulder
@@ -892,8 +910,15 @@ class Goal:
                 # walk into Flannery and lose. A PC visit refills HP and PP.
                 and (gs.party0_hp_frac < 0.5 or gs.party0_damaging_pp == 0)
                 and not gs.in_battle
-                and cur in {(0, 12), (0, 27), (4, 1), (4, 2), (4, 5)}
             )
+            if not hurt:
+                return False
+            if cur == (0, 27):
+                return (
+                    not gs.flag_badge04_get
+                    or _in_route112_jagged_pocket(gs)
+                )
+            return cur in {(0, 12), (4, 1), (4, 2), (4, 5)}
         if c == "lavaridge_gym_flannery":
             # Badge4 arc leg 6: beat Flannery (13,9) for FLAG_BADGE04_GET (0x86A).
             # cur-set includes gym B1F (4,2): the hot-spring hole puzzle drops us
@@ -966,6 +991,26 @@ class Goal:
                 and not gs.in_battle
                 and cur in {(24, 12), (24, 13), (4, 1), (4, 2)}
             )
+        if c == "reach_mauville_b5":
+            # Badge5 (Norman / Petalburg) arc leg 1: walk back down to the
+            # Mauville hub. Southbound corridor Lavaridge -> Route112 (pocket ->
+            # one-way ledge descent -> south blob) -> Route111 east lane ->
+            # Mauville measured pathable OFFLINE against the real map cache +
+            # learned sandstorm seals (probe 2026-07-26: map_path = Route112 ->
+            # Route111 -> Mauville; R112 leg len 33 from the Jagged landing
+            # (6,46) to the (39,46..51) exit band; R111 leg len 91-96 from the
+            # (0,66..71) entry band to the y=139 Mauville exits WITH the
+            # respawned FLAG_TEMP rock (19,100) blocked — the ledge lane routes
+            # around it, so no southbound re-smash goal is needed).
+            # badge_count is the latched monotonic read (no flicker-down), so
+            # >=4 can't yank pre-badge4 states here; retires at badge 5.
+            # Cur-ungated: doubles as whiteout recovery anywhere on the
+            # corridor (whiteout re-homes to the Lavaridge PC, party healed,
+            # and this goal re-drives the descent). The westward Mauville ->
+            # Route117 -> Verdanturf -> Rusturf -> Route116 -> Rustboro ->
+            # Route104 -> Petalburg legs are the NEXT increment; parking at
+            # Mauville (fallback, frontier wander) is the deliberate seam.
+            return 4 <= gs.badge_count < 5
         return False
 
 
@@ -1378,6 +1423,16 @@ GOAL_TABLE: list[Goal] = [
         target_map=(0, 12),       # LavaridgeTown (from SW pocket left strip)
         condition="reach_lavaridge",
         desc="Badge4 arc: SW pocket → LavaridgeTown (gym approach)",
+    ),
+    # --- Badge5 (Norman / Petalburg) arc — first increment (2026-07-26) ---
+    # Listed LAST so every "hurt now" goal above (heal_at_lavaridge, un-gated
+    # from badge04 the same day) wins first; once the party is healed this is
+    # the only live badge-4 match and drives the southbound corridor.
+    Goal(
+        name="reach_mauville_b5",
+        target_map=(0, 2),        # MauvilleCity — hub the westward legs start from
+        condition="reach_mauville_b5",
+        desc="Badge5 arc leg1: Lavaridge→Route112 ledge降下→Route111→Mauville hub",
     ),
 ]
 

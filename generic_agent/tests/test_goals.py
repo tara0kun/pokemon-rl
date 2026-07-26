@@ -483,15 +483,19 @@ class TestDewfordChain(GoalsTestBase):
                     if g.name == "meteor_falls_theft")
         self.assertEqual(goal.target_pos, (trig[0] - 1, trig[1]))  # west nbr
 
-    def test_badge4_retires_lavaridge_arc(self) -> None:
-        # Once Flannery is beaten (FLAG_BADGE04_GET) the Lavaridge arc retires
-        # (Petalburg/Norman is the next unimplemented step -> None).
+    def test_badge4_advances_to_mauville_hub(self) -> None:
+        # Once Flannery is beaten (badge_count 4 latched) the Lavaridge arc
+        # retires and Badge5 leg 1 takes over: back to the Mauville hub. The
+        # goal chain must NOT go None (the post-badge4 aimless-loop bug).
         gs = make_gs(map_group=0, map_num=13, badge_count=4,
                      flag_steven_letter_delivered=True,
                      flag_dock_rejected_devon=True,
                      flag_devon_goods_delivered=True,
                      flag_badge04_get=True)
-        self.assertIsNone(goals_mod.current_goal(gs))
+        g = goals_mod.current_goal(gs)
+        self.assertIsNotNone(g)
+        self.assertEqual(g.name, "reach_mauville_b5")
+        self.assertEqual(g.target_map, (0, 2))
 
     def test_badge2_low_hp_heals_before_cave_trek(self) -> None:
         # A near-dead L30 lead (post-Brawly 2/86) must heal at the Dewford PC
@@ -835,6 +839,99 @@ class TestFlanneryGrind(GoalsTestBase):
         self.assertEqual(bg.get((px, py)), 0x08)
         for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
             self.assertEqual(bg.get((px + dx, py + dy)), 0x08, (dx, dy))
+
+
+class TestPostBadge4(GoalsTestBase):
+    """Post-Badge4 first increment: badge-independent Lavaridge heal + Badge5
+    (Norman) leg-1 routing to the Mauville hub. Pins the live 2026-07-24
+    post-Flannery state: party 4/5 fainted (lead 0/152) at Lavaridge Town,
+    badge_count 4 — the un-gated table previously went goal=None here and the
+    fainted party never healed."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        for m in (goals_mod.PEEKO_DONE_MARKER, goals_mod.LETTER_DONE_MARKER,
+                  goals_mod.DEVON_DELIVERED_MARKER, goals_mod.THEFT_DONE_MARKER,
+                  goals_mod.MTCHIMNEY_DONE_MARKER):
+            m.write_text("1", encoding="utf-8")
+
+    def _gs(self, **kw):
+        base = dict(
+            badge_count=4, party_count=5, party0_level=47,
+            party0_hp=152, party0_max_hp=152,
+            bag_heal_qty=2, money=20000,
+            flag_badge04_get=True,
+            flag_steven_letter_delivered=True,
+            flag_dock_rejected_devon=True,
+            flag_devon_goods_delivered=True,
+            flag_rock_smash_hm=True, party_moves=[[249, 0, 0, 0]],
+        )
+        base.update(kw)
+        return make_gs(**base)
+
+    def _name(self, **kw):
+        g = goals_mod.current_goal(self._gs(**kw))
+        return g.name if g else None
+
+    def test_fainted_party_heals_at_lavaridge(self) -> None:
+        # The live 07-24 state: lead fainted 0/152 in Lavaridge Town. The heal
+        # must fire despite flag_badge04_get ("hurt now" is a raw current-state
+        # gate, not a latch) and route to the PC nurse counter.
+        g = goals_mod.current_goal(self._gs(
+            map_group=0, map_num=12, x=5, y=10, party0_hp=0))
+        self.assertIsNotNone(g)
+        self.assertEqual(g.name, "heal_at_lavaridge")
+        self.assertEqual(g.target_map, (4, 5))
+        self.assertEqual(g.target_pos, (7, 3))
+
+    def test_inside_pc_keeps_heal_goal(self) -> None:
+        # Standing inside the PC map (4,5) the goal must persist (cur-set
+        # includes the PC map; target_pos returns it so nav reaches the
+        # counter) — the heal_at_slateport PC-bounce lesson.
+        g = goals_mod.current_goal(self._gs(
+            map_group=4, map_num=5, x=7, y=8, party0_hp=0))
+        self.assertIsNotNone(g)
+        self.assertEqual(g.name, "heal_at_lavaridge")
+
+    def test_healed_party_heads_to_mauville_hub(self) -> None:
+        # Full-HP party at Lavaridge -> Badge5 leg 1 drives to the Mauville
+        # hub; the loop must not be aimless.
+        self.assertEqual(
+            self._name(map_group=0, map_num=12, x=5, y=10),
+            "reach_mauville_b5")
+
+    def test_mauville_visited_suppression_bypassed(self) -> None:
+        # Mauville (0,2) is long-visited by badge 4; the routing goal must
+        # survive visited-map suppression (_GOAL_BYPASS_VISITED).
+        goals_mod.record_map_visit(0, 2)
+        self.assertEqual(
+            self._name(map_group=0, map_num=12, x=5, y=10),
+            "reach_mauville_b5")
+
+    def test_hurt_pocket_heals_hurt_south_blob_pushes_on(self) -> None:
+        # Route112 post-badge4: the JAGGED POCKET component can still walk
+        # into Lavaridge -> heal there; the SOUTH BLOB cannot walk back up
+        # (one-way ledges, ride_cable_car retired with the badge) -> push on
+        # toward the Mauville PC direction instead of stranding on an
+        # unreachable Lavaridge target. (6,46) = the Jagged landing warp
+        # (pocket component, canon warp); (26,44) = a south-blob tile (the
+        # 5595-turn stall tile from the fiery_path_cross tests).
+        self.assertEqual(
+            self._name(map_group=0, map_num=27, x=6, y=46, party0_hp=40),
+            "heal_at_lavaridge")
+        self.assertEqual(
+            self._name(map_group=0, map_num=27, x=26, y=44, party0_hp=40),
+            "reach_mauville_b5")
+
+    def test_badge5_retires_leg1_heal_stays_generic(self) -> None:
+        # Norman beaten (badge_count 5) -> leg 1 retires (the next increment's
+        # seam: healthy at Mauville -> None until the westward legs land), but
+        # the badge-independent heal keeps serving a hurt party at Lavaridge.
+        self.assertIsNone(goals_mod.current_goal(self._gs(
+            map_group=0, map_num=2, badge_count=5)))
+        self.assertEqual(
+            self._name(map_group=0, map_num=12, badge_count=5, party0_hp=10),
+            "heal_at_lavaridge")
 
 
 if __name__ == "__main__":
