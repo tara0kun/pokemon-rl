@@ -239,12 +239,14 @@ def _rise_confirmed(key: str, raw: bool, stable: bool) -> bool:
 def reset_flag_latches() -> None:
     global _PARTY0_LEVEL_LAST_GOOD
     global _BALLS_LAST_GOOD, _BALLS_FALL_PENDING, _BALLS_FALL_STREAK
+    global _BALLS_FALL_GRADUAL
     _BADGE_BITS_LATCHED.clear()
     _RISE_CONFIRM.clear()
     _PARTY0_LEVEL_LAST_GOOD = 0
     _BALLS_LAST_GOOD = -1
     _BALLS_FALL_PENDING = -1
     _BALLS_FALL_STREAK = 0
+    _BALLS_FALL_GRADUAL = True
 
 
 # Drop-flicker guard for party0_level (same DMA-corruption family as the badge
@@ -282,38 +284,75 @@ def _flicker_guarded_level(lv: int) -> int:
 # throw), so a plain last-good carry would mask a genuine drain forever.
 # Asymmetric contract instead:
 #   RISE (or first read): trusted immediately — buying must register at once.
-#   FALL: believed only after _BALLS_FALL_CONFIRM_N CONSECUTIVE reads at or
-#     below the pending lower value; a lone 0 amid 15s never confirms because
-#     any >= last_good read resets the streak. A genuine drain (throwing /
-#     using balls) reads low on EVERY subsequent frame, so it confirms after
-#     N frames — and the goals gate on coarse thresholds (>0, <5), so an
-#     N-frame report lag is invisible to them.
+#   FALL: believed only when BOTH hold:
+#     (a) _BALLS_FALL_CONFIRM_N CONSECUTIVE reads at or below the pending
+#         lower value — a lone 0 amid 15s never confirms (any >= last_good
+#         read resets the streak); AND
+#     (b) the fall path is GRADUAL: every fall-frame step (from last_good on
+#         entry, then from the pending value) is <= _BALLS_FALL_MAX_STEP.
+#         Physical invariant: a real drain loses at most ONE ball per throw
+#         turn and read_state runs every turn, so consecutive reads can
+#         genuinely differ by at most 1 (2 allows one dropped frame). The
+#         in-battle flicker (07-27) produces RUNS of >=5 consecutive raw-0
+#         reads — measured [15,...,15,0,0,0,0,0] mid-catch — which defeats
+#         the streak alone, but its 15->0 entry step is physically
+#         impossible, so the step gate marks the run poisoned and it can
+#         never confirm; the next >= last_good read resets. A poisoned run
+#         can also REBOUND to an intermediate value (a genuine 14 after a
+#         garbage 0-run): n > pending restarts the run with a fresh entry
+#         check against last_good, so the genuine drain still registers.
+# A genuine drain (3,2,1,0,0,0) passes both gates and confirms after N
+# frames — the goals gate on coarse thresholds (>0, <5), so the lag is
+# invisible to them.
 _BALLS_LAST_GOOD: int = -1        # -1 = nothing confirmed yet (trust first read)
 _BALLS_FALL_PENDING: int = -1
 _BALLS_FALL_STREAK: int = 0
+_BALLS_FALL_GRADUAL: bool = True
 _BALLS_FALL_CONFIRM_N = 5
+_BALLS_FALL_MAX_STEP = 2
 
 
 def _flicker_guarded_pokeballs(n: int) -> int:
     global _BALLS_LAST_GOOD, _BALLS_FALL_PENDING, _BALLS_FALL_STREAK
+    global _BALLS_FALL_GRADUAL
     if _BALLS_LAST_GOOD < 0 or n >= _BALLS_LAST_GOOD:
         _BALLS_LAST_GOOD = n
         _BALLS_FALL_PENDING = -1
         _BALLS_FALL_STREAK = 0
+        _BALLS_FALL_GRADUAL = True
         return n
-    # n < last-good: a fall. Track the lowest pending value so a stepwise
-    # drain (3,2,1,0...) accumulates one streak instead of restarting.
+    # n < last-good: a fall frame.
     if _BALLS_FALL_PENDING >= 0 and n <= _BALLS_FALL_PENDING:
+        # continuing the run downward: step from the pending value
+        step = _BALLS_FALL_PENDING - n
         _BALLS_FALL_STREAK += 1
     else:
+        # entering a fall run (or rebounding above the poisoned pending):
+        # step from the last believed value, fresh streak + gradual state
+        step = _BALLS_LAST_GOOD - n
         _BALLS_FALL_STREAK = 1
+        _BALLS_FALL_GRADUAL = True
+    if step > _BALLS_FALL_MAX_STEP:
+        _BALLS_FALL_GRADUAL = False
     _BALLS_FALL_PENDING = n
-    if _BALLS_FALL_STREAK >= _BALLS_FALL_CONFIRM_N:
+    if _BALLS_FALL_GRADUAL and _BALLS_FALL_STREAK >= _BALLS_FALL_CONFIRM_N:
         _BALLS_LAST_GOOD = n
         _BALLS_FALL_PENDING = -1
         _BALLS_FALL_STREAK = 0
         return n
     return _BALLS_LAST_GOOD
+
+
+def _balls_carry() -> int:
+    """Last believed ball count for frames with NO bag observation at all
+    (invalid SaveBlock1 pointer / failed coordinate read — the read_state
+    early returns). NOT a guard update: an unreadable frame is the ABSENCE of
+    an observation, not a 0-read, so it must neither feed the fall streak nor
+    expose the GameState field default of 0. Live 07-27: the in-battle stall's
+    guard-bypassing 0s came from exactly these partial frames (the guarded
+    main path held 15) — the badge_count=len(_BADGE_BITS_LATCHED) wiring in
+    the same early returns is the precedent."""
+    return _BALLS_LAST_GOOD if _BALLS_LAST_GOOD >= 0 else 0
 
 # Pokemon substruct order by personality % 24 (Gen 3 box-mon encryption).
 _SUBSTRUCT_PERMS = [
@@ -600,6 +639,7 @@ def read_state(client: MGBAClient) -> GameState:
             in_battle=in_battle,
             battle_flags=flags,
             badge_count=len(_BADGE_BITS_LATCHED),
+            bag_pokeball_count=_balls_carry(),
         )
 
     try:
@@ -614,6 +654,7 @@ def read_state(client: MGBAClient) -> GameState:
             in_battle=in_battle,
             battle_flags=flags,
             badge_count=len(_BADGE_BITS_LATCHED),
+            bag_pokeball_count=_balls_carry(),
         )
 
     try:

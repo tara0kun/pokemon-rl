@@ -361,11 +361,55 @@ class PokeballFlickerGuardTest(unittest.TestCase):
             self.assertEqual(f(0), 15)
             self.assertEqual(f(15), 15)
 
+    def test_inbattle_zero_run_holds_15(self) -> None:
+        # The 07-27 in-battle flicker: RUNS of >= _BALLS_FALL_CONFIRM_N
+        # consecutive raw-0 reads at a genuinely-15 state, which defeats the
+        # streak count alone. The 15->0 entry step is physically impossible
+        # (a real drain loses 1 ball per throw turn, reads happen every
+        # turn), so the gradualness gate must poison the run: hold 15 no
+        # matter how long the 0-run lasts.
+        f = self.st._flicker_guarded_pokeballs
+        for raw in (15, 15, 15):
+            self.assertEqual(f(raw), 15)
+        for _ in range(12):          # >> CONFIRM_N
+            self.assertEqual(f(0), 15)
+        self.assertEqual(f(15), 15)  # good frame resumes cleanly
+
+    def test_flicker_run_mid_drain_recovers_to_true_value(self) -> None:
+        # A garbage 0-run DURING a genuine gradual drain (truth: 14) must not
+        # confirm 0 (the run's 14->0 step poisons it), and the following
+        # genuine 14 reads restart a VALID run that confirms 14.
+        f = self.st._flicker_guarded_pokeballs
+        self.assertEqual(f(15), 15)
+        out = [f(raw) for raw in (14, 14, 0, 0, 0, 0, 0)]
+        self.assertTrue(all(v == 15 for v in out), out)   # nothing confirmed
+        vals = [f(14) for _ in range(self.st._BALLS_FALL_CONFIRM_N)]
+        self.assertEqual(vals[-1], 14)   # genuine drain registers after N
+
     def test_reset_clears_state(self) -> None:
         f = self.st._flicker_guarded_pokeballs
         f(15)
         self.st.reset_flag_latches()
         self.assertEqual(f(0), 0)   # fresh: first read trusted as-is
+
+    def test_invalid_frame_carry_bypasses_nothing(self) -> None:
+        # read_state's early returns (invalid SaveBlock1 ptr / failed coord
+        # read) construct a partial GameState; before 07-27 they exposed the
+        # bag_pokeball_count FIELD DEFAULT (0), bypassing the guard entirely —
+        # the in-battle 0 that flipped the catch-vs-fight branch came from
+        # here, not through the fall-confirm. _balls_carry must return the
+        # last believed value WITHOUT feeding the streak (an unreadable frame
+        # is no observation), and 0 only before any confirmed read.
+        self.assertEqual(self.st._balls_carry(), 0)          # nothing known yet
+        f = self.st._flicker_guarded_pokeballs
+        f(15)
+        self.assertEqual(self.st._balls_carry(), 15)
+        for _ in range(12):                                   # invalid-frame run
+            self.assertEqual(self.st._balls_carry(), 15)
+        # the carry fed no fall streak: a subsequent genuine drain still
+        # needs its own confirm window
+        out = [f(raw) for raw in (14, 14, 14, 14, 14)]
+        self.assertEqual(out[-1], 14)
 
 
 if __name__ == "__main__":
