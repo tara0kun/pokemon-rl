@@ -110,6 +110,16 @@ FLEE_SEQ = ("B", "B", "Up", "Up", "Left", "Right", "Down", "A")
 # the battle in a single clean turn. Without this escalation the Whismur
 # battle retried FLEE_SEQ for 58 straight turns and would have forever.
 FLEE_GIVE_UP_BATTLE_TURNS = 3 * len(FLEE_SEQ)
+# When the active battler out-levels the wild enemy by at least this much,
+# FIGHT from the first refill instead of fleeing at all. Fleeing exists to
+# save PP on long treks, but its RUN navigation needs 4-5 consecutive presses
+# to land correctly, and under the recurring press-drop condition (two
+# Rusturf stalls, 07-26) an over-leveled battle that could end in ONE
+# committed move instead looped flee cycles for 90+ turns. At a 15+ level gap
+# any damaging move OHKOs or near-OHKOs, so the PP cost is one move use per
+# encounter — cheap against an unbounded stall. Levels come from gBattleMons
+# via RAM (battle_moves.active_level/enemy_level), no absolute thresholds.
+OVERLEVEL_FIGHT_MARGIN = 15
 # src prefixes whose button came from GOAL-DIRECTED navigation (a BFS path
 # step, or a scripted interaction). run()'s post-processing EXPLORE overrides
 # (anomaly_escape, forward_force) must never clobber these: the planner is
@@ -1779,7 +1789,20 @@ def run(
                     gs, "battle_flags", gs.battle_flags | 0x1,
                 )
         else:
-            battle_turn = 0
+            # Zero the escalation counter only after the battle is CONFIRMED
+            # over (the 12-turn RAM recency latch lapsed), not on an
+            # instantaneous in_battle_seen dropout: a frame where the battle
+            # flags DMA-read 0 AND vision misses the menu (animation /
+            # transition — observed twice on 07-26) would otherwise reset
+            # battle_turn mid-battle, so the FLEE_GIVE_UP escalation could
+            # never trigger in a battle whose signal isn't perfectly stable.
+            # A follow-up battle inside the 12-turn window inherits the stale
+            # count and merely escalates to FIGHT sooner — fine for traversal.
+            # The trainer/double latches keep their instantaneous reset: they
+            # must NOT leak into a different battle (a wild battle started
+            # right after a trainer fight would be misdriven as a trainer).
+            if not ram_battle_recent:
+                battle_turn = 0
             battle_trainer_latch = False
             battle_double_latch = False
 
@@ -2230,9 +2253,34 @@ def run(
                 # whatever made the flee fail (corrupted input delivery, an
                 # unrunnable encounter). PP cost: one move use per escalated
                 # battle, vs. an unbounded stall.
+                # Over-level check (OVERLEVEL_FIGHT_MARGIN): at a traversal-
+                # grade level gap, skip flee entirely and take the FIGHT leg
+                # below — one committed move ends the battle, no RUN-cursor
+                # navigation to de-sync. Read failures default the gap to 0
+                # (= keep fleeing, the status-quo behavior).
+                try:
+                    lvl_gap = (
+                        battle_moves_mod.active_level(client)
+                        - battle_moves_mod.enemy_level(client)
+                    )
+                except (OSError, RuntimeError, EmulatorError):
+                    lvl_gap = 0
+                # Operator visibility: a wild battle still unresolved at 2x
+                # the give-up threshold means even the FIGHT escalation is
+                # not landing — the recurring emulator-side press-drop
+                # condition. Nothing more the loop can safely do (no
+                # saveStateLoad), so say it loudly instead of stalling mute.
+                if battle_turn > 2 * FLEE_GIVE_UP_BATTLE_TURNS:
+                    print(
+                        f"  [battle_watchdog] turn {turn}: wild battle not"
+                        f" resolving (battle_turn={battle_turn},"
+                        f" lvl_gap={lvl_gap}) — battle presses may not be"
+                        f" registering emulator-side; holds lengthened"
+                    )
                 if (
                     not is_grind and not indoor and gs.saveblock1_valid
                     and battle_turn <= FLEE_GIVE_UP_BATTLE_TURNS
+                    and lvl_gap < OVERLEVEL_FIGHT_MARGIN
                 ):
                     battle_move_queue = list(FLEE_SEQ)
                 else:
@@ -2532,7 +2580,29 @@ def run(
                 )
 
         try:
-            client.tap(button, frames=15)
+            # Dragged battles get a longer hold: two 07-26 Rusturf stalls
+            # showed correctly-sequenced battle presses having NO effect while
+            # the loop ran (identical manual taps committed/fled first try),
+            # and the one lever the loop has on emulator-side registration is
+            # press duration (menu-automation lesson: slow single presses;
+            # frames=25 has precedent for reliable movement). Applied only to
+            # queue-drained battle presses past the flee-give-up threshold so
+            # every healthy battle keeps the proven 15-frame timing. 25
+            # frames stays well under the 59-frame dpad-hold-acts-as-B
+            # battle-menu threshold.
+            # Wild battles only (battle_trainer_latch is the stable in-battle
+            # signal): trainer fights routinely run past the threshold and
+            # their SEND_OUT party-list navigation has years of live turns at
+            # 15 frames — no reason to disturb it (list menus may key-repeat
+            # on long holds, unverified).
+            hold = (
+                25
+                if src.startswith("battle_move")
+                and battle_turn > FLEE_GIVE_UP_BATTLE_TURNS
+                and not battle_trainer_latch
+                else 15
+            )
+            client.tap(button, frames=hold)
         except (EmulatorError, ValueError) as exc:
             print(f"  [warn] button {button} failed: {exc}")
         time.sleep(poll_period_sec)

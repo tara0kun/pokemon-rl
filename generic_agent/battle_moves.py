@@ -32,6 +32,8 @@ BATTLEMON_TYPE2 = 0x22         # u8
 BATTLEMON_HP = 0x28            # u16 current HP
 BATTLEMON_MAXHP = 0x2C         # u16 max HP
 BATTLEMON_PP = 0x24            # 4 x u8 current PP of the active battler's moves
+BATTLEMON_LEVEL = 0x2A         # u8 level (between hp u16@0x28 and maxHP u16@0x2C;
+                               # live-verified 07-26: read 47/6 for L47 vs L6)
 GBATTLEMOVES = 0x0831C898      # BattleMove[], 12 bytes each: power@+1, type@+2
 
 # Substruct permutation order (personality % 24); moves live in the 'A'
@@ -111,6 +113,22 @@ def active_hp(client: MGBAClient) -> int:
     battle sub-states apart from reliable RAM instead of the flaky
     battle_menu vision signal (the H6a opening-thrash root cause)."""
     return client.read16(GBATTLEMONS + BATTLEMON_HP)
+
+
+def active_level(client: MGBAClient) -> int:
+    """Level of the player's ACTIVE battler (gBattleMons[0]).
+
+    Feeds the over-level fight gate: with a traversal-grade level gap the
+    loop fights (one best_move commit ends the battle) instead of running
+    FLEE_SEQ's RUN navigation, whose per-press fragility stalled two Rusturf
+    Tunnel battles (07-26)."""
+    return client.read8(GBATTLEMONS + BATTLEMON_LEVEL)
+
+
+def enemy_level(client: MGBAClient) -> int:
+    """Level of the opponent's active battler (gBattleMons[1] — same slot-1
+    offset as enemy_types/enemy_hp)."""
+    return client.read8(GBATTLEMONS + BATTLEMON_SIZE + BATTLEMON_LEVEL)
 
 
 def player_battler_hps(client: MGBAClient, double: bool = False) -> list[int]:
