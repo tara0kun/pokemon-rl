@@ -299,6 +299,10 @@ _GOAL_BYPASS_VISITED = {
     # the bypass the post-badge4 routing goal would be suppressed instantly
     # and the loop would go goal-less again (the exact bug this goal fixes).
     "reach_mauville_b5",
+    # Badge5 leg 2: Route117 (0,32) is ALREADY in visited_maps (early wander),
+    # and Verdanturf joins it the moment the leg lands — without the bypass
+    # the goal dies mid-corridor on the very next Route117 frame.
+    "reach_verdanturf_b5",
 }
 
 
@@ -824,6 +828,17 @@ class Goal:
             return (
                 gs.badge_count >= 3
                 and not gs.flag_badge04_get
+                # badge_count is the latched monotonic read; the RAW badge04
+                # flag drop-flickers single frames post-badge4, and this goal's
+                # cur-NEGATIVE gate makes it fire almost anywhere (it flickered
+                # alive at the Mauville hub, tugging the westward leg back
+                # toward the cable car — live 07-26). Post-badge4 the arc is
+                # over, so retire on the flicker-proof latched count. Audit
+                # (07-26): of the `not flag_badge04_get` arc goals only this
+                # one and reach_lavaridge can single-flicker-fire outside the
+                # arc zone (the rest are protected by disk-latched markers,
+                # positive cur-sets, or the grind level gate).
+                and gs.badge_count < 4
                 and _theft_done(gs)
                 and cur not in {(24, 12), (24, 13), (19, 1), (0, 12)}
                 and gs.map_group != 4
@@ -958,6 +973,10 @@ class Goal:
             return (
                 gs.badge_count >= 3
                 and not gs.flag_badge04_get
+                # Latched-count retire (see ride_cable_car): cur-UNGATED, so a
+                # single RAW badge04 drop-flicker frame re-fired this anywhere
+                # post-badge4 and yanked the agent back toward Lavaridge.
+                and gs.badge_count < 4
                 and _mtchimney_done(gs)
             )
         if c == "buy_potions":
@@ -1026,11 +1045,50 @@ class Goal:
             # >=4 can't yank pre-badge4 states here; retires at badge 5.
             # Cur-ungated: doubles as whiteout recovery anywhere on the
             # corridor (whiteout re-homes to the Lavaridge PC, party healed,
-            # and this goal re-drives the descent). The westward Mauville ->
-            # Route117 -> Verdanturf -> Rusturf -> Route116 -> Rustboro ->
-            # Route104 -> Petalburg legs are the NEXT increment; parking at
-            # Mauville (fallback, frontier wander) is the deliberate seam.
-            return 4 <= gs.badge_count < 5
+            # and this goal re-drives the descent). The westward legs are
+            # owned by reach_verdanturf_b5 (below): this goal is SILENT on the
+            # west corridor (Route117 / Verdanturf town + its indoor group 6) —
+            # at Verdanturf the west goal is a target==cur FALLBACK, and an
+            # unsilenced east goal would win the scan there and oscillate
+            # Verdanturf<->Mauville. East of Mauville (Lavaridge side,
+            # Route111/112, whiteout recovery) this goal still owns routing.
+            return (
+                4 <= gs.badge_count < 5
+                and cur not in {(0, 32), (0, 14)}
+                and gs.map_group != 6
+            )
+        if c == "reach_verdanturf_b5":
+            # Badge5 arc leg 2 (WESTWARD): Mauville hub -> Route117 ->
+            # Verdanturf. Probe 2026-07-26 (offline, real map cache + learned
+            # seals + ledge-aware BFS): map_path Mauville->Verdanturf =
+            # [Route117, Verdanturf]; Mauville (20,11) -> R117 exit len 21;
+            # R117 east entry -> Verdanturf exit len 60; zero sealed triggers
+            # on either leg. cur-set = the corridor + Verdanturf itself (the
+            # destination fallback only returns a goal whose condition MATCHES
+            # there) + Verdanturf's indoor group 6 (PC/Mart/houses — verified
+            # group 6 is exclusively Verdanturf interiors), so stepping into a
+            # building keeps the goal live and region nav walks back out.
+            # NOT cur-ungated: east of Mauville reach_mauville_b5 owns
+            # recovery; the handoff tile is the Mauville map itself.
+            # Follow-up increments (measured, not yet implemented): Verdanturf
+            # -> RusturfTunnel warp (8,1) len 20; tunnel east (29,16) -> west
+            # warp (4,10) NO PATH with the two BREAKABLE_ROCKs (24,4)/(24,5)
+            # blocked, len 41 free -> needs a smash goal (rocks are PERMANENT
+            # FLAG_HIDE_RUSTURF_TUNNEL_ROCK_1/2, one smash opens it forever);
+            # the middle door (18,20) lands in Route116 cid2, a cul-de-sac
+            # that canNOT reach the Rustboro exits (cid1) — the tunnel exit
+            # goal must pin the WEST warp explicitly. Then Route104/Woods
+            # needs dewford_to_woods-style position legs (map graph can't
+            # visit Route104 twice), and the badge>=1-uncapped dewford_*/
+            # peeko_return goals MUST be badge-capped first or they hijack
+            # Route104-south to Briney's sail.
+            return (
+                4 <= gs.badge_count < 5
+                and (
+                    cur in {(0, 2), (0, 32), (0, 14)}
+                    or gs.map_group == 6
+                )
+            )
         return False
 
 
@@ -1451,6 +1509,14 @@ GOAL_TABLE: list[Goal] = [
     # Listed LAST so every "hurt now" goal above (heal_at_lavaridge, un-gated
     # from badge04 the same day) wins first; once the party is healed this is
     # the only live badge-4 match and drives the southbound corridor.
+    # Leg 2 ABOVE leg 1: at the Mauville hub both match (leg 1 only as its
+    # target==cur fallback), and the westward leg must win the scan there.
+    Goal(
+        name="reach_verdanturf_b5",
+        target_map=(0, 14),       # VerdanturfTown (west via Route117)
+        condition="reach_verdanturf_b5",
+        desc="Badge5 arc leg2: Mauville→Route117→Verdanturf (西進、Rusturf 手前)",
+    ),
     Goal(
         name="reach_mauville_b5",
         target_map=(0, 2),        # MauvilleCity — hub the westward legs start from

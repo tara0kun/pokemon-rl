@@ -948,6 +948,54 @@ class TestPostBadge4(GoalsTestBase):
                        npcs_on_map=[]),
             "reach_mauville_b5")
 
+    def test_mauville_hub_heads_west_to_verdanturf(self) -> None:
+        # At the Mauville hub (live save pos (20,11)) the westward leg wins the
+        # scan — not the parking fallback, not any badge04-arc goal.
+        g = goals_mod.current_goal(self._gs(map_group=0, map_num=2, x=20, y=11))
+        self.assertIsNotNone(g)
+        self.assertEqual(g.name, "reach_verdanturf_b5")
+        self.assertEqual(g.target_map, (0, 14))
+
+    def test_badge04_flicker_does_not_pull_east(self) -> None:
+        # RAW badge04 drop-flicker frame (flag reads False; badge_count stays 4
+        # = the latched read): ride_cable_car / reach_lavaridge must stay
+        # silent (their new badge_count<4 gates) — the live 07-26 Mauville
+        # park flicker that tugged the agent toward the cable car.
+        self.assertEqual(
+            self._name(map_group=0, map_num=2, x=20, y=11,
+                       flag_badge04_get=False),
+            "reach_verdanturf_b5")
+        # ...and on the eastern corridor (Route111, no rock in range) the
+        # recovery goal wins, not the cur-ungated reach_lavaridge.
+        self.assertEqual(
+            self._name(map_group=0, map_num=26, x=19, y=110,
+                       flag_badge04_get=False, npcs_on_map=[]),
+            "reach_mauville_b5")
+
+    def test_route117_continues_west(self) -> None:
+        # Mid-corridor on Route117 the leg keeps driving toward Verdanturf,
+        # even though (0,32) is a visited map (bypass) and the east goal is
+        # silenced there.
+        self.assertEqual(
+            self._name(map_group=0, map_num=32, x=30, y=8),
+            "reach_verdanturf_b5")
+
+    def test_verdanturf_parks_without_east_tug(self) -> None:
+        # At Verdanturf (target==cur) the west goal is the returned FALLBACK;
+        # reach_mauville_b5 must be silenced there or the scan would pick it
+        # and oscillate Verdanturf<->Mauville forever.
+        g = goals_mod.current_goal(self._gs(map_group=0, map_num=14, x=19, y=10))
+        self.assertIsNotNone(g)
+        self.assertEqual(g.name, "reach_verdanturf_b5")
+
+    def test_verdanturf_indoor_walks_back_out(self) -> None:
+        # Inside the Verdanturf PC (6,4) the goal stays live (group-6 cur-set,
+        # group 6 is exclusively Verdanturf interiors) and targets the town so
+        # region nav exits the building; the east goal is silent (group gate).
+        self.assertEqual(
+            self._name(map_group=6, map_num=4, x=7, y=8),
+            "reach_verdanturf_b5")
+
     def test_badge5_retires_leg1_heal_stays_generic(self) -> None:
         # Norman beaten (badge_count 5) -> leg 1 retires (the next increment's
         # seam: healthy at Mauville -> None until the westward legs land), but
