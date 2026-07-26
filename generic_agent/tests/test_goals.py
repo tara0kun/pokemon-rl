@@ -980,13 +980,106 @@ class TestPostBadge4(GoalsTestBase):
             self._name(map_group=0, map_num=32, x=30, y=8),
             "reach_verdanturf_b5")
 
-    def test_verdanturf_parks_without_east_tug(self) -> None:
-        # At Verdanturf (target==cur) the west goal is the returned FALLBACK;
-        # reach_mauville_b5 must be silenced there or the scan would pick it
-        # and oscillate Verdanturf<->Mauville forever.
+    def test_verdanturf_continues_west_to_rustboro(self) -> None:
+        # Leg 3 shipped: at Verdanturf the umbrella (above the leg-2 goal)
+        # drives on toward Rustboro — no parking here anymore, and the east
+        # goal stays silenced (no Verdanturf<->Mauville oscillation).
         g = goals_mod.current_goal(self._gs(map_group=0, map_num=14, x=19, y=10))
         self.assertIsNotNone(g)
-        self.assertEqual(g.name, "reach_verdanturf_b5")
+        self.assertEqual(g.name, "reach_rustboro_b5")
+        self.assertEqual(g.target_map, (0, 3))
+
+    def test_tunnel_rock_present_smashes(self) -> None:
+        # East landing (29,16) with the mid-wall rocks live: the smash goal
+        # wins (rock-adjacent (25,4) reachable, len 16 probe) and pins the
+        # (24,4) rock tile. Rocks carry PERMANENT hide flags — one smash.
+        g = goals_mod.current_goal(self._gs(
+            map_group=24, map_num=4, x=29, y=16,
+            npcs_on_map=[(24, 4, 86), (24, 5, 86)]))
+        self.assertIsNotNone(g)
+        self.assertEqual(g.name, "smash_rusturf_rock")
+        self.assertEqual(g.target_pos, (24, 4))
+
+    def test_tunnel_rock_gone_exits_west(self) -> None:
+        # (24,4) smashed (left the object list — permanently, unlike
+        # Route111): the inner exit goal pins the WEST warp (4,10). The
+        # remaining (24,5) rock must not re-fire the smash goal.
+        g = goals_mod.current_goal(self._gs(
+            map_group=24, map_num=4, x=25, y=4,
+            npcs_on_map=[(24, 5, 86)]))
+        self.assertIsNotNone(g)
+        self.assertEqual(g.name, "exit_rusturf_west")
+        self.assertEqual(g.target_pos, (4, 10))
+
+    def test_route116_pushes_to_rustboro_not_peeko(self) -> None:
+        # Route116 at the tunnel landing (47,8): the capped peeko_return must
+        # NOT back-pull to Route104; the umbrella drives to Rustboro.
+        self.assertEqual(
+            self._name(map_group=0, map_num=31, x=47, y=8),
+            "reach_rustboro_b5")
+
+    def test_rustboro_parks_no_back_pull(self) -> None:
+        # At Rustboro (target==cur) the umbrella is the returned fallback —
+        # reach_mauville_b5 is silenced there (exclusion set) or the scan
+        # would pick it and drag the agent back east. Same from an indoor
+        # group-11 map (walks back out to the town).
+        g = goals_mod.current_goal(self._gs(map_group=0, map_num=3, x=30, y=30))
+        self.assertIsNotNone(g)
+        self.assertEqual(g.name, "reach_rustboro_b5")
+        self.assertEqual(
+            self._name(map_group=11, map_num=3, x=4, y=6),
+            "reach_rustboro_b5")
+
+    def test_badge1_peeko_return_regression(self) -> None:
+        # The `< 2` cap must NOT break the badge-1 era: with Peeko rescued the
+        # return journey still owns Rusturf/Route116 at badge 1.
+        for mid in [(0, 31), (24, 4)]:
+            self.assertEqual(
+                self._name(map_group=mid[0], map_num=mid[1], x=20, y=8,
+                           badge_count=1, flag_badge04_get=False),
+                "peeko_return", mid)
+
+    def test_route104_strand_chain_capped(self) -> None:
+        # The audit's STRAND CHAIN: at badge 4 the dewford quartet must be
+        # dead on Route104 north AND south (it ended in dewford_sail boarding
+        # Briney's boat — an irreversible sea-strand). The documented
+        # containment is the east goal pulling back toward the covered
+        # corridor, never the Briney chain.
+        for y in (10, 40):
+            g = goals_mod.current_goal(self._gs(
+                map_group=0, map_num=19, x=15, y=y))
+            self.assertIsNotNone(g, y)
+            self.assertEqual(g.name, "reach_mauville_b5", y)
+
+    def test_smash_target_is_canon_rusturf_rock(self) -> None:
+        # No hardcoded-coord drift: the smash pin must be one of the canon
+        # BREAKABLE_ROCK object_events in RusturfTunnel.map.json.
+        import json
+        from generic_agent import config
+        p = config.MEMORY_DIR / "map_cache" / "RusturfTunnel.map.json"
+        if not p.exists():
+            self.skipTest("RusturfTunnel canon cache not present")
+        rocks = {(e["x"], e["y"])
+                 for e in json.loads(p.read_text(encoding="utf-8"))
+                 .get("object_events", [])
+                 if "BREAKABLE_ROCK" in str(e.get("graphics_id", ""))}
+        goal = next(g for g in goals_mod.GOAL_TABLE
+                    if g.name == "smash_rusturf_rock")
+        self.assertIn(goal.target_pos, rocks)
+
+    def test_exit_target_is_canon_west_warp(self) -> None:
+        # The exit pin must be the WEST (min-x) RusturfTunnel->Route116 warp:
+        # the other (middle door, higher x) lands in the Route116 cul-de-sac
+        # component that cannot reach the Rustboro exits (probe 07-26).
+        from generic_agent import map_data as md
+        info = md.get_cache().get(24, 4)
+        if info is None:
+            self.skipTest("RusturfTunnel canon cache not present")
+        r116 = [(w["x"], w["y"]) for w in (info.warps or [])
+                if "Route116" in str(w.get("dest_map", ""))]
+        goal = next(g for g in goals_mod.GOAL_TABLE
+                    if g.name == "exit_rusturf_west")
+        self.assertEqual(goal.target_pos, min(r116, key=lambda t: t[0]))
 
     def test_verdanturf_indoor_walks_back_out(self) -> None:
         # Inside the Verdanturf PC (6,4) the goal stays live (group-6 cur-set,

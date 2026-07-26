@@ -303,6 +303,12 @@ _GOAL_BYPASS_VISITED = {
     # and Verdanturf joins it the moment the leg lands — without the bypass
     # the goal dies mid-corridor on the very next Route117 frame.
     "reach_verdanturf_b5",
+    # Badge5 leg 3: Rustboro (0,3) has been visited since the badge-1 era, so
+    # the umbrella dies instantly without the bypass. smash_rusturf_rock /
+    # exit_rusturf_west are intentionally NOT here: they only fire when cur ==
+    # RusturfTunnel, where visited-suppression (target_map != cur) can't apply
+    # (the exit_fiery_path_* precedent).
+    "reach_rustboro_b5",
 }
 
 
@@ -439,8 +445,13 @@ class Goal:
         # has no path — the agent would wander. One goal suffices: the
         # multi-map planner routes the hops to Route104 (0,19).
         if c == "peeko_return":
+            # UPPER CAP < 2 (2026-07-26 audit): peeko_done latches True forever,
+            # so the old `>= 1` gate never re-closed — at badge 4 this re-fired
+            # on the westward corridor's own maps (Rusturf/Route116/Rustboro)
+            # and back-pulled the agent to Route104. The return journey is a
+            # badge-1 era event; cap it there.
             return (
-                gs.badge_count >= 1 and peeko_done
+                1 <= gs.badge_count < 2 and peeko_done
                 and cur in {(24, 4), (0, 31), (0, 3)}
             )
         # Northward crossing (only while Peeko not yet rescued):
@@ -453,21 +464,29 @@ class Goal:
             return (
                 gs.badge_count >= 1 and cur == (24, 11) and not peeko_done
             )
-        # Dewford journey (southward) — only AFTER Peeko rescued:
+        # Dewford journey (southward) — only AFTER Peeko rescued.
+        # UPPER CAP < 2 on all four (2026-07-26 audit): peeko_done latches True
+        # forever, so `>= 1` never re-closed and at badge 4 the quartet formed a
+        # STRAND CHAIN on Route104/Woods/Briney's house ending in dewford_sail
+        # boarding Briney's boat to Dewford — an irreversible sea-strand (every
+        # badge<3 recovery goal is silent at badge 4). Route104 borders the
+        # Badge5 Rustboro parking seam, so a frontier-wander drift there is a
+        # live hazard, not a theoretical one. The journey is the badge-1->2
+        # Brawly approach; cap it there.
         if c == "dewford_route104_north":
             return (
-                gs.badge_count >= 1 and cur == (0, 19)
+                1 <= gs.badge_count < 2 and cur == (0, 19)
                 and gs.y < 34 and peeko_done
             )
         if c == "dewford_in_woods":
-            return gs.badge_count >= 1 and cur == (24, 11) and peeko_done
+            return 1 <= gs.badge_count < 2 and cur == (24, 11) and peeko_done
         if c == "dewford_route104_south":
             return (
-                gs.badge_count >= 1 and cur == (0, 19)
+                1 <= gs.badge_count < 2 and cur == (0, 19)
                 and gs.y >= 34 and peeko_done
             )
         if c == "dewford_in_briney_house":
-            return gs.badge_count >= 1 and cur == (17, 0) and peeko_done
+            return 1 <= gs.badge_count < 2 and cur == (17, 0) and peeko_done
         # Dewford Gym (Brawly / Knuckle Badge). Two position-exclusive legs so
         # ordering can't route the agent back out of the gym:
         #  - approach: Stone Badge earned, Knuckle not yet, and NOT inside the
@@ -1054,8 +1073,71 @@ class Goal:
             # Route111/112, whiteout recovery) this goal still owns routing.
             return (
                 4 <= gs.badge_count < 5
-                and cur not in {(0, 32), (0, 14)}
-                and gs.map_group != 6
+                # Westward corridor exclusions (leg 2 + leg 3): Route117,
+                # Verdanturf (+ indoor group 6), RusturfTunnel, Route116,
+                # Rustboro (+ indoor group 11). On each of these a forward
+                # goal owns routing, and at the parking destinations
+                # (Verdanturf/Rustboro, target==cur fallback) an unsilenced
+                # east goal would win the scan and oscillate.
+                and cur not in {(0, 32), (0, 14), (24, 4), (0, 31), (0, 3)}
+                and gs.map_group not in (6, 11)
+            )
+        if c == "smash_rusturf_rock":
+            # Badge5 arc: the Rusturf Tunnel mid-wall. TWO BREAKABLE_ROCK
+            # object_events at tiles (24,4)/(24,5) seal the only corridor rows
+            # (x24 column, y4/y5 — grid-verified; note the map id (24,4) and
+            # the rock tile (24,4) are a numeric coincidence). Probe 07-26:
+            # east (29,16) -> west warp (4,10) is NO PATH with the rocks
+            # standing, len 41 free; the rock-adjacent approach (25,4) is
+            # reachable len 16. Unlike Route111's FLAG_TEMP rock these carry
+            # PERMANENT hide flags (FLAG_HIDE_RUSTURF_TUNNEL_ROCK_1/2), so ONE
+            # smash opens the tunnel forever and this goal never re-fires.
+            # Target (24,4) only: smashing it opens the y4 lane end-to-end
+            # (x20..29 all walkable), and a bump on the remaining (24,5)
+            # self-recovers via npc_avoid (the Route111 two-rock lesson).
+            # Presence-gated on npcs_on_map (smash_route111_rock pattern);
+            # badge>=3 == has HM06; no upper cap (permanent unlock, and the
+            # smash is the right action from either side of the wall).
+            if not (
+                gs.knows_rock_smash
+                and gs.badge_count >= 3
+                and cur == (24, 4)
+            ):
+                return False
+            return any(
+                (nx, ny) == (24, 4)
+                for (nx, ny, _g) in getattr(gs, "npcs_on_map", []) or []
+            )
+        if c == "exit_rusturf_west":
+            # Inside Rusturf Tunnel with the rock down (the smash goal above
+            # wins while it stands): walk to the WEST Route116 warp pad (4,10).
+            # The warp MUST be pinned explicitly: the tunnel's OTHER Route116
+            # warp (18,20, the middle door) is NEARER from the east side
+            # (len 17 vs 41) but lands in Route116 cid2 — a fenced cul-de-sac
+            # that cannot reach the Rustboro exits (cid1, probe 07-26) —
+            # generic nearest-warp routing would pick it and ping-pong through
+            # the dead pocket. Same inner-leg pattern as exit_fiery_path_*.
+            return 4 <= gs.badge_count < 5 and cur == (24, 4)
+        if c == "reach_rustboro_b5":
+            # Badge5 arc leg 3 umbrella: Verdanturf -> [RusturfTunnel] ->
+            # Route116 -> Rustboro. Probe 07-26: naive map_path rides the
+            # Verdanturf 'up' connection-lie (exit_tiles_toward = EMPTY set);
+            # the runtime hop-ban probe bans it (case i) and re-plans
+            # [RusturfTunnel, Route116, Rustboro]; Verdanturf (19,10) ->
+            # tunnel warp (8,1) len 20; Route116 tunnel-landing (47,8) ->
+            # Rustboro exits len 57 (cid1, no seals). cur-set: the corridor +
+            # Rustboro itself (destination parking fallback needs the
+            # condition to MATCH there) + Rustboro's indoor group 11
+            # (verified exclusively Rustboro interiors) so a wander into a
+            # building walks back out. The tunnel map itself is owned by the
+            # smash/exit inner goals above. Route104/Woods position-legs +
+            # Petalburg are the NEXT increment; Rustboro is the parking seam.
+            return (
+                4 <= gs.badge_count < 5
+                and (
+                    cur in {(0, 14), (0, 31), (0, 3)}
+                    or gs.map_group == 11
+                )
             )
         if c == "reach_verdanturf_b5":
             # Badge5 arc leg 2 (WESTWARD): Mauville hub -> Route117 ->
@@ -1509,6 +1591,33 @@ GOAL_TABLE: list[Goal] = [
     # Listed LAST so every "hurt now" goal above (heal_at_lavaridge, un-gated
     # from badge04 the same day) wins first; once the party is healed this is
     # the only live badge-4 match and drives the southbound corridor.
+    # --- Badge5 leg 3: Verdanturf -> Rusturf Tunnel -> Route116 -> Rustboro.
+    # Inner tunnel goals first (most specific), then the umbrella; all ABOVE
+    # the leg-2/leg-1 goals so the westernmost live leg wins the scan.
+    Goal(
+        name="smash_rusturf_rock",
+        target_map=(24, 4),       # RusturfTunnel
+        target_pos=(24, 4),       # BREAKABLE_ROCK tile (FLAG_HIDE_RUSTURF_
+        # TUNNEL_ROCK_2, permanent). Approach = nearest walkable neighbour
+        # ((25,4) from the east, len 16); face+A smashes; canon-pinned by test.
+        condition="smash_rusturf_rock",
+        desc="Rusturf Tunnel の岩 (24,4) を Rock Smash — 永続 flag なので一度で開通",
+    ),
+    Goal(
+        name="exit_rusturf_west",
+        target_map=(24, 4),       # RusturfTunnel
+        target_pos=(4, 10),       # WEST Route116 warp pad — NOT the nearer
+        # middle door (18,20), which lands in the Route116 cid2 cul-de-sac
+        # (cannot reach Rustboro; probe 07-26). Canon-pinned by test.
+        condition="exit_rusturf_west",
+        desc="Rusturf Tunnel 内: 西 warp (4,10) から Route116 cid1 へ (中間扉は禁止)",
+    ),
+    Goal(
+        name="reach_rustboro_b5",
+        target_map=(0, 3),        # RustboroCity (parking seam of this leg)
+        condition="reach_rustboro_b5",
+        desc="Badge5 arc leg3: Verdanturf→Rusturf Tunnel→Route116→Rustboro",
+    ),
     # Leg 2 ABOVE leg 1: at the Mauville hub both match (leg 1 only as its
     # target==cur fallback), and the westward leg must win the scan there.
     Goal(
