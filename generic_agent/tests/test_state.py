@@ -311,5 +311,62 @@ class Party0LevelFlickerTest(unittest.TestCase):
         self.assertEqual(f(0), 0)
 
 
+class PokeballFlickerGuardTest(unittest.TestCase):
+    """bag_pokeball_count fall-confirm guard (07-26 Route104 boundary
+    oscillation). The balls-pocket scan flickers 0 on ~30% of frames (measured
+    live at a settled 15-ball state: [15,15,0,0,15,15,15,0,15,15]); each 0
+    dropped the catch goal's `balls > 0` gate for a frame and nav yanked off
+    Route104. Unlike level, 0 is a LEGITIMATE count, so a fall is believed
+    only after _BALLS_FALL_CONFIRM_N consecutive at-or-below reads; a rise
+    (buying) is trusted immediately. Also covers the buy_pokeballs `balls < 5`
+    gate: a flicker-0 at 15 balls must not read as restock-needed."""
+
+    def setUp(self) -> None:
+        from generic_agent import state as st
+        self.st = st
+        st.reset_flag_latches()
+
+    def tearDown(self) -> None:
+        self.st.reset_flag_latches()
+
+    def test_measured_flicker_sequence_holds_15(self) -> None:
+        # The exact live-measured read sequence: every guarded value stays 15
+        # (so `>0` and `<5` gates never wobble).
+        f = self.st._flicker_guarded_pokeballs
+        for raw in (15, 15, 0, 0, 15, 15, 15, 0, 15, 15):
+            self.assertEqual(f(raw), 15)
+
+    def test_genuine_drain_confirms_zero(self) -> None:
+        # Throwing the last balls: low reads persist on EVERY frame, so the
+        # fall confirms after _BALLS_FALL_CONFIRM_N reads and 0 registers.
+        f = self.st._flicker_guarded_pokeballs
+        out = [f(raw) for raw in (3, 2, 1, 0, 0, 0)]
+        self.assertEqual(out[0], 3)
+        self.assertEqual(out[-1], 0)   # genuinely empty eventually reports 0
+        # and stays 0 afterwards
+        self.assertEqual(f(0), 0)
+
+    def test_rise_trusted_immediately(self) -> None:
+        # Buying balls must register at once (0 -> 11 the same frame).
+        f = self.st._flicker_guarded_pokeballs
+        self.assertEqual(f(0), 0)
+        self.assertEqual(f(11), 11)
+
+    def test_interleaved_good_reads_reset_the_fall(self) -> None:
+        # A fall streak must restart whenever a >= last-good read appears:
+        # alternating 0/15 forever never confirms the 0.
+        f = self.st._flicker_guarded_pokeballs
+        self.assertEqual(f(15), 15)
+        for _ in range(20):
+            self.assertEqual(f(0), 15)
+            self.assertEqual(f(15), 15)
+
+    def test_reset_clears_state(self) -> None:
+        f = self.st._flicker_guarded_pokeballs
+        f(15)
+        self.st.reset_flag_latches()
+        self.assertEqual(f(0), 0)   # fresh: first read trusted as-is
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1077,13 +1077,20 @@ class Goal:
             # Route111/112, whiteout recovery) this goal still owns routing.
             return (
                 4 <= gs.badge_count < 5
-                # Westward corridor exclusions (leg 2 + leg 3): Route117,
+                # Westward corridor exclusions (leg 2 + leg 3 + catch): Route117,
                 # Verdanturf (+ indoor group 6), RusturfTunnel, Route116,
-                # Rustboro (+ indoor group 11). On each of these a forward
-                # goal owns routing, and at the parking destinations
+                # Rustboro (+ indoor group 11), Route104. On each of these a
+                # forward goal owns routing, and at the parking destinations
                 # (Verdanturf/Rustboro, target==cur fallback) an unsilenced
-                # east goal would win the scan and oscillate.
-                and cur not in {(0, 32), (0, 14), (24, 4), (0, 31), (0, 3)}
+                # east goal would win the scan and oscillate. (0,19) added
+                # 07-27: a bag_pokeball_count flicker-0 frame dropped the
+                # catch goal and THIS goal yanked the agent off Route104 —
+                # the boundary oscillation. The read-root fall-confirm guard
+                # is the root fix; this exclusion is the belt: even a
+                # residual flicker now falls to reach_rustboro_b5 (which
+                # keeps the agent on the corridor), never the east pull.
+                and cur not in {(0, 32), (0, 14), (24, 4), (0, 31), (0, 3),
+                                (0, 19)}
                 and gs.map_group not in (6, 11)
             )
         if c == "buy_pokeballs":
@@ -1173,10 +1180,16 @@ class Goal:
             # building walks back out. The tunnel map itself is owned by the
             # smash/exit inner goals above. Route104/Woods position-legs +
             # Petalburg are the NEXT increment; Rustboro is the parking seam.
+            # (0,19) added 07-27 with the reach_mauville_b5 Route104 exclusion:
+            # when the catch project is inactive there (balls genuinely 0 ->
+            # walk to Rustboro, where buy_pokeballs restocks; or party full ->
+            # project done), Route104 must still have a forward goal or it
+            # goes goal-less. Catch/buy sit ABOVE, so this only drives when
+            # they are silent.
             return (
                 4 <= gs.badge_count < 5
                 and (
-                    cur in {(0, 14), (0, 31), (0, 3)}
+                    cur in {(0, 14), (0, 31), (0, 3), (0, 19)}
                     or gs.map_group == 11
                 )
             )

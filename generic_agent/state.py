@@ -238,9 +238,13 @@ def _rise_confirmed(key: str, raw: bool, stable: bool) -> bool:
 
 def reset_flag_latches() -> None:
     global _PARTY0_LEVEL_LAST_GOOD
+    global _BALLS_LAST_GOOD, _BALLS_FALL_PENDING, _BALLS_FALL_STREAK
     _BADGE_BITS_LATCHED.clear()
     _RISE_CONFIRM.clear()
     _PARTY0_LEVEL_LAST_GOOD = 0
+    _BALLS_LAST_GOOD = -1
+    _BALLS_FALL_PENDING = -1
+    _BALLS_FALL_STREAK = 0
 
 
 # Drop-flicker guard for party0_level (same DMA-corruption family as the badge
@@ -263,6 +267,53 @@ def _flicker_guarded_level(lv: int) -> int:
     if lv > 0:
         _PARTY0_LEVEL_LAST_GOOD = lv
     return lv
+
+
+# Fall-confirm guard for bag_pokeball_count — the third member of the DMA-
+# flicker family (badge max-latch, level last-good carry). The balls-pocket
+# scan walks slots via the DMA-relocating SaveBlock1 pointer; a mid-relocation
+# frame reads slot ids as 0 and reports 0 balls. Measured live 07-26 at a
+# settled Rustboro state: [15, 15, 0, 0, 15, 15, 15, 0, 15, 15] (~30% of
+# frames). Each flicker-0 dropped catch_water_route104's `balls > 0` gate for
+# one frame and a lower goal yanked nav — the Rustboro<->Route104 boundary
+# oscillation (40 turns, zero grass encounters).
+#
+# Unlike level, 0 IS a legitimate ball count (before buying / after the last
+# throw), so a plain last-good carry would mask a genuine drain forever.
+# Asymmetric contract instead:
+#   RISE (or first read): trusted immediately — buying must register at once.
+#   FALL: believed only after _BALLS_FALL_CONFIRM_N CONSECUTIVE reads at or
+#     below the pending lower value; a lone 0 amid 15s never confirms because
+#     any >= last_good read resets the streak. A genuine drain (throwing /
+#     using balls) reads low on EVERY subsequent frame, so it confirms after
+#     N frames — and the goals gate on coarse thresholds (>0, <5), so an
+#     N-frame report lag is invisible to them.
+_BALLS_LAST_GOOD: int = -1        # -1 = nothing confirmed yet (trust first read)
+_BALLS_FALL_PENDING: int = -1
+_BALLS_FALL_STREAK: int = 0
+_BALLS_FALL_CONFIRM_N = 5
+
+
+def _flicker_guarded_pokeballs(n: int) -> int:
+    global _BALLS_LAST_GOOD, _BALLS_FALL_PENDING, _BALLS_FALL_STREAK
+    if _BALLS_LAST_GOOD < 0 or n >= _BALLS_LAST_GOOD:
+        _BALLS_LAST_GOOD = n
+        _BALLS_FALL_PENDING = -1
+        _BALLS_FALL_STREAK = 0
+        return n
+    # n < last-good: a fall. Track the lowest pending value so a stepwise
+    # drain (3,2,1,0...) accumulates one streak instead of restarting.
+    if _BALLS_FALL_PENDING >= 0 and n <= _BALLS_FALL_PENDING:
+        _BALLS_FALL_STREAK += 1
+    else:
+        _BALLS_FALL_STREAK = 1
+    _BALLS_FALL_PENDING = n
+    if _BALLS_FALL_STREAK >= _BALLS_FALL_CONFIRM_N:
+        _BALLS_LAST_GOOD = n
+        _BALLS_FALL_PENDING = -1
+        _BALLS_FALL_STREAK = 0
+        return n
+    return _BALLS_LAST_GOOD
 
 # Pokemon substruct order by personality % 24 (Gen 3 box-mon encryption).
 _SUBSTRUCT_PERMS = [
@@ -792,7 +843,9 @@ def read_state(client: MGBAClient) -> GameState:
         flag_badge04_get=flag_badge4,
         flag_rock_smash_hm=flag_rock_smash,
         party_moves=party_moves,
-        bag_pokeball_count=pokeballs,
+        # Read-root fall-confirm guard (see _flicker_guarded_pokeballs): every
+        # balls-gated goal (catch >0, buy_pokeballs <5) sees the guarded value.
+        bag_pokeball_count=_flicker_guarded_pokeballs(pokeballs),
         bag_first_item_id=first_item_id,
         bag_first_item_qty=first_item_qty,
         bag_heal_qty=bag_heal_qty,

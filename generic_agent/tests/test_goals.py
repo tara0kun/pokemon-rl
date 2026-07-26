@@ -904,13 +904,16 @@ class TestWaterCatch(GoalsTestBase):
             "catch_water_route104")
 
     def test_balls_out_on_route104_pulls_back_through_rustboro(self) -> None:
-        # Balls exhausted mid-hunt: catch goes silent, the containment goal
-        # pulls east — and map_path R104->Mauville's first hop is Rustboro
-        # (probe), where buy_pokeballs re-fires = the restock cycle.
+        # Balls GENUINELY exhausted mid-hunt (the read-root fall-confirm guard
+        # means a reported 0 is a confirmed 0): catch goes silent and the
+        # corridor umbrella pulls to Rustboro — where buy_pokeballs re-fires
+        # = the restock cycle. Must NOT be reach_mauville_b5: Route104 is in
+        # its exclusion set since 07-27 (a balls flicker-0 frame let it yank
+        # the agent off the route — the boundary oscillation).
         self.assertEqual(
             self._name(map_group=0, map_num=19, x=5, y=12,
                        bag_pokeball_count=0),
-            "reach_mauville_b5")
+            "reach_rustboro_b5")
 
     def test_broke_and_ballless_abandons_hunt(self) -> None:
         # No balls AND a confirmed wallet below one ball: both project goals
@@ -923,7 +926,8 @@ class TestWaterCatch(GoalsTestBase):
 
     def test_party_full_retires_project(self) -> None:
         # Slot 6 filled (the catch landed): buy and catch both retire; the
-        # leg goals resume (Rustboro parking / Route104 containment).
+        # corridor umbrella resumes on BOTH maps (Route104 walks back north
+        # to the Rustboro parking seam — never the east container).
         self.assertEqual(
             self._name(map_group=0, map_num=3, x=30, y=30,
                        bag_pokeball_count=8, party_count=6),
@@ -931,7 +935,7 @@ class TestWaterCatch(GoalsTestBase):
         self.assertEqual(
             self._name(map_group=0, map_num=19, x=5, y=12,
                        bag_pokeball_count=8, party_count=6),
-            "reach_mauville_b5")
+            "reach_rustboro_b5")
 
     def test_grass_pin_is_canon_tall_grass(self) -> None:
         # No hardcoded-coord drift: the pin must be canon MB_TALL_GRASS (0x02)
@@ -1155,14 +1159,16 @@ class TestPostBadge4(GoalsTestBase):
     def test_route104_strand_chain_capped(self) -> None:
         # The audit's STRAND CHAIN: at badge 4 the dewford quartet must be
         # dead on Route104 north AND south (it ended in dewford_sail boarding
-        # Briney's boat — an irreversible sea-strand). The documented
-        # containment is the east goal pulling back toward the covered
-        # corridor, never the Briney chain.
+        # Briney's boat — an irreversible sea-strand). Since 07-27 Route104 is
+        # excluded from reach_mauville_b5 (balls-flicker oscillation), so the
+        # coverage goal is the corridor umbrella pulling back to Rustboro —
+        # still never the Briney chain.
         for y in (10, 40):
             g = goals_mod.current_goal(self._gs(
                 map_group=0, map_num=19, x=15, y=y))
             self.assertIsNotNone(g, y)
-            self.assertEqual(g.name, "reach_mauville_b5", y)
+            self.assertFalse(g.name.startswith("dewford"), (y, g.name))
+            self.assertEqual(g.name, "reach_rustboro_b5", y)
 
     def test_smash_target_is_canon_rusturf_rock(self) -> None:
         # No hardcoded-coord drift: the smash pin must be one of the canon
