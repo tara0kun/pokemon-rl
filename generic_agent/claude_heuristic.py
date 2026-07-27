@@ -1723,6 +1723,7 @@ def run(
     battle_trainer_latch = False
     battle_double_latch = False
     last_ram_battle_turn = -999
+    last_good_goal = None       # carries the goal through saveblock1_valid flicker
     unknown_ui_streak = 0
     teach_cooldown_until = 0
     shop_cooldown_until = 0
@@ -2071,7 +2072,24 @@ def run(
             except (OSError, RuntimeError):
                 pass
 
-        cur_goal = goals_mod.current_goal(gs) if gs.saveblock1_valid else None
+        # Goal-carry through DMA flicker. current_goal returns None from TWO
+        # flicker sources under the battle-dense Woods/Route104 load (07-27:
+        # ~98% of overworld frames went goal=None and the loop drifted out of
+        # the Woods and thrashed a whole run): (a) saveblock1_valid flickers
+        # False; (b) on a single-goal tile like the Woods (24,11) where only
+        # catch_woods matches, party_count flickering to 0 fails its
+        # `1<=party<6` gate. Carry the last-good goal through ANY None frame
+        # (same discipline as the badge/party latches) so nav stays purposeful.
+        # A genuinely-changed goal re-latches on the next clean frame; goals are
+        # map-keyed and change slowly, so a few carried frames never mis-drive.
+        _computed_goal = (
+            goals_mod.current_goal(gs) if gs.saveblock1_valid else None
+        )
+        if _computed_goal is not None:
+            cur_goal = _computed_goal
+            last_good_goal = _computed_goal
+        else:
+            cur_goal = last_good_goal
 
         # HM-teach sub-task hook (Rock Smash chain): teach_rock_smash is a bag/
         # party MENU operation (target_map=None), not a nav goal. When active and
