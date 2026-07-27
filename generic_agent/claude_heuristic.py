@@ -129,6 +129,27 @@ GOAL_DIRECTED_SRC_PREFIXES = ("mapbfs", "rival_seek", "rival_talk", "goal_")
 
 _UI_ESCAPE_CYCLE = ("B", "B", "B", "A")
 
+# --- Wild-catch state-machine waypoints (US Emerald) ----------------------
+# gs.game_cb2 carries the RAW gMain.callback2 pointer regardless of the battle
+# whitelist (state.CB2_BATTLE_SET), so the in-battle BAG (0x081AAD5D, which is
+# NOT whitelisted and therefore reads in_battle=False / game_mode="unknown_ui")
+# is still observable. The catch SM keys every transition off these values plus
+# a raw ball-count edge, re-sending each button until the cb2 transition is seen
+# -- the same read-verify-retry contract that makes walking tolerate a dropped
+# press, replacing the old open-loop 7xA button spray.
+CB2_BATTLE_MAIN = 0x08038421   # CB2_BattleMain (command menu / move-select / anim)
+CB2_BATTLE_BAG = 0x081AAD5D    # in-battle BAG screen
+CB2_OVERWORLD = 0x08085E5D     # CB2_Overworld (battle has ended)
+# Self-correcting bag-open cycle, one button per turn. cb2 CANNOT distinguish
+# the command menu from the FIGHT move-select submenu (both are tasks inside
+# CB2_BattleMain), so a leading B backs out of an accidental submenu, Up+Right
+# forces the cursor onto BAG (top-right of the 2x2 grid), and a single trailing
+# A opens it. One A per 4-turn cycle bounds the KO risk if a B/Right press drops.
+CATCH_OPEN_CYCLE = ("B", "Up", "Right", "A")
+CATCH_OPEN_GIVE_UP = 24        # ~4 open cycles without reaching the bag -> disengage
+CATCH_PROBE_MAX_POCKETS = 5    # pocket sweeps with no ball decrement -> disengage
+CATCH_MAX_BALLS = 5            # never spend more than this many balls per battle
+
 
 def catch_intent_active(goal) -> bool:
     """True only when the CURRENT goal explicitly asks to catch something
@@ -1684,8 +1705,20 @@ def run(
     history_buttons: list[str] = []
     entry_dir: str | None = None
     force_explore_until_turn = 0
-    catch_phase_remaining = 0
-    catch_seq_queue: list[str] = []
+    # Wild-catch state machine (replaces the old blind catch_seq_queue / 7xA
+    # spray). Driven per-turn from gs.game_cb2 + a raw ball-count edge; see the
+    # `elif catch_active:` dispatch branch below.
+    catch_active = False
+    catch_state = ""            # "OPEN_BAG" / "THROW_PROBE" / "AWAIT_RESULT"
+    catch_balls_ref = 0         # GUARDED ball count at throw baseline (stable)
+    catch_balls_at_start = 0    # guarded count at engage (bounds total throws)
+    catch_party_ref = 0         # party_count at engage (catch = party rise)
+    catch_attempts = 0          # confirmed throws this battle
+    catch_probe_step = 0        # cycle index within the current state
+    catch_pockets_tried = 0     # bag pocket sweeps (THROW_PROBE bound)
+    catch_state_age = 0         # turns in the current state (give-up bounds)
+    catch_ball_edge = 0         # consecutive raw == ref-1 reads (throw confirm)
+    catch_party_edge = 0        # consecutive party > ref reads (catch confirm)
     battle_move_queue: list[str] = []
     battle_trainer_latch = False
     battle_double_latch = False
@@ -1815,6 +1848,12 @@ def run(
             unknown_ui_streak = 0
         if gs.in_battle:
             last_ram_battle_turn = turn
+        # Keep a multi-turn catch inside the battle-recency window: the in-battle
+        # BAG (cb2 0x081AAD5D) is NOT whitelisted, so gs.in_battle reads False
+        # there and a >12-turn capture would otherwise lapse ram_battle_recent,
+        # tripping the ui_escape / battle-over reset paths mid-catch.
+        if catch_active:
+            last_ram_battle_turn = turn
         ram_battle_recent = (turn - last_ram_battle_turn) <= 12
         in_battle_seen = gs.in_battle or (
             bool(ss_for_battle.get("battle_menu")) and ram_battle_recent
@@ -1891,6 +1930,16 @@ def run(
             # right after a trainer fight would be misdriven as a trainer).
             if not ram_battle_recent:
                 battle_turn = 0
+                # Battle is confirmed over -> drop any leftover catch SM state so
+                # it can never leak a stray press into the overworld.
+                catch_active = False
+                catch_state = ""
+                catch_attempts = 0
+                catch_probe_step = 0
+                catch_pockets_tried = 0
+                catch_state_age = 0
+                catch_ball_edge = 0
+                catch_party_edge = 0
             battle_trainer_latch = False
             battle_double_latch = False
 
@@ -2430,14 +2479,132 @@ def run(
             button = battle_move_queue.pop(0)
             src = f"battle_move:{button}@rem{len(battle_move_queue)}"
             decisions["battle_move"] = decisions.get("battle_move", 0) + 1
-        elif catch_seq_queue:
-            button = catch_seq_queue.pop(0)
-            src = f"catch_seq_followup:{button}@rem{len(catch_seq_queue)}"
-            decisions["catch_seq_followup"] = (
-                decisions.get("catch_seq_followup", 0) + 1
+        elif catch_active:
+            # Drop-robust wild-catch state machine. Every transition is keyed off
+            # the RAW callback pointer (gs.game_cb2, stored regardless of the
+            # battle whitelist) plus a raw ball-count edge, re-sending the needed
+            # button until the cb2 transition is observed -- the same read-verify-
+            # retry contract that makes walking drop-tolerant. Bounded so a
+            # persistent emulator press-drop degrades to flee/fight instead of
+            # emptying the bag or softlocking.
+            cb2 = getattr(gs, "game_cb2", 0)
+            raw_balls = getattr(gs, "bag_pokeball_count_raw", 0)
+            party_now = gs.party_count
+            menu_now = bool(screen_signals.get("battle_menu"))
+            catch_state_age += 1
+            # Rise-confirmed catch (party_count is a live, unguarded read that
+            # can flicker, so require 2 consecutive rises).
+            catch_party_edge = (
+                catch_party_edge + 1 if party_now > catch_party_ref else 0
             )
-            if not catch_seq_queue:
-                catch_phase_remaining = 0
+            # Throw-landed edge: the raw scan flickers to 0 in battle (never to
+            # ref-1), so an exact -1, nonzero, 2-consecutive read cleanly
+            # separates a real throw from the DMA flicker.
+            catch_ball_edge = (
+                catch_ball_edge + 1
+                if raw_balls == catch_balls_ref - 1 and raw_balls > 0
+                else 0
+            )
+            if catch_party_edge >= 2:
+                # Caught: party grew. A advances the "Gotcha!" text; disengage
+                # and let normal dispatch (ui_escape) handle any nickname prompt.
+                catch_active = False
+                button, src = "A", "catch_sm:caught"
+            elif cb2 == CB2_OVERWORLD:
+                catch_active = False
+                button, src = "B", "catch_sm:battle_over"
+            elif catch_balls_at_start - gs.bag_pokeball_count >= CATCH_MAX_BALLS:
+                # Edge-INDEPENDENT global spend cap (verifier belt-and-suspenders
+                # 2026-07-27): the throw-count bounds below all depend on the
+                # raw==ref-1 edge firing; a MISSED edge freezes catch_balls_ref so
+                # no later throw matches, attempts stick at 0, and the SM would
+                # re-open+throw until the bag empties. This caps total spend on the
+                # GUARDED count (only falls, never spuriously rises; fall-confirm
+                # means it lags but always eventually reflects real throws), so we
+                # can never drain past CATCH_MAX_BALLS regardless of edge health.
+                # Sits AFTER caught/battle_over so a successful final-ball catch
+                # still registers as caught.
+                catch_active = False
+                button, src = "B", "catch_sm:ball_cap"
+            elif catch_ball_edge >= 2 and catch_state != "AWAIT_RESULT":
+                # A ball just left the bag -> ride the shake/result animation.
+                catch_balls_ref = raw_balls
+                catch_attempts += 1
+                catch_state = "AWAIT_RESULT"
+                catch_state_age = 0
+                catch_ball_edge = 0
+                button, src = "A", f"catch_sm:thrown@{catch_attempts}"
+            elif cb2 == CB2_BATTLE_BAG:
+                # THROW_PROBE: pocket-agnostic sweep. Only a Poke Ball consumes
+                # on a lone A (throw); any other item opens a CANCELLABLE use/
+                # target prompt, so A -> (B cancel) -> Right (next pocket) is safe
+                # whichever pocket the bag opens on. Ball-count edge (above) is
+                # what confirms a real throw.
+                if catch_state != "THROW_PROBE":
+                    catch_state = "THROW_PROBE"
+                    catch_probe_step = 0
+                    catch_pockets_tried = 0
+                    catch_state_age = 0
+                if catch_pockets_tried >= CATCH_PROBE_MAX_POCKETS:
+                    catch_active = False
+                    button, src = "B", "catch_sm:probe_giveup"
+                else:
+                    step = catch_probe_step % 3
+                    if step == 0:
+                        button, src = "A", "catch_sm:probe_throw"
+                    elif step == 1:
+                        button, src = "B", "catch_sm:probe_cancel"
+                    else:
+                        button, src = "Right", "catch_sm:probe_pocket"
+                        catch_pockets_tried += 1
+                    catch_probe_step += 1
+            elif cb2 == CB2_BATTLE_MAIN:
+                if catch_state == "AWAIT_RESULT":
+                    if menu_now:
+                        # Command menu is back with the ball spent and no party
+                        # rise -> the mon broke free.
+                        if catch_attempts >= min(
+                            catch_balls_at_start, CATCH_MAX_BALLS,
+                        ):
+                            catch_active = False
+                            button, src = "B", "catch_sm:out_of_tries"
+                        else:
+                            catch_state = "OPEN_BAG"
+                            catch_state_age = 0
+                            catch_probe_step = 1
+                            button = CATCH_OPEN_CYCLE[0]
+                            src = "catch_sm:broke_free"
+                    else:
+                        button, src = "A", "catch_sm:await"
+                else:
+                    # OPEN_BAG (also the landing spot when a THROW_PROBE press
+                    # backed us out to the command menu). cb2 cannot tell the
+                    # command menu from FIGHT move-select, so emit the self-
+                    # correcting (B, Up, Right, A) cycle until cb2 -> the bag.
+                    if catch_state != "OPEN_BAG":
+                        catch_state = "OPEN_BAG"
+                        catch_probe_step = 0
+                        catch_state_age = 0
+                    if catch_state_age > CATCH_OPEN_GIVE_UP:
+                        catch_active = False
+                        button, src = "B", "catch_sm:open_giveup"
+                    else:
+                        button = CATCH_OPEN_CYCLE[
+                            catch_probe_step % len(CATCH_OPEN_CYCLE)
+                        ]
+                        catch_probe_step += 1
+                        src = f"catch_sm:open_{button}"
+            elif catch_state_age > CATCH_OPEN_GIVE_UP:
+                # Unexpected callback parked too long (the ram_battle_recent
+                # refresh disables the L1930 self-heal while active, so bound it
+                # here) -> give up, back out with B, let flee/fight resume.
+                catch_active = False
+                button, src = "B", "catch_sm:unexpected_giveup"
+            else:
+                # Unexpected callback (a use/target sub-screen, or an unmapped
+                # ball-type prompt) -> back toward a known state with B.
+                button, src = "B", "catch_sm:unexpected_cb2"
+            decisions["catch_sm"] = decisions.get("catch_sm", 0) + 1
         elif llm_buttons_queue:
             valid = {"A","B","Up","Down","Left","Right","Start","Select"}
             llm_btn = llm_buttons_queue.pop(0)
@@ -2492,15 +2659,35 @@ def run(
         # "forget move?" prompt (cb2 0x081BFAB5): A-mash there can overwrite Rock
         # Tomb, so we deterministically decline it.
         forced_ui = None
-        if not ram_battle_recent or gs.game_cb2 == 0x081BFAB5:
+        # NOT while a catch is active: the in-battle bag reads unknown_ui, so its
+        # streak would otherwise clobber the SM's button with B,B,B,A.
+        if (
+            (not ram_battle_recent or gs.game_cb2 == 0x081BFAB5)
+            and not catch_active
+        ):
             forced_ui = ui_escape_button(unknown_ui_streak)
         if forced_ui is not None:
             button, src = forced_ui, f"ui_escape:{forced_ui}@{unknown_ui_streak}"
         if "escape" in src:
             escape_dir_index = (escape_dir_index + 1) % 4
-        if src.startswith("wild_catch_try_screen:init") and not catch_seq_queue:
-            catch_seq_queue = ["A", "A", "A", "A", "A", "A", "A"]
-            catch_phase_remaining = len(catch_seq_queue)
+        # Engage the catch state machine the first time the intent/type/species-
+        # gated heuristic asks to throw (pre-empt "wild_catch_try_screen:init" or
+        # the Part-A "wild_catch_try" legs). From here the per-turn cb2-driven SM
+        # (elif catch_active) drives bag-open / throw-probe / await-result with
+        # read-verify-retry. balls_ref is the GUARDED count (stable pre-throw
+        # value; the raw scan flickers to 0 in battle) -- raw is only the EDGE.
+        if src.startswith("wild_catch_try") and not catch_active:
+            catch_active = True
+            catch_state = "OPEN_BAG"
+            catch_balls_ref = gs.bag_pokeball_count
+            catch_balls_at_start = gs.bag_pokeball_count
+            catch_party_ref = gs.party_count
+            catch_attempts = 0
+            catch_probe_step = 0
+            catch_pockets_tried = 0
+            catch_state_age = 0
+            catch_ball_edge = 0
+            catch_party_edge = 0
         key = src.split(":")[0]
         decisions[key] = decisions.get(key, 0) + 1
         # Per-turn decision trace. The 100-turn stdout summary hides WHY the
@@ -2714,9 +2901,12 @@ def run(
             # on long holds, unverified).
             hold = (
                 25
-                if src.startswith("battle_move")
-                and battle_turn > FLEE_GIVE_UP_BATTLE_TURNS
-                and not battle_trainer_latch
+                if src.startswith("catch_sm")
+                or (
+                    src.startswith("battle_move")
+                    and battle_turn > FLEE_GIVE_UP_BATTLE_TURNS
+                    and not battle_trainer_latch
+                )
                 else 15
             )
             client.tap(button, frames=hold)

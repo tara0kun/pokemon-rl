@@ -498,6 +498,14 @@ class GameState:
     # gate) and to confirm the HM-teach sub-task succeeded. Empty on read failure.
     party_moves: list[list[int]] = field(default_factory=list)
     bag_pokeball_count: int = 0
+    # UNGUARDED live Poke Ball count for the catch state machine's per-turn
+    # "a ball just left the bag" edge signal. The guarded bag_pokeball_count
+    # above lags a real throw by up to _BALLS_FALL_CONFIRM_N frames (by design,
+    # to resist the in-battle DMA flicker) so it CANNOT detect a single-ball
+    # throw promptly. The raw value flickers to 0 (not to count-1) during DMA,
+    # so the SM filters with "exactly ref-1 and >0, 2 consecutive". See the
+    # drop-robust catch flow (2026-07-27, Codex+Claude cross-vendor design).
+    bag_pokeball_count_raw: int = 0
     bag_first_item_id: int = 0
     bag_first_item_qty: int = 0
     bag_heal_qty: int = 0          # HP restores in the Items pocket (H14)
@@ -648,6 +656,7 @@ def read_state(client: MGBAClient) -> GameState:
             battle_flags=flags,
             badge_count=len(_BADGE_BITS_LATCHED),
             bag_pokeball_count=_balls_carry(),
+            bag_pokeball_count_raw=_balls_carry(),
         )
 
     try:
@@ -663,6 +672,7 @@ def read_state(client: MGBAClient) -> GameState:
             battle_flags=flags,
             badge_count=len(_BADGE_BITS_LATCHED),
             bag_pokeball_count=_balls_carry(),
+            bag_pokeball_count_raw=_balls_carry(),
         )
 
     try:
@@ -898,6 +908,7 @@ def read_state(client: MGBAClient) -> GameState:
         # Read-root fall-confirm guard (see _flicker_guarded_pokeballs): every
         # balls-gated goal (catch >0, buy_pokeballs <5) sees the guarded value.
         bag_pokeball_count=_flicker_guarded_pokeballs(pokeballs),
+        bag_pokeball_count_raw=pokeballs,  # unguarded; catch SM throw-edge signal
         bag_first_item_id=first_item_id,
         bag_first_item_qty=first_item_qty,
         bag_heal_qty=bag_heal_qty,
