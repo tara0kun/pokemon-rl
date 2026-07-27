@@ -16,6 +16,7 @@
 - **grass 判定は metatile ID ではなく behavior byte**。旧 `GRASS_METATILES={0x208,0x209}` は Rustboro タイルセットでは池の水だった(灯台下暗し fix 06-28; map_knowledge.py:45-56)
 - secondary tileset の behavior は 0x200+ にオフセットして引く。抽出済み secondary_*.bin がある map cluster しか正しくない(map_knowledge.py:288-299)
 - bag 数量・species は暗号化されている(INVARIANTS B-10)。「生で読めた気がする」値はノイズ
+- **party_count は live global `gPlayerPartyCount`(0x020244E9 = PLAYER_PARTY_ADDR-3)から読む。SaveBlock1 mirror(`ptr+0x234`)は SAVE 時のみ同期 = catch/deposit 後 次の save まで stale**。07-27 に Marill 捕獲直後、live=6 なのに mirror=5 で party_count が 5/0 flicker し「catch goal(party<6)が retire しない」危険が出た真因。mons は元から live global 読みで、count だけ mirror 読みの不整合だった(state.py:28,725)。live global は fixed BSS で DMA 非再配置=flicker しない
 - map.bin の寸法が layouts.json と合わないことがある → 幅候補から因数分解で推定するフォールバックあり(map_data.py:171-180)
 - pokeemerald からの map データは**初回アクセス時にネットワーク DL**(map_data.py:106-111)。オフラインだと BFS 系が None を返し、heuristic は素の探索に落ちる(設計上のフォールバック)
 - **battler slot は敵味方交互(0/2=自分、1/3=敵)**。`active_hp()` は slot 0 のみ = **ダブルでは自分の2体目(slot 2)のひんしが構造的に見えない**。Route111 Twins で 900 turn 停止した真因(07-16 fix)。ダブルの自分側は `battle_moves.player_battler_hps(double=True)` で両方読む

@@ -23,6 +23,12 @@ from .io import EmulatorError, MGBAClient
 
 SAVEBLOCK1_PTR_ADDR = 0x03005D8C
 PLAYER_PARTY_ADDR = 0x020244EC  # gPlayerParty[0] in Emerald (USA)
+# gPlayerPartyCount (0x020244E9) sits 3 bytes before gPlayerParty (the decomp
+# u8 + 3 padding). This is the LIVE working count the game uses everywhere and
+# is a fixed BSS global (no DMA relocation). Read party count from here, NOT
+# from SaveBlock1.playerPartyCount (see SB1_PLAYER_PARTY_COUNT below), which is
+# only synced on save and reads stale between a catch/deposit and the next save.
+PLAYER_PARTY_COUNT_ADDR = PLAYER_PARTY_ADDR - 3  # 0x020244E9
 POKEMON_STRUCT_SIZE = 100
 POKEMON_LEVEL_OFFSET = 0x54
 POKEMON_HP_OFFSET = 0x56
@@ -113,7 +119,9 @@ def read_live_walkable_overrides(
 
 # SaveBlock1 inner offsets (pokeemerald struct SaveBlock1)
 # These are referenced relative to *gSaveBlock1Ptr.
-SB1_PLAYER_PARTY_COUNT = 0x0234  # u32 at SaveBlock1.playerPartyCount
+SB1_PLAYER_PARTY_COUNT = 0x0234  # SaveBlock1 mirror; SAVE-only sync (stale
+                                 # between catch/deposit and next save). Do NOT
+                                 # use for live count -- read PLAYER_PARTY_COUNT_ADDR.
 SB1_FLAGS_OFFSET = 0x1270        # u8 flags[NUM_FLAG_BYTES]
 SB1_VARS_OFFSET = 0x1408         # u16 vars[NUM_VARS]
 SB1_BAG_ITEMS = 0x0560           # struct ItemSlot bagPocket_Items[30]
@@ -717,7 +725,10 @@ def read_state(client: MGBAClient) -> GameState:
     total_flags = 0
     flag_hex = ""
     try:
-        party_count = client.read8(ptr + SB1_PLAYER_PARTY_COUNT)
+        # Live count from the fixed gPlayerParty* globals, NOT the SaveBlock1
+        # mirror (which is stale between a catch and the next save -- Marill
+        # caught 07-27 read live=6 but SB1 mirror still 5 until save).
+        party_count = client.read8(PLAYER_PARTY_COUNT_ADDR)
         if party_count > 6:
             party_count = 0
         # Badges = event flags FLAG_BADGE01_GET (0x867) .. BADGE08 (0x86E).
