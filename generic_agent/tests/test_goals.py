@@ -908,39 +908,43 @@ class TestWaterCatch(GoalsTestBase):
 
     def test_balls_out_on_route104_pulls_back_through_rustboro(self) -> None:
         # Balls GENUINELY exhausted mid-hunt (the read-root fall-confirm guard
-        # means a reported 0 is a confirmed 0): catch goes silent and the
-        # corridor umbrella pulls to Rustboro — where buy_pokeballs re-fires
-        # = the restock cycle. Must NOT be reach_mauville_b5: Route104 is in
-        # its exclusion set since 07-27 (a balls flicker-0 frame let it yank
-        # the agent off the route — the boundary oscillation).
+        # means a reported 0 is a confirmed 0): catch goes silent. Since the
+        # Norman grind arc (07-28) the under-level eastbound trek owns this
+        # pull — its first map_path hop from Route104 is STILL Rustboro, where
+        # buy_pokeballs scans first and re-fires = the same restock cycle.
+        # Must NOT be reach_mauville_b5: Route104 is in its exclusion set
+        # since 07-27 (a balls flicker-0 frame let it yank the agent off the
+        # route — the boundary oscillation).
         self.assertEqual(
             self._name(map_group=0, map_num=19, x=5, y=12,
                        bag_pokeball_count=0),
-            "reach_rustboro_b5")
+            "reach_ngrind_mauville")
 
     def test_broke_and_ballless_abandons_hunt(self) -> None:
         # No balls AND a confirmed wallet below one ball: both project goals
-        # silent -> parking at Rustboro (documented safe end state; the
-        # westward push continues next increment).
+        # silent -> the under-level (47 < NORMAN_GRIND_TARGET_LEVEL) grind
+        # trek continues east through Rustboro (was: park at Rustboro, before
+        # the 07-28 Norman grind arc).
         self.assertEqual(
             self._name(map_group=0, map_num=3, x=30, y=30,
                        bag_pokeball_count=0, money=100, party_count=6),
-            "reach_rustboro_b5")
+            "reach_ngrind_mauville")
 
     def test_party_full_retires_project(self) -> None:
-        # Slot 6 filled (the catch landed): buy and catch both retire. At
-        # Rustboro (0,3) the corridor umbrella parks (no Petalburg condition
-        # matches there). On Route104 (0,19) the party-6 latch now hands off to
-        # the Petalburg leg (petalburg_to_woods) instead of parking back at
-        # Rustboro -- the whole point of Badge5 leg 4 (2026-07-27).
+        # Slot 6 filled (the catch landed): buy and catch both retire, and at
+        # the design-time level (47 < NORMAN_GRIND_TARGET_LEVEL) the grind
+        # trek owns both positions eastbound (the live pre-Norman state IS
+        # party 6 / under-level). The petalburg_to_woods handoff this test
+        # used to pin is now the AT-TARGET behavior — pinned by
+        # TestNormanGrind.test_retire_resumes_petalburg_chain.
         self.assertEqual(
             self._name(map_group=0, map_num=3, x=30, y=30,
                        bag_pokeball_count=8, party_count=6),
-            "reach_rustboro_b5")
+            "reach_ngrind_mauville")
         self.assertEqual(
             self._name(map_group=0, map_num=19, x=5, y=12,
                        bag_pokeball_count=8, party_count=6),
-            "petalburg_to_woods")
+            "reach_ngrind_mauville")
 
     def test_grass_pin_is_canon_tall_grass(self) -> None:
         # No hardcoded-coord drift: the pin must be canon MB_TALL_GRASS (0x02)
@@ -975,8 +979,14 @@ class TestPostBadge4(GoalsTestBase):
             m.write_text("1", encoding="utf-8")
 
     def _gs(self, **kw):
+        # party0_level AT the Norman-grind target (2026-07-28): this class
+        # pins the b5 westbound chain, which since the grind arc landed is
+        # the AT-TARGET-level behavior — under NORMAN_GRIND_TARGET_LEVEL the
+        # reach_ngrind_*/grind_fiery_norman goals own the same corridor
+        # (pinned by TestNormanGrind below).
         base = dict(
-            badge_count=4, party_count=5, party0_level=47,
+            badge_count=4, party_count=5,
+            party0_level=goals_mod.NORMAN_GRIND_TARGET_LEVEL,
             party0_hp=152, party0_max_hp=152,
             bag_heal_qty=2, money=20000,
             flag_badge04_get=True,
@@ -1030,17 +1040,20 @@ class TestPostBadge4(GoalsTestBase):
     def test_hurt_pocket_heals_hurt_south_blob_pushes_on(self) -> None:
         # Route112 post-badge4: the JAGGED POCKET component can still walk
         # into Lavaridge -> heal there; the SOUTH BLOB cannot walk back up
-        # (one-way ledges, ride_cable_car retired with the badge) -> push on
-        # toward the Mauville PC direction instead of stranding on an
-        # unreachable Lavaridge target. (6,46) = the Jagged landing warp
-        # (pocket component, canon warp); (26,44) = a south-blob tile (the
-        # 5595-turn stall tile from the fiery_path_cross tests).
+        # (one-way ledges, ride_cable_car retired with the badge) -> head for
+        # the Mauville PC instead of stranding on an unreachable Lavaridge
+        # target. Since the Norman grind arc (07-28) that walk has an actual
+        # heal ENDPOINT: heal_at_mauville_ngrind (level-independent, same
+        # direction — was reach_mauville_b5, which walked the whole corridor
+        # hurt). (6,46) = the Jagged landing warp (pocket component, canon
+        # warp); (26,44) = a south-blob tile (the 5595-turn stall tile from
+        # the fiery_path_cross tests).
         self.assertEqual(
             self._name(map_group=0, map_num=27, x=6, y=46, party0_hp=40),
             "heal_at_lavaridge")
         self.assertEqual(
             self._name(map_group=0, map_num=27, x=26, y=44, party0_hp=40),
-            "reach_mauville_b5")
+            "heal_at_mauville_ngrind")
 
     def test_route111_rock_smashed_southbound(self) -> None:
         # Live 07-26 stall: the southbound Mauville leg wedged at (16,99) —
@@ -1232,8 +1245,12 @@ class TestPetalburgLeg(GoalsTestBase):
     def _gs(self, **kw):
         # Badge5 era, catch done (party 6 -> latches), prior-arc flags set so no
         # earlier goal competes, full HP + stocked so heal/shop don't divert.
+        # party0_level AT the Norman-grind target: the petalburg_* chain is the
+        # AT-TARGET behavior since 07-28 — under it the reach_ngrind_* trek
+        # owns the same corridor (TestNormanGrind).
         base = dict(
             badge_count=4, party_count=6,
+            party0_level=goals_mod.NORMAN_GRIND_TARGET_LEVEL,
             party0_hp=128, party0_max_hp=128, party0_damaging_pp=10,
             bag_heal_qty=10, bag_pokeball_count=10, money=20000,
             flag_steven_letter_delivered=True,
@@ -1377,9 +1394,13 @@ class TestCatchWoods(GoalsTestBase):
     def _gs(self, **kw):
         # Same prior-arc flags as TestPetalburgLeg so no earlier arc goal
         # competes; party 5 (open slot), balls stocked, full HP + PP so neither
-        # heal_at_petalburg nor buy_pokeballs diverts the scan.
+        # heal_at_petalburg nor buy_pokeballs diverts the scan. Level at the
+        # Norman-grind target so the party-6 retire tests exercise the
+        # petalburg handoff (catch_woods itself scans ABOVE the grind block,
+        # so the catch assertions hold at any level).
         base = dict(
             badge_count=4, party_count=5,
+            party0_level=goals_mod.NORMAN_GRIND_TARGET_LEVEL,
             party0_hp=128, party0_max_hp=128, party0_damaging_pp=10,
             bag_heal_qty=10, bag_pokeball_count=10, money=20000,
             flag_steven_letter_delivered=True,
@@ -1477,6 +1498,278 @@ class TestCatchWoods(GoalsTestBase):
         self.assertEqual(
             self._name(map_group=0, map_num=19, x=10, y=40, party_count=5),
             "catch_water_route104")
+
+
+class TestNormanGrind(GoalsTestBase):
+    """Norman grind arc (2026-07-28, user decision after Norman loss #1):
+    while 4 <= badge < 5 AND lead < NORMAN_GRIND_TARGET_LEVEL, the loop treks
+    the lead EASTBOUND Petalburg -> Woods -> Rustboro -> Rusturf Tunnel ->
+    Verdanturf -> Route117 -> Mauville -> Route111 -> Route112 -> Fiery Path
+    and grinds the cave; at target level all four arc goals retire and the
+    UNCHANGED live-proven b5 chain drives home to the gym. Env = the live
+    pre-rematch state: badge 4, party 6 (both catch projects done, latch set),
+    Sceptile L48 full HP/PP."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        for m in (goals_mod.PEEKO_DONE_MARKER, goals_mod.LETTER_DONE_MARKER,
+                  goals_mod.DEVON_DELIVERED_MARKER, goals_mod.THEFT_DONE_MARKER,
+                  goals_mod.MTCHIMNEY_DONE_MARKER,
+                  goals_mod.WATER_CATCH_DONE_MARKER):
+            m.write_text("1", encoding="utf-8")
+        # Production reality: every trek target is long-visited — these tests
+        # must genuinely exercise the _GOAL_BYPASS_VISITED entries.
+        for mid in ((24, 11), (0, 19), (0, 3), (0, 14), (0, 2), (0, 26),
+                    (0, 27), (24, 14), (10, 5), (24, 4), (0, 31), (0, 32)):
+            goals_mod.record_map_visit(*mid)
+
+    def _gs(self, **kw):
+        base = dict(
+            badge_count=4, party_count=6, party0_level=48,
+            party0_hp=155, party0_max_hp=155, party0_damaging_pp=15,
+            bag_heal_qty=10, bag_pokeball_count=10, money=3575,
+            flag_badge04_get=True,
+            flag_steven_letter_delivered=True,
+            flag_dock_rejected_devon=True,
+            flag_devon_goods_delivered=True,
+            flag_devon_goods_recovered=True,
+            flag_route112_magma_cleared=True,
+            flag_mtchimney_magma_defeated=True,
+            flag_rock_smash_hm=True, party_moves=[[249, 0, 0, 0]],
+        )
+        base.update(kw)
+        return make_gs(**base)
+
+    def _name(self, **kw):
+        g = goals_mod.current_goal(self._gs(**kw))
+        return g.name if g else None
+
+    # --- leg 1: Petalburg -> Woods (beats the petalburg gym chain) ---
+    def test_city_departs_east_not_gym(self) -> None:
+        g = goals_mod.current_goal(self._gs(map_group=0, map_num=0, x=15, y=10))
+        self.assertEqual(g.name, "reach_ngrind_woods")
+        self.assertEqual(g.target_map, (24, 11))
+
+    def test_gym_interior_walks_out_east(self) -> None:
+        # Parked inside the gym (the current live save class): the trek wins
+        # over petalburg_enter_gym's target==cur park and walks back out.
+        self.assertEqual(
+            self._name(map_group=8, map_num=1, x=3, y=106),
+            "reach_ngrind_woods")
+
+    def test_city_hurt_heals_first(self) -> None:
+        # hp<0.5 / pp==0 are the exact complement of the departure gate:
+        # heal_at_petalburg tops the lead up, THEN the trek departs.
+        self.assertEqual(
+            self._name(map_group=0, map_num=0, x=15, y=10,
+                       party0_hp=60), "heal_at_petalburg")
+        self.assertEqual(
+            self._name(map_group=0, map_num=0, x=15, y=10,
+                       party0_damaging_pp=0), "heal_at_petalburg")
+
+    def test_route104_south_heads_to_woods(self) -> None:
+        self.assertEqual(
+            self._name(map_group=0, map_num=19, x=30, y=50),
+            "reach_ngrind_woods")
+
+    # --- leg 2: Woods north pin (beats petalburg_woods_south) ---
+    def test_woods_pins_north_exit(self) -> None:
+        g = goals_mod.current_goal(self._gs(map_group=24, map_num=11, x=16, y=30))
+        self.assertEqual(g.name, "reach_ngrind_woods_north")
+        self.assertEqual(g.target_pos, (14, 5))
+
+    def test_woods_north_pin_is_canon_warp(self) -> None:
+        # No hardcoded-coord drift: the pin must be a canon Woods->Route104
+        # warp on the NORTH edge (min-y row) — the same tile the badge-1
+        # peeko_woods_north leg pinned.
+        from generic_agent import map_data as md
+        info = md.get_cache().get(24, 11)
+        if info is None:
+            self.skipTest("PetalburgWoods canon cache not present")
+        r104 = [(w["x"], w["y"]) for w in (info.warps or [])
+                if "Route104" in str(w.get("dest_map", ""))]
+        north_row = min(y for _x, y in r104)
+        goal = next(g for g in goals_mod.GOAL_TABLE
+                    if g.name == "reach_ngrind_woods_north")
+        self.assertIn(goal.target_pos, [t for t in r104 if t[1] == north_row])
+        peeko = next(g for g in goals_mod.GOAL_TABLE
+                     if g.name == "peeko_woods_north")
+        self.assertEqual(goal.target_pos, peeko.target_pos)
+
+    # --- leg 3: R104N -> ... -> Mauville umbrella ---
+    def test_corridor_maps_head_to_mauville(self) -> None:
+        for kw in (
+            dict(map_group=0, map_num=19, x=10, y=25),   # R104 north
+            dict(map_group=0, map_num=3, x=30, y=30),    # Rustboro
+            dict(map_group=11, map_num=3, x=4, y=6),     # Rustboro interior
+            dict(map_group=0, map_num=31, x=20, y=8),    # Route116
+            dict(map_group=0, map_num=14, x=10, y=8),    # Verdanturf
+            dict(map_group=6, map_num=4, x=7, y=8),      # Verdanturf interior
+            dict(map_group=0, map_num=32, x=30, y=8),    # Route117
+        ):
+            g = goals_mod.current_goal(self._gs(**kw))
+            self.assertIsNotNone(g, kw)
+            self.assertEqual(g.name, "reach_ngrind_mauville", kw)
+            self.assertEqual(g.target_map, (0, 2), kw)
+
+    def test_tunnel_crossing_beats_west_exit_pin(self) -> None:
+        # LOAD-BEARING ordering: on (24,4) exit_rusturf_west's target==cur +
+        # pin returns immediately if scanned first — the trek goal must sit
+        # ABOVE it or the eastbound crossing walks back west forever.
+        self.assertEqual(
+            self._name(map_group=24, map_num=4, x=10, y=5, npcs_on_map=[]),
+            "reach_ngrind_mauville")
+
+    def test_tunnel_rocks_still_smash_first(self) -> None:
+        # (defensive: the rocks are permanently gone live, but the smash goal
+        # must still win its frame if object events report them)
+        self.assertEqual(
+            self._name(map_group=24, map_num=4, x=29, y=16,
+                       npcs_on_map=[(24, 4, 86), (24, 5, 86)]),
+            "smash_rusturf_rock")
+
+    # --- leg 4: Mauville -> R111 -> R112 -> Fiery, and the grind itself ---
+    def test_mauville_heads_to_fiery_not_verdanturf(self) -> None:
+        g = goals_mod.current_goal(self._gs(map_group=0, map_num=2, x=20, y=11))
+        self.assertEqual(g.name, "grind_fiery_norman")
+        self.assertEqual(g.target_map, (24, 14))
+        self.assertEqual(g.target_pos, (26, 23))
+
+    def test_route111_rock_still_smashes_first(self) -> None:
+        # The FLAG_TEMP rock respawns every map load; northbound R111 is
+        # sealed without the smash (offline probe: None blocked / 91 open).
+        self.assertEqual(
+            self._name(map_group=0, map_num=26, x=19, y=101,
+                       npcs_on_map=[(19, 100, 86), (18, 101, 86)]),
+            "smash_route111_rock")
+
+    def test_r111_r112_fiery_grind_owns(self) -> None:
+        for kw in (
+            dict(map_group=0, map_num=26, x=19, y=110, npcs_on_map=[]),
+            dict(map_group=0, map_num=27, x=26, y=44),   # R112 south blob
+            dict(map_group=24, map_num=14, x=26, y=23),  # Fiery pin
+        ):
+            self.assertEqual(self._name(**kw), "grind_fiery_norman", kw)
+
+    def test_grind_pin_matches_flannery_grind_pin(self) -> None:
+        # Single source of truth: the proven cave-floor pin (all-0x08
+        # neighbours, canon-pinned by TestFlanneryGrind).
+        old = next(g for g in goals_mod.GOAL_TABLE
+                   if g.name == "grind_fiery_path")
+        new = next(g for g in goals_mod.GOAL_TABLE
+                   if g.name == "grind_fiery_norman")
+        self.assertEqual(new.target_pos, old.target_pos)
+        self.assertEqual(new.target_map, old.target_map)
+
+    # --- heal loop: Mauville PC ---
+    def test_hurt_or_pp_dry_heals_at_mauville(self) -> None:
+        for kw in (
+            dict(map_group=24, map_num=14, x=26, y=23, party0_hp=50),
+            dict(map_group=24, map_num=14, x=26, y=23, party0_damaging_pp=0),
+            dict(map_group=0, map_num=2, x=20, y=11, party0_hp=50),
+            dict(map_group=10, map_num=5, x=7, y=8, party0_hp=50),  # in the PC
+        ):
+            g = goals_mod.current_goal(self._gs(**kw))
+            self.assertIsNotNone(g, kw)
+            self.assertEqual(g.name, "heal_at_mauville_ngrind", kw)
+            self.assertEqual(g.target_map, (10, 5), kw)
+            self.assertEqual(g.target_pos, (7, 3), kw)
+
+    def test_grind_band_keeps_grinding_until_040(self) -> None:
+        # hp in [0.4, 0.5): the grind (scanned first) keeps the tile — the
+        # grind_fiery_path / heal_at_lavaridge band pairing.
+        self.assertEqual(
+            self._name(map_group=24, map_num=14, x=26, y=23,
+                       party0_hp=70),  # 70/155 = 0.45
+            "grind_fiery_norman")
+
+    def test_heal_geometry_matches_wattson_era_pc(self) -> None:
+        old = next(g for g in goals_mod.GOAL_TABLE
+                   if g.name == "heal_at_mauville")
+        new = next(g for g in goals_mod.GOAL_TABLE
+                   if g.name == "heal_at_mauville_ngrind")
+        self.assertEqual(new.target_map, old.target_map)
+        self.assertEqual(new.target_pos, old.target_pos)
+
+    # --- retire: at target level the b5 chain resumes, byte-for-byte ---
+    def test_retire_resumes_b5_chain_eastside(self) -> None:
+        lvl = goals_mod.NORMAN_GRIND_TARGET_LEVEL
+        self.assertEqual(
+            self._name(map_group=24, map_num=14, x=26, y=23,
+                       party0_level=lvl), "reach_mauville_b5")
+        self.assertEqual(
+            self._name(map_group=0, map_num=27, x=26, y=44,
+                       party0_level=lvl), "reach_mauville_b5")
+        self.assertEqual(
+            self._name(map_group=0, map_num=2, x=20, y=11,
+                       party0_level=lvl), "reach_verdanturf_b5")
+        self.assertEqual(
+            self._name(map_group=0, map_num=14, x=10, y=8,
+                       party0_level=lvl), "reach_rustboro_b5")
+        self.assertEqual(
+            self._name(map_group=24, map_num=4, x=25, y=4,
+                       party0_level=lvl, npcs_on_map=[(24, 5, 86)]),
+            "exit_rusturf_west")
+
+    def test_retire_resumes_petalburg_chain(self) -> None:
+        lvl = goals_mod.NORMAN_GRIND_TARGET_LEVEL
+        self.assertEqual(
+            self._name(map_group=24, map_num=11, x=16, y=30,
+                       party0_level=lvl), "petalburg_woods_south")
+        self.assertEqual(
+            self._name(map_group=0, map_num=19, x=30, y=50,
+                       party0_level=lvl), "petalburg_to_city")
+        self.assertEqual(
+            self._name(map_group=0, map_num=0, x=15, y=10,
+                       party0_level=lvl), "petalburg_enter_gym")
+
+    def test_retire_hurt_still_heals_at_mauville(self) -> None:
+        # The heal is deliberately NOT level-gated: a hurt at-target lead on
+        # the way home still tops up at the Mauville PC (the westbound chain
+        # has no heal between Lavaridge and Petalburg).
+        self.assertEqual(
+            self._name(map_group=0, map_num=27, x=26, y=44,
+                       party0_level=goals_mod.NORMAN_GRIND_TARGET_LEVEL,
+                       party0_hp=50),
+            "heal_at_mauville_ngrind")
+
+    # --- era + flicker guards ---
+    def test_badge3_era_never_fires_grind_arc(self) -> None:
+        name = self._name(map_group=0, map_num=2, x=20, y=11,
+                          badge_count=3, flag_badge04_get=False,
+                          party0_level=40)
+        self.assertIsNotNone(name)
+        self.assertFalse(
+            name.startswith(("reach_ngrind", "grind_fiery_norman",
+                             "heal_at_mauville_ngrind")), name)
+
+    def test_badge5_retires_whole_arc(self) -> None:
+        for kw in (
+            dict(map_group=24, map_num=14, x=26, y=23),
+            dict(map_group=0, map_num=0, x=15, y=10),
+            dict(map_group=0, map_num=2, x=20, y=11, party0_hp=50),
+        ):
+            name = self._name(badge_count=5, **kw)
+            self.assertFalse(
+                (name or "").startswith(
+                    ("reach_ngrind", "grind_fiery_norman",
+                     "heal_at_mauville_ngrind")), (kw, name))
+
+    def test_party_count_flicker_cannot_drop_trek(self) -> None:
+        # No party_count / story-flag terms in the arc gates: a transient
+        # party_count=0 read frame must not hand the corridor back to the
+        # petalburg chain (the goal=None / east-yank flicker family).
+        self.assertEqual(
+            self._name(map_group=0, map_num=31, x=20, y=8, party_count=0),
+            "reach_ngrind_mauville")
+
+    def test_pp_unreadable_keeps_grinding(self) -> None:
+        # party0_damaging_pp == -1 (unreadable) must read as "keep going",
+        # not as PP-dry (the grind_fiery_path convention).
+        self.assertEqual(
+            self._name(map_group=24, map_num=14, x=26, y=23,
+                       party0_damaging_pp=-1),
+            "grind_fiery_norman")
 
 
 if __name__ == "__main__":

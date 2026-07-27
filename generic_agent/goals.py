@@ -109,6 +109,18 @@ def _in_route112_fiery_south(gs) -> bool:
 # fires. Raise back to 48 if L46 proves too thin.
 FLANNERY_GRIND_TARGET_LEVEL = 46
 
+# Norman grind (2026-07-28, user decision after Norman attempt #1): Sceptile
+# L48 solo LOST 2/4 to Norman (Slaking L31 143HP) — the fight is winnable on
+# stats but died to HP sustain + Rock Smash PP starvation (daily 07-28). The
+# team's other 5 mons are L5-17 (no second attacker), so the lever is the lead:
+# grind it at Fiery Path (the proven cave-grind site — L14-16 wilds, zero
+# ledges, [[jagged-pass-grind-fix]]) before the rematch. 52 = +4 levels over
+# the measured loss (~+8-10% Atk/HP/Spe), chosen as the medium-slow XP
+# affordable margin: 48->52 is ~30.4k XP (~150 Fiery kills, an overnight
+# session at the measured 07-22 rate), while every heal cycle also refills the
+# PP that actually lost fight #1. Raise if the L52 rematch still loses.
+NORMAN_GRIND_TARGET_LEVEL = 52
+
 LETTER_DONE_MARKER = config.MEMORY_DIR / "steven_letter_done.marker"
 DEVON_DELIVERED_MARKER = config.MEMORY_DIR / "devon_delivered.marker"
 ROCK_SMASH_TAUGHT_MARKER = config.MEMORY_DIR / "rock_smash_taught.marker"
@@ -343,6 +355,13 @@ _GOAL_BYPASS_VISITED = {
     # journey + heal_at_slateport precedents).
     "petalburg_to_woods", "petalburg_woods_south", "petalburg_to_city",
     "heal_at_petalburg", "petalburg_enter_gym",
+    # Norman grind arc: every target (Woods, Mauville, FieryPath, Mauville
+    # PC) has been in visited_maps for eras — without the bypass the whole
+    # trek is visited-suppressed on the spot. reach_ngrind_woods_north only
+    # matches with target==cur (suppression can't apply) but is listed for
+    # uniformity with its chain.
+    "reach_ngrind_woods", "reach_ngrind_woods_north", "reach_ngrind_mauville",
+    "grind_fiery_norman", "heal_at_mauville_ngrind",
 }
 
 
@@ -1205,6 +1224,122 @@ class Goal:
                     or gs.map_group == 8
                 )
             )
+        # --- Norman grind arc (2026-07-28, user decision after Norman loss):
+        # travel the lead EASTBOUND Petalburg -> (Woods position legs) ->
+        # Rustboro -> Rusturf Tunnel -> Verdanturf -> Route117 -> Mauville ->
+        # Route111 -> Route112 -> Fiery Path, grind the cave to
+        # NORMAN_GRIND_TARGET_LEVEL, then retire. The whole WESTBOUND return
+        # is deliberately NOT new code: at target level these four go silent
+        # and the live-proven badge5 chain (reach_mauville_b5 ->
+        # reach_verdanturf_b5 -> reach_rustboro_b5 -> petalburg_* -> gym)
+        # resumes ownership of every corridor map. Gates: badge era (latched
+        # monotonic count, retires on Norman's badge), level (read-root
+        # flicker-guarded, state._flicker_guarded_level), NO party_count /
+        # story-flag terms (nothing here can flicker the chain away). Every
+        # eastbound leg below was offline-probed 2026-07-28 against the real
+        # map cache + learned seals (probe_eastbound*.py):
+        #   Petalburg (0,0)->Woods map_path=[R104, Woods]; R104-south doors
+        #   (10,38)/(11,38) are the only Woods warps reachable from the
+        #   Petalburg strip (cid4, len 52). Woods (16,37)->north warp (14,5)
+        #   len 82. R104 north door (10,30)->Rustboro exit len 41.
+        #   R104->Mauville map_path=[Rustboro, R116, (lie->tunnel), Verd,
+        #   R117, Mauville]; the R116->Verdanturf connection-lie has ZERO
+        #   exit tiles so the runtime hop-ban (case i) re-plans through the
+        #   tunnel warp (47,8) exactly as the westbound leg proved live.
+        #   Tunnel west landing (5,10)->Verdanturf warp (29,16) len 42 (the
+        #   two rocks carry PERMANENT hide flags, smashed 07-26). Verdanturf
+        #   landing (8,2)->R117 exit len 15 (the (19,6) 1-tile-island trap is
+        #   removed at the source by map_data._exit_strip_for's leavable-
+        #   landing rule, same commit); R117 west->east len 59; Mauville west
+        #   entry->R111 exit len 20; R111 northbound needs the respawning
+        #   (19,100) FLAG_TEMP rock smashed (len None blocked / 91 open) —
+        #   smash_route111_rock scans EARLIER in the table and owns that
+        #   moment, the badge4-arc-proven flow; R112 R111-entry band
+        #   (39,46..51) is cid12 with the Fiery warp (11,36), len 38.
+        if c == "ngrind_to_woods":
+            # Petalburg City / its interiors (group 8, incl. the gym — walks
+            # back out) / Route104 SOUTH beach -> into the Woods. hp/pp-gated
+            # so a hurt or PP-dry lead at the start yields to
+            # heal_at_petalburg (hp<0.5 OR pp==0, the exact complement) and
+            # departs topped up. Mid-corridor legs are NOT hp-gated: the only
+            # heal on the corridor is forward at Mauville.
+            return (
+                4 <= gs.badge_count < 5
+                and gs.party0_level < NORMAN_GRIND_TARGET_LEVEL
+                and gs.party0_hp_frac >= 0.5
+                and gs.party0_damaging_pp != 0
+                and (
+                    cur == (0, 0)
+                    or gs.map_group == 8
+                    or (cur == (0, 19) and gs.y >= 34)
+                )
+            )
+        if c == "ngrind_woods_north":
+            # Inside the Woods: pin the NORTH exit warp — generic warp routing
+            # would pick the nearest Route104-dest warp, i.e. the south door
+            # we just entered by (the peeko_woods_north lesson, same pin).
+            # During the grind era every Woods crossing is eastbound (a
+            # whiteout re-homes to a PC and re-drives east), so this cannot
+            # fight the westbound petalburg_in_woods leg (level-retired
+            # first).
+            return (
+                4 <= gs.badge_count < 5
+                and gs.party0_level < NORMAN_GRIND_TARGET_LEVEL
+                and cur == (24, 11)
+            )
+        if c == "ngrind_to_mauville":
+            # R104 north -> Rustboro -> R116 -> tunnel -> Verdanturf -> R117
+            # -> Mauville, one umbrella: per-turn map_path from cur resolves
+            # each hop (max 6 hops from R104, under mapbfs' max_hops=8).
+            # Groups 11/6 = Rustboro/Verdanturf interiors (the reach_*_b5
+            # idiom) so a wander into a building walks back out. MUST scan
+            # BEFORE exit_rusturf_west: on (24,4) that goal's target==cur +
+            # pin returns immediately and would walk us back WEST.
+            return (
+                4 <= gs.badge_count < 5
+                and gs.party0_level < NORMAN_GRIND_TARGET_LEVEL
+                and (
+                    (cur == (0, 19) and gs.y < 34)
+                    or cur in {(0, 3), (0, 31), (24, 4), (0, 14), (0, 32)}
+                    or gs.map_group in (6, 11)
+                )
+            )
+        if c == "grind_fiery_norman":
+            # The grind itself + its own approach (Mauville -> R111 -> R112
+            # -> Fiery entry via target_map, the grind_fiery_path pattern —
+            # both Route112 Fiery warps are dest-matched, and the south-blob
+            # one is the only reachable one from the R111 entry band).
+            # 'grind' name prefix is LOAD-BEARING (wild battles FIGHT instead
+            # of flee). hp>=0.4 + pp!=0 mirror grind_fiery_path: below either,
+            # this yields and the Mauville heal below fires. On (0,26) with
+            # the rock respawned, smash_route111_rock (earlier scan) wins the
+            # frame — same handoff the badge4 arc ran live.
+            return (
+                4 <= gs.badge_count < 5
+                and gs.party0_level < NORMAN_GRIND_TARGET_LEVEL
+                and gs.party0_hp_frac >= 0.4
+                and gs.party0_damaging_pp != 0
+                and cur in {(0, 2), (0, 26), _ROUTE112, _FIERY_PATH}
+            )
+        if c == "ngrind_heal_mauville":
+            # Grind-loop heal at the Mauville PC (nurse counter, the
+            # heal_at_mauville geometry). The Lavaridge PC that served the
+            # Flannery grind is unreachable post-badge4 (ride_cable_car
+            # retired; the south blob can't walk up the one-way ledges), and
+            # Mauville is 3 hops down the proven corridor. NOT level-gated:
+            # it also heals a hurt at-target lead on the way home (the
+            # westbound b5 chain has no heal between Lavaridge and
+            # Petalburg). Era-capped like everything else; pp==0 (exact, -1
+            # unreadable keeps grinding) refills the PP the Norman rematch
+            # needs. A mid-grind whiteout re-homes here (last-healed PC), on
+            # corridor, self-recovering.
+            return (
+                4 <= gs.badge_count < 5
+                and gs.party0_max_hp > 0
+                and (gs.party0_hp_frac < 0.5 or gs.party0_damaging_pp == 0)
+                and not gs.in_battle
+                and cur in {(0, 2), (0, 26), _ROUTE112, _FIERY_PATH, (10, 5)}
+            )
         if c == "smash_rusturf_rock":
             # Badge5 arc: the Rusturf Tunnel mid-wall. TWO BREAKABLE_ROCK
             # object_events at tiles (24,4)/(24,5) seal the only corridor rows
@@ -1818,6 +1953,59 @@ GOAL_TABLE: list[Goal] = [
         # ((25,4) from the east, len 16); face+A smashes; canon-pinned by test.
         condition="smash_rusturf_rock",
         desc="Rusturf Tunnel の岩 (24,4) を Rock Smash — 永続 flag なので一度で開通",
+    ),
+    # --- Norman grind arc (2026-07-28): eastbound trek + Fiery cave grind.
+    # Block placement is LOAD-BEARING: AFTER smash_rusturf_rock (a reported
+    # rock on (24,4) must still win its frame — its target==cur pin returns
+    # on scan) but BEFORE exit_rusturf_west (whose own target==cur pin would
+    # walk the eastbound tunnel crossing back west), and before the
+    # petalburg_* legs (else they own Route104/Woods and drive the agent back
+    # to the gym under-leveled). smash_route111_rock scans far earlier and
+    # keeps winning on Route111. Within the block, grind before heal: in the
+    # hp 0.4-0.5 band the grind keeps the tile (the grind_fiery_path /
+    # heal_at_lavaridge pairing). Retire = level: all five go silent at
+    # NORMAN_GRIND_TARGET_LEVEL and the live-proven b5 chain drives home.
+    Goal(
+        name="reach_ngrind_woods",
+        target_map=(24, 11),      # PetalburgWoods (map_path resolves the
+        # Petalburg -> R104-south -> Woods trip; only the south doors are
+        # reachable from the Petalburg strip — probe 07-28)
+        condition="ngrind_to_woods",
+        desc="Norman grind: Petalburg → Route104 南浜 → Woods へ東進開始",
+    ),
+    Goal(
+        name="reach_ngrind_woods_north",
+        target_map=(24, 11),
+        target_pos=(14, 5),       # north exit warp -> Route104 north (the
+        # canon peeko_woods_north pin; nearest-warp routing would re-pick the
+        # south door)
+        condition="ngrind_woods_north",
+        desc="Norman grind: Woods を北上し北口 (14,5) から Route104 北へ",
+    ),
+    Goal(
+        name="reach_ngrind_mauville",
+        target_map=(0, 2),        # MauvilleCity — umbrella for R104N ->
+        # Rustboro -> R116 -> RusturfTunnel -> Verdanturf -> R117 -> Mauville
+        condition="ngrind_to_mauville",
+        desc="Norman grind: Rustboro/Rusturf/Verdanturf 回廊を東進 → Mauville hub",
+    ),
+    Goal(
+        name="grind_fiery_norman",
+        target_map=(24, 14),      # FieryPath (approach owned too: Mauville ->
+        # R111 -> R112 south blob -> in-blob warp, the grind_fiery_path way)
+        target_pos=(26, 23),      # the proven cave-floor pin (all-0x08
+        # neighbours, 13 steps from the south warp)
+        condition="grind_fiery_norman",
+        desc="Sceptile < L52 → Fiery Path 洞窟 (26,23) で grind → Norman 再戦",
+    ),
+    Goal(
+        name="heal_at_mauville_ngrind",
+        target_map=(10, 5),       # MauvilleCity_PokemonCenter_1F
+        target_pos=(7, 3),        # counter below the nurse (7,2): stand
+        # (7,4), Up+A over the MB_COUNTER (the proven heal_at_mauville
+        # geometry). Also re-homes a mid-grind whiteout to Mauville.
+        condition="ngrind_heal_mauville",
+        desc="Norman grind: 消耗時は Mauville PC で全回復 (HP/PP 補充・whiteout 再ホーム)",
     ),
     Goal(
         name="exit_rusturf_west",
