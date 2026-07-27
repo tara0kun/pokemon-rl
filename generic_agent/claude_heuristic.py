@@ -174,6 +174,43 @@ def catch_target_type_ok(goal, client) -> bool:
         return False
 
 
+# Species filter for species-gated catch goals, keyed by goal-name prefix.
+# Internal Gen3 species ids (ROM gSpeciesNames): 306 = Shroomish (-> Breloom),
+# 364 = Slakoth (-> Slaking). A goal named catch_woods* only throws when the live
+# opponent (gBattleMons[1]) is one of these — without it the Petalburg Woods hunt
+# would spend balls on the Poochyena/Wurmple/Zigzagoon/Taillow/Silcoon share, and
+# a wrong catch permanently fills the LAST party slot (later catches box, so the
+# goal's party_count retire could fire on the wrong mon). Orthogonal to
+# _CATCH_TYPE_BY_PREFIX: the prefixes are disjoint, so a goal matches at most one
+# dimension and the other gate is a no-op for it.
+_CATCH_SPECIES_BY_PREFIX = {"catch_woods": frozenset({306, 364})}
+
+
+def catch_target_species_ok(goal, client) -> bool:
+    """True when the active opponent's species matches the catch goal's target
+    set (catch_woods*), or the goal has no species prefix / there is no client.
+    Composes (AND) with catch_target_type_ok — each catch project filters on
+    exactly one dimension, so the other predicate returns True unread.
+
+    client None (offline harness) skips the filter. RAM read failure is
+    FAIL-CLOSED (skip the throw this turn): a garbage read that green-lights a
+    throw can poison the last party slot, while a missed frame merely delays the
+    catch one turn. (enemy_species itself already returns 0 on EmulatorError, so
+    0 not in the set is a second fail-closed layer.)"""
+    want = None
+    if goal is not None:
+        for pfx, species in _CATCH_SPECIES_BY_PREFIX.items():
+            if goal.name.startswith(pfx):
+                want = species
+                break
+    if want is None or client is None:
+        return True
+    try:
+        return battle_moves_mod.enemy_species(client) in want
+    except Exception:  # noqa: BLE001 — any read hiccup means "not confirmed"
+        return False
+
+
 def ui_escape_button(unknown_ui_streak: int) -> str | None:
     """Escape an unknown-UI screen the loop has no handler for — PokeNav
     (cb2 0x081C7401), Trainer Card, the level-up "forget move?" prompt. Returns
@@ -355,6 +392,7 @@ def heuristic_button(
         if (
             catch_intent_active(current_goal)
             and catch_target_type_ok(current_goal, client)
+            and catch_target_species_ok(current_goal, client)
             and gs.bag_pokeball_count > 0
             and gs.party_count < 6
             and gs.party0_hp_frac >= 0.3
@@ -1294,6 +1332,7 @@ def heuristic_button(
                 # waiting for catch_ready's turn>=4 window would kill most
                 # targets before the first ball. Type gate: see pre-empt.
                 and catch_target_type_ok(current_goal, client)
+                and catch_target_species_ok(current_goal, client)
                 and gs.bag_pokeball_count > 0
                 and gs.party_count < 6
                 and gs.party0_hp_frac >= 0.3
@@ -1313,6 +1352,7 @@ def heuristic_button(
             catch_ready = (
                 catch_intent_active(current_goal)
                 and catch_target_type_ok(current_goal, client)
+                and catch_target_species_ok(current_goal, client)
                 and gs.bag_pokeball_count > 0
                 and gs.party0_hp_frac >= 0.5
                 and battle_turn >= 4
@@ -2291,6 +2331,7 @@ def run(
                 gs.bag_pokeball_count == 0
                 or not catch_intent_active(cur_goal)
                 or not catch_target_type_ok(cur_goal, client)
+                or not catch_target_species_ok(cur_goal, client)
             ):
                 # Only the grind goal wants wild XP. For every other goal we are
                 # just crossing an encounter zone (the Granite Cave letter/sail

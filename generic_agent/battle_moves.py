@@ -26,6 +26,8 @@ PARTY_SIZE = 6
 PARTY_HP_OFFSET = 0x56         # u16 current HP (outside the encrypted substructs)
 GBATTLEMONS = 0x02024084       # BattleMon[], 0x58 bytes each; [1] = opponent
 BATTLEMON_SIZE = 0x58
+BATTLEMON_SPECIES = 0x00       # u16 internal species id (decrypted in-battle;
+                               # gBattleMons is NOT the encrypted party struct)
 BATTLEMON_MOVES = 0x0C         # 4 x u16 (active battler's current moves)
 BATTLEMON_TYPE1 = 0x21         # u8
 BATTLEMON_TYPE2 = 0x22         # u8
@@ -94,6 +96,22 @@ def enemy_types(client: MGBAClient) -> tuple[int, int]:
     """
     a = GBATTLEMONS + BATTLEMON_SIZE  # gBattleMons[1] = opponent
     return client.read8(a + BATTLEMON_TYPE1), client.read8(a + BATTLEMON_TYPE2)
+
+
+def enemy_species(client: MGBAClient) -> int:
+    """Internal species id of the opponent's active battler (gBattleMons[1]).
+
+    Reads the u16 at offset +0x00 of the in-battle mon struct. Unlike
+    gPlayerParty (encrypted, personality-keyed substructs), gBattleMons is the
+    game's already-decrypted working copy, so the species is a plain u16 with no
+    XOR/permutation decode — the same slot-1 offset enemy_types() uses. Feeds the
+    catch_woods species gate (Shroomish 306 / Slakoth 364 = keep, else flee).
+    Returns 0 on a read error so callers treat "unknown" as "not a target".
+    """
+    try:
+        return client.read16(GBATTLEMONS + BATTLEMON_SIZE + BATTLEMON_SPECIES)
+    except EmulatorError:
+        return 0
 
 
 def enemy_hp(client: MGBAClient) -> tuple[int, int]:

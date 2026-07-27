@@ -335,7 +335,7 @@ _GOAL_BYPASS_VISITED = {
     # Water-catch project: the Mart gets visited on the FIRST buy but the
     # restock loop must re-target it (the buy_potions precedent), and Route104
     # has been visited since the badge-1 era.
-    "buy_pokeballs", "catch_water_route104",
+    "buy_pokeballs", "catch_water_route104", "catch_woods",
     # Badge5 Petalburg journey: Woods (24,11) and Petalburg (0,0) have been
     # visited since the badge-1 era (visited_maps.json measured 07-27), and the
     # gym (8,1) / PC (8,4) get visited on first entry but must stay
@@ -1173,6 +1173,38 @@ class Goal:
                 and gs.bag_pokeball_count > 0
                 and cur in {(0, 3), (0, 19)}
             )
+        if c == "catch_woods":
+            # User-directed Woods-catch (2026-07-27): fill the 6th slot with a
+            # USEFUL evolver before Norman. The Marill catch already latched
+            # _water_catch_done, so the petalburg_* chain is ALREADY active at
+            # party 5 and (baseline) walks into the gym -- this goal sits ABOVE
+            # that chain and BELOW catch_water_route104 in GOAL_TABLE, so it wins
+            # the whole Petalburg corridor while a slot is open, then hands back
+            # the instant the party fills. Deliberately does NOT gate on
+            # _water_catch_done (already True -> gating would silence it).
+            # Species-gated to Shroomish(306)/Slakoth(364) by the 'catch_woods'
+            # prefix in claude_heuristic._CATCH_SPECIES_BY_PREFIX (the catch_water
+            # TYPE-gate analog, REQUIRED -- off-species wilds are fled, never
+            # balled). cur-set: Woods + Route104 SOUTH (y>=34, the Petalburg-side
+            # half; north y<34 stays owned by catch_water/petalburg_route104_north)
+            # + Petalburg City (0,0) + Petalburg interiors (group 8, verified
+            # exclusively PetalburgCity_* per heal_at_petalburg) so a party-5
+            # wander into the gym/PC/house is pulled back to the Woods instead of
+            # parking at Norman's door. 1<=party (not raw <6) mirrors catch_water:
+            # a read8 flicker-to-0 can't re-fire at a genuine party 6. No
+            # _woods_catch_done latch -- the wobble is LOCAL and party>=6 hands to
+            # the latch-robust petalburg chain.
+            return (
+                4 <= gs.badge_count < 5
+                and 1 <= gs.party_count < 6
+                and gs.bag_pokeball_count > 0
+                and (
+                    cur == (24, 11)
+                    or (cur == (0, 19) and gs.y >= 34)
+                    or cur == (0, 0)
+                    or gs.map_group == 8
+                )
+            )
         if c == "smash_rusturf_rock":
             # Badge5 arc: the Rusturf Tunnel mid-wall. TWO BREAKABLE_ROCK
             # object_events at tiles (24,4)/(24,5) seal the only corridor rows
@@ -1758,6 +1790,22 @@ GOAL_TABLE: list[Goal] = [
         # pin len 51 (probe 07-26). Canon-pinned by test.
         condition="catch_water_route104",
         desc="Route104 北草むらで MARILL 捕獲 (20%/L4-5, Water 補強)",
+    ),
+    Goal(
+        name="catch_woods",
+        target_map=(24, 11),      # PetalburgWoods. map_path(0,0->24,11) =
+        # [(0,19),(24,11)] (probe 07-27): a bare target_map resolves the whole
+        # Petalburg->Route104-south->Woods trip via region-nav -- NO position
+        # legs (the reverse of the petalburg_* chain visits Route104 once, in
+        # one component). Land table (ROM gWildMonHeaders) has Shroomish(306)/
+        # Slakoth(364) here but NOT on Route104 grass -> the hunt MUST be in the
+        # Woods, not the route.
+        target_pos=(22, 34),      # interior MB_TALL_GRASS pin, all 4 neighbours
+        # grass (grind-pin discipline; probe 07-27: 0x02 x5). Reachable from the
+        # south-door landing (16,38) len 10 AND the north approach len 85, so nav
+        # is robust to whichever Woods door region-nav picks.
+        condition="catch_woods",
+        desc="Badge5前: Petalburg Woods で Shroomish(306)/Slakoth(364) 捕獲 (party 6埋め)",
     ),
     # --- Badge5 leg 3: Verdanturf -> Rusturf Tunnel -> Route116 -> Rustboro.
     # Inner tunnel goals first (most specific), then the umbrella; all ABOVE

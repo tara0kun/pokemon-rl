@@ -1322,5 +1322,162 @@ class TestPetalburgLeg(GoalsTestBase):
         self.assertFalse((name or "").startswith("petalburg"))
 
 
+class TestCatchWoods(GoalsTestBase):
+    """User-directed Woods-catch sub-project (2026-07-27). The Marill catch
+    already latched _water_catch_done (party hit 6); a duplicate Poochyena was
+    then boxed, so the party is back to 5 with ONE open slot. Fill it with a
+    USEFUL mon: drive to Petalburg Woods (24,11) and catch Shroomish (internal
+    306 -> Breloom) or Slakoth (364 -> Slaking), fleeing everything else (the
+    SPECIES gate lives in claude_heuristic — see test_catch_intent.
+    TestCatchWoodsSpeciesGate). Direct analog of catch_water_route104 but with a
+    SPECIES gate instead of a TYPE gate.
+
+    The premise these tests pin: because the latch is set, the petalburg_* story
+    chain is ALREADY active at party 5 and (baseline) routes to the gym. So the
+    contract is (a) catch_woods must OUT-RANK that chain while a slot is open,
+    and (b) hand back to it the instant the party fills. Env mirrors
+    TestPetalburgLeg (badge-5 era, prior-arc flags set, latch on), but party 5.
+
+    Contract this fixes on the goals side (validated offline against a prototype
+    before these tests were written — all three are load-bearing):
+      * gate: 4 <= badge < 5 AND party_count < 6 AND bag_pokeball_count > 0 AND
+        cur in {(24,11) Woods, (0,19)&y>=34 Route104-south, (0,0) Petalburg} or
+        map_group == 8 (Petalburg interiors). NO _water_catch_done gate — it
+        fires WITH the latch set (that is the whole point).
+      * table slot: BELOW catch_water_route104 (so it never steals the pre-latch
+        Marill hunt) and ABOVE petalburg_to_woods (so it wins the whole
+        petalburg corridor while party < 6).
+      * catch_woods MUST be added to _GOAL_BYPASS_VISITED and MUST carry a
+        target_pos: its target map (the Woods) is always in visited_maps, so
+        without the bypass it is visited-suppressed everywhere but at (24,11);
+        and without a target_pos the (24,11) scan falls through to
+        petalburg_woods_south's pinned target==cur fallback. (This class
+        pre-populates visited with the Woods + Route104 so both requirements are
+        genuinely exercised, unlike a fresh-temp single-probe test.)
+
+    No new marker: catch_woods gates on no latch, so GoalsTestBase's patch
+    tuples need NO change — the existing WATER_CATCH_DONE_MARKER patch already
+    covers the latch this class relies on."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        # Reproduce the LIVE scenario: the Marill catch already landed (latch
+        # set) and a box deposit dropped the party to 5. party_count=5 alone
+        # would NOT re-latch (only >=6 does), so pin the marker explicitly (the
+        # TestPetalburgLeg.test_catch_goal_retires_under_latch idiom).
+        goals_mod.WATER_CATCH_DONE_MARKER.write_text("1", encoding="utf-8")
+        # Production reality: both the Woods (24,11) and Route104 (0,19) have
+        # been visited since the badge-1 era, so catch_woods' Woods target is
+        # visited-suppressed unless it is in _GOAL_BYPASS_VISITED. Pre-populate
+        # so these tests actually require that bypass (the petalburg/catch_water
+        # precedent — else this passes for the wrong reason on a clean disk).
+        goals_mod.record_map_visit(24, 11)
+        goals_mod.record_map_visit(0, 19)
+
+    def _gs(self, **kw):
+        # Same prior-arc flags as TestPetalburgLeg so no earlier arc goal
+        # competes; party 5 (open slot), balls stocked, full HP + PP so neither
+        # heal_at_petalburg nor buy_pokeballs diverts the scan.
+        base = dict(
+            badge_count=4, party_count=5,
+            party0_hp=128, party0_max_hp=128, party0_damaging_pp=10,
+            bag_heal_qty=10, bag_pokeball_count=10, money=20000,
+            flag_steven_letter_delivered=True,
+            flag_dock_rejected_devon=True,
+            flag_devon_goods_delivered=True,
+            flag_devon_goods_recovered=True,   # peeko latch source
+            flag_route112_magma_cleared=True,
+            flag_mtchimney_magma_defeated=True,
+            flag_rock_smash_hm=True, party_moves=[[249, 0, 0, 0]],
+        )
+        base.update(kw)
+        return make_gs(**base)
+
+    def _name(self, **kw):
+        g = goals_mod.current_goal(self._gs(**kw))
+        return g.name if g else None
+
+    # --- fires at party 5 across the Woods corridor, out-ranking petalburg ---
+    def test_in_woods_parks_to_catch_not_south_exit(self) -> None:
+        # cur == target (24,11): catch_woods must return HERE (its grass pin) so
+        # the loop hunts, out-ranking petalburg_woods_south (which also matches
+        # (24,11) as a target==cur + target_pos fallback). This is the assertion
+        # that FORCES catch_woods to carry a target_pos of its own.
+        self.assertEqual(
+            self._name(map_group=24, map_num=11, x=14, y=6),
+            "catch_woods")
+
+    def test_route104_south_routes_to_woods_not_city(self) -> None:
+        # (0,19) y>=34: baseline here is petalburg_to_city; catch_woods wins and
+        # heads back up into the Woods rather than east to the city.
+        g = goals_mod.current_goal(
+            self._gs(map_group=0, map_num=19, x=10, y=40))
+        self.assertEqual(g.name, "catch_woods")
+        self.assertEqual(g.target_map, (24, 11))
+
+    def test_petalburg_city_routes_to_woods_not_gym(self) -> None:
+        # (0,0): baseline here is petalburg_enter_gym; catch_woods wins.
+        self.assertEqual(
+            self._name(map_group=0, map_num=0, x=0, y=12),
+            "catch_woods")
+
+    def test_petalburg_gym_interior_walks_back_out(self) -> None:
+        # Inside the gym (group 8): out-ranks petalburg_enter_gym's target==cur
+        # park, so a party-5 wander into the gym is pulled back to the Woods
+        # instead of parked at Norman's door. Pins the group-8 cur-set clause.
+        self.assertEqual(
+            self._name(map_group=8, map_num=1, x=4, y=110),
+            "catch_woods")
+
+    # --- retires at party 6 -> the petalburg chain resumes unchanged ---
+    def test_party_full_retires_to_petalburg_chain(self) -> None:
+        self.assertEqual(
+            self._name(map_group=24, map_num=11, x=14, y=6, party_count=6),
+            "petalburg_woods_south")
+        self.assertEqual(
+            self._name(map_group=0, map_num=19, x=10, y=40, party_count=6),
+            "petalburg_to_city")
+        self.assertEqual(
+            self._name(map_group=0, map_num=0, x=0, y=12, party_count=6),
+            "petalburg_enter_gym")
+
+    # --- silent without balls: an empty bag must not strand the loop in the
+    #     Woods; hand back to the petalburg chain so progress continues ---
+    def test_no_balls_hands_back_to_petalburg(self) -> None:
+        self.assertEqual(
+            self._name(map_group=24, map_num=11, x=14, y=6,
+                       bag_pokeball_count=0),
+            "petalburg_woods_south")
+        self.assertEqual(
+            self._name(map_group=0, map_num=0, x=0, y=12,
+                       bag_pokeball_count=0),
+            "petalburg_enter_gym")
+
+    # --- badge era gate: silent outside 4 <= badge < 5 ---
+    def test_badge_era_gate_silent_before_badge4(self) -> None:
+        # Badge-1 Dewford era (which ALSO crosses the Woods): even with a stray
+        # latch marker + an open slot, catch_woods must stay silent so it never
+        # yanks the badge-1 agent into a Petalburg-Woods catch project.
+        goals_mod.PEEKO_DONE_MARKER.write_text("1", encoding="utf-8")
+        name = self._name(map_group=24, map_num=11, x=14, y=6,
+                          badge_count=1, party0_level=30)
+        self.assertNotEqual(name, "catch_woods")
+
+    def test_badge_era_gate_silent_after_badge5(self) -> None:
+        name = self._name(map_group=24, map_num=11, x=14, y=6, badge_count=5)
+        self.assertNotEqual(name, "catch_woods")
+
+    # --- table ordering: must NOT steal the pre-latch Marill water hunt ---
+    def test_does_not_steal_prelatch_water_hunt(self) -> None:
+        # BEFORE the Marill catch (no latch): the water project owns Route104.
+        # catch_woods sits BELOW catch_water_route104, so even where their
+        # cur-sets overlap ((0,19) south) the water goal still wins. This is the
+        # test that fails if catch_woods is (mis-)ordered above catch_water.
+        goals_mod.WATER_CATCH_DONE_MARKER.unlink()  # undo the setUp latch
+        self.assertEqual(
+            self._name(map_group=0, map_num=19, x=10, y=40, party_count=5),
+            "catch_water_route104")
+
+
 if __name__ == "__main__":
     unittest.main()

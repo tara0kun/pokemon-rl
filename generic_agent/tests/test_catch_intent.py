@@ -222,5 +222,67 @@ class TestCatchTypeGate(unittest.TestCase):
         self.assertTrue(ch.catch_target_type_ok(None, None))
 
 
+def _woods_goal() -> goals_mod.Goal:
+    return goals_mod.Goal(
+        name="catch_woods", target_map=(24, 11),
+        condition="catch_woods", desc="woods catch",
+    )
+
+
+class TestCatchWoodsSpeciesGate(unittest.TestCase):
+    """catch_woods throws ONLY at the two useful Woods evolvers — internal
+    species ids Shroomish 306 (-> Breloom) and Slakoth 364 (-> Slaking),
+    ROM-verified from gSpeciesNames — and flees the rest (Zigzagoon 288 /
+    Poochyena 286 / Taillow / Wurmple / Silcoon...). Exact analog of the
+    catch_water TYPE gate (TestCatchTypeGate) but keyed on gBattleMons[1]
+    SPECIES via battle_moves.enemy_species instead of type.
+
+    Contract this pins on the claude_heuristic side (predicate NOT yet
+    implemented — these are the spec):
+      * catch_target_species_ok(goal, client): a goal whose name starts with a
+        key of _CATCH_SPECIES_BY_PREFIX = {"catch_woods": {306, 364}} throws only
+        when enemy_species(client) is in that set. None client / non-matching
+        goal name skip the filter; a RAM read error is FAIL-CLOSED (no throw).
+      * all three catch sites in heuristic_button AND this together WITH
+        catch_target_type_ok (catch_woods is untyped, so the type gate is a
+        no-op for it; the two gates compose — each catch project uses exactly
+        one). enemy_species already exists in battle_moves and returns 0 on a
+        read error, so the fail-closed path is doubly covered."""
+
+    def _ok(self, species, goal, client=object()):
+        if isinstance(species, Exception):
+            p = mock.patch.object(
+                ch.battle_moves_mod, "enemy_species", side_effect=species)
+        else:
+            p = mock.patch.object(
+                ch.battle_moves_mod, "enemy_species", return_value=species)
+        with p:
+            return ch.catch_target_species_ok(goal, client)
+
+    def test_shroomish_and_slakoth_pass(self) -> None:
+        self.assertTrue(self._ok(306, _woods_goal()))   # Shroomish
+        self.assertTrue(self._ok(364, _woods_goal()))   # Slakoth
+
+    def test_off_species_flees(self) -> None:
+        # Zigzagoon 288 / Poochyena 286 / Ralts 392, and a 0 (the value
+        # enemy_species returns on a read error): none throw.
+        for sid in (288, 286, 392, 0):
+            self.assertFalse(self._ok(sid, _woods_goal()), sid)
+
+    def test_read_failure_fails_closed(self) -> None:
+        # A raised read (not the enemy_species-internal 0 path): the predicate's
+        # own guard must swallow it and refuse the throw.
+        self.assertFalse(self._ok(RuntimeError("dma"), _woods_goal()))
+
+    def test_none_client_skips_filter(self) -> None:
+        self.assertTrue(ch.catch_target_species_ok(_woods_goal(), None))
+        self.assertTrue(ch.catch_target_species_ok(None, None))
+
+    def test_untyped_catch_goal_unfiltered(self) -> None:
+        # A plain catch_* goal (no species prefix) keeps the old contract: any
+        # species passes — the species gate is scoped to catch_woods only.
+        self.assertTrue(self._ok(286, _catch_goal()))
+
+
 if __name__ == "__main__":
     unittest.main()
