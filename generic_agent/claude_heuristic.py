@@ -506,7 +506,12 @@ def heuristic_button(
              # goal protects them. "fiery_path"/"exit_fiery" retrofit the same
              # guard for the southbound Fiery re-cross to the cable car.
              "meteor_falls", "fiery_path", "exit_fiery",
-             "ride_", "mtchimney", "descend_", "lavaridge_")
+             "ride_", "mtchimney", "descend_", "lavaridge_",
+             # Badge5 Petalburg journey: without this the Route104 huge
+             # same_map_streak explore-hijack overrides the Woods-crossing
+             # goals (this comment's own Route104 example). heal_at_petalburg
+             # is covered by the "heal" prefix above.
+             "petalburg_")
         )
     )
     # H4b: Mr.Briney's Dewford->Slateport sail multichoice (Petalburg=case 0 /

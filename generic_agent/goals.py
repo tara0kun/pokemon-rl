@@ -153,6 +153,7 @@ def _rock_smash_taught(gs) -> bool:
 
 THEFT_DONE_MARKER = config.MEMORY_DIR / "meteor_theft_done.marker"
 MTCHIMNEY_DONE_MARKER = config.MEMORY_DIR / "mtchimney_done.marker"
+WATER_CATCH_DONE_MARKER = config.MEMORY_DIR / "water_catch_done.marker"
 
 
 def _theft_done(gs) -> bool:
@@ -170,6 +171,28 @@ def _mtchimney_done(gs) -> bool:
     0x8B). Gates the Jagged Pass descent + Lavaridge approach. Same DMA-flicker
     discipline as _theft_done."""
     return _latched(gs, "flag_mtchimney_magma_defeated", MTCHIMNEY_DONE_MARKER)
+
+
+def _water_catch_done(gs) -> bool:
+    """Monotonic 'water-catch project landed' signal (party hit 6, badge-4 era).
+
+    Raw party_count is a single read8 (state.py) that returns 0 on a transient
+    socket frame; gating the Petalburg chain on the raw value would silence
+    every leg for that frame and let cur-ungated reach_mauville_b5 yank the
+    agent east (the badge-latch / ball-flicker DMA family). The party can only
+    shrink via a PC box deposit, which this agent never performs, so 'reached 6'
+    is a genuinely-past monotonic event -> disk latch (the _peeko_done pattern).
+    """
+    if WATER_CATCH_DONE_MARKER.exists():
+        return True
+    if getattr(gs, "party_count", 0) >= 6:
+        try:
+            WATER_CATCH_DONE_MARKER.parent.mkdir(parents=True, exist_ok=True)
+            WATER_CATCH_DONE_MARKER.write_text("1", encoding="utf-8")
+        except OSError:
+            pass
+        return True
+    return False
 
 
 def _in_route112_jagged_pocket(gs) -> bool:
@@ -313,6 +336,13 @@ _GOAL_BYPASS_VISITED = {
     # restock loop must re-target it (the buy_potions precedent), and Route104
     # has been visited since the badge-1 era.
     "buy_pokeballs", "catch_water_route104",
+    # Badge5 Petalburg journey: Woods (24,11) and Petalburg (0,0) have been
+    # visited since the badge-1 era (visited_maps.json measured 07-27), and the
+    # gym (8,1) / PC (8,4) get visited on first entry but must stay
+    # re-targetable through the Norman fight / every heal cycle (the dewford
+    # journey + heal_at_slateport precedents).
+    "petalburg_to_woods", "petalburg_woods_south", "petalburg_to_city",
+    "heal_at_petalburg", "petalburg_enter_gym",
 }
 
 
@@ -363,7 +393,13 @@ class Goal:
     def matches(self, gs) -> bool:
         c = self.condition
         if c == "no_party":
-            return gs.party_count == 0
+            # badge_count == 0 guard: party_count is a single read8 that
+            # returns 0 when it transiently raises inside read_state (the outer
+            # except passes, leaving the default 0 with saveblock1_valid still
+            # True -- state.py). Once ANY badge is earned the player provably has
+            # a party, so a 0 read is a flicker and must NOT yank the agent to
+            # Birch's lab (get_starter_via_lab). Pre-Pokedex start is badge 0.
+            return gs.party_count == 0 and gs.badge_count == 0
         if c == "first_starter":
             # Pre-Pokedex Oldale milestone. After Pokedex received the agent
             # has already cycled through Oldale (heal at PC) and should move on.
@@ -1091,7 +1127,10 @@ class Goal:
                 # keeps the agent on the corridor), never the east pull.
                 and cur not in {(0, 32), (0, 14), (24, 4), (0, 31), (0, 3),
                                 (0, 19)}
-                and gs.map_group not in (6, 11)
+                # 8 = Petalburg interiors: inside the gym (8,1) the
+                # petalburg_enter_gym target==cur fallback must win, not an east
+                # yank out of the gym (probe 07-27).
+                and gs.map_group not in (6, 8, 11)
             )
         if c == "buy_pokeballs":
             # Water-catch sub-project (user-directed, 2026-07-26): stock Poke
@@ -1106,6 +1145,9 @@ class Goal:
             return (
                 4 <= gs.badge_count < 5
                 and gs.party_count < 6
+                and not _water_catch_done(gs)  # latch: raw party_count<6 can
+                # re-fire on a flicker-0 frame after the catch; the latch keeps
+                # this retired so it can't out-scan the Petalburg chain.
                 and gs.bag_pokeball_count < 5
                 and not (0 <= gs.money < 200)
                 and cur in {(0, 3), (11, 7)}
@@ -1127,6 +1169,7 @@ class Goal:
             return (
                 4 <= gs.badge_count < 5
                 and 1 <= gs.party_count < 6
+                and not _water_catch_done(gs)  # latch retire (see buy_pokeballs)
                 and gs.bag_pokeball_count > 0
                 and cur in {(0, 3), (0, 19)}
             )
@@ -1166,6 +1209,55 @@ class Goal:
             # generic nearest-warp routing would pick it and ping-pong through
             # the dead pocket. Same inner-leg pattern as exit_fiery_path_*.
             return 4 <= gs.badge_count < 5 and cur == (24, 4)
+        # --- Badge5 Petalburg journey (post water-catch, 2026-07-27):
+        # north Route104 -> Woods -> south Route104 -> Petalburg City -> Gym.
+        # Mirrors the badge-1 dewford_* southward chain (Route104 north/south
+        # are ONE map id, walk-connected only through the Woods; same y<34
+        # discriminator). All legs latch-gated on _water_catch_done -- raw
+        # party_count >= 6 would drop the whole chain on a single failed read8
+        # frame, letting cur-ungated reach_mauville_b5 yank the agent east --
+        # and era-capped < 5. peeko_done/_letter_done are NOT needed: the badge
+        # era gate alone makes this fully exclusive with the badge-1 chain.
+        if c == "petalburg_route104_north":
+            return (
+                4 <= gs.badge_count < 5 and _water_catch_done(gs)
+                and cur == (0, 19) and gs.y < 34
+            )
+        if c == "petalburg_in_woods":
+            return (
+                4 <= gs.badge_count < 5 and _water_catch_done(gs)
+                and cur == (24, 11)
+            )
+        if c == "petalburg_route104_south":
+            return (
+                4 <= gs.badge_count < 5 and _water_catch_done(gs)
+                and cur == (0, 19) and gs.y >= 34
+            )
+        if c == "heal_at_petalburg":
+            # Norman-prep + whiteout re-home (the Flannery lesson): heal at the
+            # Petalburg PC so a Norman loss is a ~20-tile retry, not a re-trek
+            # from the Lavaridge/Rustboro whiteout home. Hurt gate mirrors
+            # heal_at_lavaridge (hp<0.5 OR 0 damaging PP). Group 8 verified
+            # EXCLUSIVELY PetalburgCity_* interiors (probe 07-27), the
+            # group-6/-11 idiom.
+            return (
+                4 <= gs.badge_count < 5 and _water_catch_done(gs)
+                and gs.party0_max_hp > 0
+                and (gs.party0_hp_frac < 0.5 or gs.party0_damaging_pp == 0)
+                and not gs.in_battle
+                and (cur == (0, 0) or gs.map_group == 8)
+            )
+        if c == "petalburg_gym_approach":
+            # City + indoor group 8 so a wander into the PC/Mart/houses keeps
+            # the goal live and region nav walks back out. INCLUDES the gym map
+            # itself: inside (8,1) target==cur parks this as the scan fallback
+            # (Phase B seek_norman is the next increment; when it lands, add
+            # `and cur != (8, 1)` here -- the reach_dewford_gym / seek_brawly
+            # split).
+            return (
+                4 <= gs.badge_count < 5 and _water_catch_done(gs)
+                and (cur == (0, 0) or gs.map_group == 8)
+            )
         if c == "reach_rustboro_b5":
             # Badge5 arc leg 3 umbrella: Verdanturf -> [RusturfTunnel] ->
             # Route116 -> Rustboro. Probe 07-26: naive map_path rides the
@@ -1178,8 +1270,9 @@ class Goal:
             # condition to MATCH there) + Rustboro's indoor group 11
             # (verified exclusively Rustboro interiors) so a wander into a
             # building walks back out. The tunnel map itself is owned by the
-            # smash/exit inner goals above. Route104/Woods position-legs +
-            # Petalburg are the NEXT increment; Rustboro is the parking seam.
+            # smash/exit inner goals above. The Route104/Woods -> Petalburg leg
+            # landed 07-27 (petalburg_* chain ABOVE this goal); (0,19) here is
+            # now only the PRE-latch belt (party < 6, catch still running).
             # (0,19) added 07-27 with the reach_mauville_b5 Route104 exclusion:
             # when the catch project is inactive there (balls genuinely 0 ->
             # walk to Rustboro, where buy_pokeballs restocks; or party full ->
@@ -1686,6 +1779,54 @@ GOAL_TABLE: list[Goal] = [
         # (cannot reach Rustboro; probe 07-26). Canon-pinned by test.
         condition="exit_rusturf_west",
         desc="Rusturf Tunnel 内: 西 warp (4,10) から Route116 cid1 へ (中間扉は禁止)",
+    ),
+    # --- Badge5 leg 4 (2026-07-27): Route104 -> Woods -> Petalburg -> Gym.
+    # Supersedes reach_rustboro_b5's (0,19) parking seam once the catch is done
+    # (must sit ABOVE it in this list). Probes 07-27: R104 (2,6)->woods north
+    # door (10,30) len 32 (doors (10,30)/(11,30) are the ONLY Woods warps in
+    # north cid0, so warp routing cannot pick a south door); Woods crossing len
+    # 82; south landing (10,39)->Petalburg exit strip (39,62)/(39,63) len 52
+    # (single cid4); city entry (0,12)->gym approach (15,9) len 18.
+    Goal(
+        name="petalburg_to_woods",
+        target_map=(24, 11),      # PetalburgWoods
+        condition="petalburg_route104_north",
+        desc="Badge5: Route104 北 → Petalburg Woods (24-11) に入る",
+    ),
+    Goal(
+        name="petalburg_woods_south",
+        target_map=(24, 11),
+        target_pos=(16, 38),      # south exit warp -> Route104 south beach.
+        # PIN IS LOAD-BEARING: the woods' OTHER south exit (36,38) lands in
+        # Route104 cid6, a fenced item pocket that canNOT reach the Petalburg
+        # exit (probe 07-27: bfs (32,42)->(39,62) = None). Same canon tile the
+        # badge-1 dewford_woods_south leg pins.
+        condition="petalburg_in_woods",
+        desc="Badge5: Petalburg Woods 南口 (16,38) から Route104 南浜へ",
+    ),
+    Goal(
+        name="petalburg_to_city",
+        target_map=(0, 0),        # PetalburgCity (via exit strip (39,62-63))
+        condition="petalburg_route104_south",
+        desc="Badge5: Route104 南浜 → 東進して Petalburg City (0-0)",
+    ),
+    Goal(
+        name="heal_at_petalburg",
+        target_map=(8, 4),        # PetalburgCity_PokemonCenter_1F
+        target_pos=(7, 3),        # counter below the nurse (7,2): stand (7,4),
+        # Up+A over the MB_COUNTER (the Dewford/Slateport/Lavaridge PC pattern;
+        # probe 07-27 confirms nurse=(7,2), (7,4) walkable, (7,3) counter
+        # non-walkable).
+        condition="heal_at_petalburg",
+        desc="Norman 前後: Petalburg PC で全回復 (whiteout 先を Petalburg に固定)",
+    ),
+    Goal(
+        name="petalburg_enter_gym",
+        target_map=(8, 1),        # PetalburgCity_Gym. Door (15,8) is the city's
+        # single active gym warp -> approach (15,9) + Up, no pin needed. Inside,
+        # parks as the target==cur fallback (Phase B seek_norman is next).
+        condition="petalburg_gym_approach",
+        desc="Badge5: Petalburg Gym (8-1) に入場 (Norman 部屋パズルは次 increment)",
     ),
     Goal(
         name="reach_rustboro_b5",

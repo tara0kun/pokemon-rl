@@ -37,6 +37,7 @@ class GoalsTestBase(unittest.TestCase):
             goals_mod.ROCK_SMASH_TAUGHT_MARKER,
             goals_mod.THEFT_DONE_MARKER,
             goals_mod.MTCHIMNEY_DONE_MARKER,
+            goals_mod.WATER_CATCH_DONE_MARKER,
         )
         goals_mod.GOALS_FILE = tmp / "goal_notes.jsonl"
         goals_mod.VISITED_MAPS_FILE = tmp / "visited_maps.json"
@@ -46,6 +47,7 @@ class GoalsTestBase(unittest.TestCase):
         goals_mod.ROCK_SMASH_TAUGHT_MARKER = tmp / "rock_smash_taught.marker"
         goals_mod.THEFT_DONE_MARKER = tmp / "meteor_theft_done.marker"
         goals_mod.MTCHIMNEY_DONE_MARKER = tmp / "mtchimney_done.marker"
+        goals_mod.WATER_CATCH_DONE_MARKER = tmp / "water_catch_done.marker"
 
     def tearDown(self) -> None:
         (
@@ -57,6 +59,7 @@ class GoalsTestBase(unittest.TestCase):
             goals_mod.ROCK_SMASH_TAUGHT_MARKER,
             goals_mod.THEFT_DONE_MARKER,
             goals_mod.MTCHIMNEY_DONE_MARKER,
+            goals_mod.WATER_CATCH_DONE_MARKER,
         ) = self._orig
         self._tmp.cleanup()
 
@@ -925,9 +928,11 @@ class TestWaterCatch(GoalsTestBase):
             "reach_rustboro_b5")
 
     def test_party_full_retires_project(self) -> None:
-        # Slot 6 filled (the catch landed): buy and catch both retire; the
-        # corridor umbrella resumes on BOTH maps (Route104 walks back north
-        # to the Rustboro parking seam — never the east container).
+        # Slot 6 filled (the catch landed): buy and catch both retire. At
+        # Rustboro (0,3) the corridor umbrella parks (no Petalburg condition
+        # matches there). On Route104 (0,19) the party-6 latch now hands off to
+        # the Petalburg leg (petalburg_to_woods) instead of parking back at
+        # Rustboro -- the whole point of Badge5 leg 4 (2026-07-27).
         self.assertEqual(
             self._name(map_group=0, map_num=3, x=30, y=30,
                        bag_pokeball_count=8, party_count=6),
@@ -935,7 +940,7 @@ class TestWaterCatch(GoalsTestBase):
         self.assertEqual(
             self._name(map_group=0, map_num=19, x=5, y=12,
                        bag_pokeball_count=8, party_count=6),
-            "reach_rustboro_b5")
+            "petalburg_to_woods")
 
     def test_grass_pin_is_canon_tall_grass(self) -> None:
         # No hardcoded-coord drift: the pin must be canon MB_TALL_GRASS (0x02)
@@ -1217,6 +1222,104 @@ class TestPostBadge4(GoalsTestBase):
         self.assertEqual(
             self._name(map_group=0, map_num=12, badge_count=5, party0_hp=10),
             "heal_at_lavaridge")
+
+
+class TestPetalburgLeg(GoalsTestBase):
+    """Badge5 leg 4: north Route104 -> Woods -> south Route104 -> Petalburg
+    City -> Gym. Latch-gated on _water_catch_done (party hit 6). Mirrors the
+    badge-1 dewford southward chain but era-capped 4 <= badge < 5."""
+
+    def _gs(self, **kw):
+        # Badge5 era, catch done (party 6 -> latches), prior-arc flags set so no
+        # earlier goal competes, full HP + stocked so heal/shop don't divert.
+        base = dict(
+            badge_count=4, party_count=6,
+            party0_hp=128, party0_max_hp=128, party0_damaging_pp=10,
+            bag_heal_qty=10, bag_pokeball_count=10, money=20000,
+            flag_steven_letter_delivered=True,
+            flag_dock_rejected_devon=True,
+            flag_devon_goods_delivered=True,
+            flag_devon_goods_recovered=True,   # peeko latch source
+            flag_route112_magma_cleared=True,
+            flag_mtchimney_magma_defeated=True,
+            flag_rock_smash_hm=True, party_moves=[[249, 0, 0, 0]],
+        )
+        base.update(kw)
+        return make_gs(**base)
+
+    def _name(self, **kw):
+        g = goals_mod.current_goal(self._gs(**kw))
+        return g.name if g else None
+
+    def test_north_route104_enters_woods(self) -> None:
+        # (0,19) y<34: the catch-retire latch silences catch_water_route104
+        # (which also matches (0,19)), so the Woods leg wins.
+        self.assertEqual(
+            self._name(map_group=0, map_num=19, x=2, y=6),
+            "petalburg_to_woods")
+
+    def test_in_woods_targets_south_exit(self) -> None:
+        g = goals_mod.current_goal(self._gs(map_group=24, map_num=11, x=14, y=6))
+        self.assertEqual(g.name, "petalburg_woods_south")
+        self.assertEqual(g.target_pos, (16, 38))  # load-bearing pin
+
+    def test_south_route104_targets_city(self) -> None:
+        g = goals_mod.current_goal(
+            self._gs(map_group=0, map_num=19, x=10, y=40))
+        self.assertEqual(g.name, "petalburg_to_city")
+        self.assertEqual(g.target_map, (0, 0))
+
+    def test_city_healthy_enters_gym(self) -> None:
+        self.assertEqual(
+            self._name(map_group=0, map_num=0, x=0, y=12),
+            "petalburg_enter_gym")
+
+    def test_city_hurt_heals_before_gym(self) -> None:
+        # hp < 50% -> heal_at_petalburg wins over petalburg_enter_gym.
+        self.assertEqual(
+            self._name(map_group=0, map_num=0, x=0, y=12,
+                       party0_hp=10, party0_max_hp=100),
+            "heal_at_petalburg")
+
+    def test_gym_interior_parks_not_east_yank(self) -> None:
+        # Inside the gym (8,1): petalburg_enter_gym target==cur parks as the
+        # scan fallback. Pins the reach_mauville_b5 group-8 exclusion -- without
+        # it the cur-ungated east goal would yank the agent out of the gym.
+        self.assertEqual(
+            self._name(map_group=8, map_num=1, x=4, y=110),
+            "petalburg_enter_gym")
+
+    def test_latch_immune_to_party_count_flicker(self) -> None:
+        # THE core of the design: once latched, a transient party_count=0 read
+        # frame must NOT drop the chain (else reach_mauville_b5 yanks east).
+        goals_mod.WATER_CATCH_DONE_MARKER.write_text("1", encoding="utf-8")
+        self.assertEqual(
+            self._name(map_group=0, map_num=19, x=2, y=6, party_count=0),
+            "petalburg_to_woods")
+
+    def test_catch_goal_retires_under_latch(self) -> None:
+        # marker set + raw party_count=5 (a flicker): catch_water must stay
+        # retired and the Petalburg chain drive instead.
+        goals_mod.WATER_CATCH_DONE_MARKER.write_text("1", encoding="utf-8")
+        name = self._name(map_group=0, map_num=19, x=2, y=6, party_count=5)
+        self.assertEqual(name, "petalburg_to_woods")
+        self.assertNotIn(name, ("catch_water_route104", "buy_pokeballs"))
+
+    def test_badge1_marker_does_not_leak_to_dewford_era(self) -> None:
+        # A stale latch marker present during the badge-1 Dewford era must not
+        # activate the petalburg chain (era gate 4 <= badge < 5).
+        goals_mod.WATER_CATCH_DONE_MARKER.write_text("1", encoding="utf-8")
+        goals_mod.PEEKO_DONE_MARKER.write_text("1", encoding="utf-8")
+        name = self._name(map_group=0, map_num=19, x=2, y=6,
+                          badge_count=1, party_count=5, party0_level=30)
+        self.assertIsNotNone(name)
+        self.assertFalse(name.startswith("petalburg"))
+
+    def test_party_below_6_no_latch_no_petalburg(self) -> None:
+        # Fresh party 5, no marker: the chain is silent, so a Route104 frame
+        # falls to the existing catch project (not the Petalburg leg).
+        name = self._name(map_group=0, map_num=19, x=2, y=6, party_count=5)
+        self.assertFalse((name or "").startswith("petalburg"))
 
 
 if __name__ == "__main__":
