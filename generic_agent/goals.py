@@ -1271,7 +1271,7 @@ class Goal:
             # ABOVE them so the 0.4-0.5 band keeps the tile.
             return (
                 _party_grind.party_grind_active()
-                and 4 <= gs.badge_count < 5
+                and 4 <= gs.badge_count
                 and gs.party0_hp_frac >= 0.4
                 and gs.party0_damaging_pp != 0
                 and cur == (24, 4)
@@ -1285,7 +1285,7 @@ class Goal:
             # when pgrind_grind is silent.
             return (
                 _party_grind.party_grind_active()
-                and 4 <= gs.badge_count < 5
+                and 4 <= gs.badge_count
                 and cur == (24, 4)
             )
         if c == "pgrind_heal":
@@ -1298,7 +1298,7 @@ class Goal:
             # heal_at_petalburg (their hurt behavior is already correct).
             return (
                 _party_grind.party_grind_active()
-                and 4 <= gs.badge_count < 5
+                and 4 <= gs.badge_count
                 and gs.party0_max_hp > 0
                 and (gs.party0_hp_frac < 0.5 or gs.party0_damaging_pp == 0)
                 and not gs.in_battle
@@ -1320,7 +1320,7 @@ class Goal:
             # through the Woods instead of healing 20 tiles away.
             return (
                 _party_grind.party_grind_active()
-                and 4 <= gs.badge_count < 5
+                and 4 <= gs.badge_count
                 and gs.party0_max_hp > 0
                 and (gs.party0_hp_frac < 0.5 or gs.party0_damaging_pp == 0)
                 and not gs.in_battle
@@ -1336,7 +1336,7 @@ class Goal:
             # routing would re-pick the south door we entered by).
             return (
                 _party_grind.party_grind_active()
-                and 4 <= gs.badge_count < 5
+                and 4 <= gs.badge_count
                 and cur == (24, 11)
             )
         if c == "pgrind_to_woods":
@@ -1347,7 +1347,7 @@ class Goal:
             # forward at Rustboro (pgrind_heal above wins when hurt).
             return (
                 _party_grind.party_grind_active()
-                and 4 <= gs.badge_count < 5
+                and 4 <= gs.badge_count
                 and gs.party0_hp_frac >= 0.5
                 and gs.party0_damaging_pp != 0
                 and (
@@ -1363,7 +1363,7 @@ class Goal:
             # the PC after a heal).
             return (
                 _party_grind.party_grind_active()
-                and 4 <= gs.badge_count < 5
+                and 4 <= gs.badge_count
                 and (
                     (cur == (0, 19) and gs.y < 34)
                     or cur in {(0, 3), (0, 31)}
@@ -2428,7 +2428,7 @@ def current_goal(gs) -> Goal | None:
                 fallback = g
             continue
         return g
-    if fallback is None and pgrind_on and 4 <= gs.badge_count < 5:
+    if fallback is None and pgrind_on and 4 <= gs.badge_count:
         # Marker on, clean badge-4 frame, yet nothing in the pgrind subset
         # matched: the agent is off-corridor — return the catch-all so the
         # mode is never goal-less at a real position (flicker frames fail
