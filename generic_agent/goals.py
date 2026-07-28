@@ -24,6 +24,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import config
+# Opt-in party-training marker (party_grind.on). Imported as a module so the
+# tests' path monkey-patching works; party_grind imports only config/io/state
+# (no cycle back into goals).
+from . import party_grind as _party_grind
 
 GOALS_FILE = config.MEMORY_DIR / "goal_notes.jsonl"
 VISITED_MAPS_FILE = config.MEMORY_DIR / "visited_maps.json"
@@ -109,6 +113,29 @@ def _in_route112_fiery_south(gs) -> bool:
 # fires. Raise back to 48 if L46 proves too thin.
 FLANNERY_GRIND_TARGET_LEVEL = 46
 
+# Norman grind (2026-07-28, user decision after Norman attempt #1): Sceptile
+# L48 solo LOST 2/4 to Norman (Slaking L31 143HP) — the fight is winnable on
+# stats but died to HP sustain + Rock Smash PP starvation (daily 07-28). The
+# team's other 5 mons are L5-17 (no second attacker), so the lever is the lead:
+# grind it at Fiery Path (the proven cave-grind site — L14-16 wilds, zero
+# ledges, [[jagged-pass-grind-fix]]) before the rematch. 52 = +4 levels over
+# the measured loss (~+8-10% Atk/HP/Spe), chosen as the medium-slow XP
+# affordable margin: 48->52 is ~30.4k XP (~150 Fiery kills, an overnight
+# session at the measured 07-22 rate), while every heal cycle also refills the
+# PP that actually lost fight #1. Raise if the L52 rematch still loses.
+NORMAN_GRIND_TARGET_LEVEL = 52
+
+# Lead floor for the Norman grind arc (2026-07-28, party-grind conflict fix):
+# the arc's premise is "grind the ~L48 REAL lead to 52", but its gates only
+# said `level < 52` — with a party-grind BACKUP (L5-18) in slot 0 the whole
+# eastbound trek would fire and drag the weak lead across the map to Fiery
+# Path's L14-16 wilds (and the party-grind marker can be removed mid-run, so
+# the marker gate alone does not cover that state). A floor of 40 keeps the
+# arc exclusive to the real lead: level is the read-root flicker-guarded
+# carry (state._flicker_guarded_level, never reads 0), levels never decrease,
+# and no trainee approaches 40 (targets are ~18).
+NORMAN_GRIND_LEAD_FLOOR = 40
+
 LETTER_DONE_MARKER = config.MEMORY_DIR / "steven_letter_done.marker"
 DEVON_DELIVERED_MARKER = config.MEMORY_DIR / "devon_delivered.marker"
 ROCK_SMASH_TAUGHT_MARKER = config.MEMORY_DIR / "rock_smash_taught.marker"
@@ -153,6 +180,7 @@ def _rock_smash_taught(gs) -> bool:
 
 THEFT_DONE_MARKER = config.MEMORY_DIR / "meteor_theft_done.marker"
 MTCHIMNEY_DONE_MARKER = config.MEMORY_DIR / "mtchimney_done.marker"
+WATER_CATCH_DONE_MARKER = config.MEMORY_DIR / "water_catch_done.marker"
 
 
 def _theft_done(gs) -> bool:
@@ -170,6 +198,28 @@ def _mtchimney_done(gs) -> bool:
     0x8B). Gates the Jagged Pass descent + Lavaridge approach. Same DMA-flicker
     discipline as _theft_done."""
     return _latched(gs, "flag_mtchimney_magma_defeated", MTCHIMNEY_DONE_MARKER)
+
+
+def _water_catch_done(gs) -> bool:
+    """Monotonic 'water-catch project landed' signal (party hit 6, badge-4 era).
+
+    Raw party_count is a single read8 (state.py) that returns 0 on a transient
+    socket frame; gating the Petalburg chain on the raw value would silence
+    every leg for that frame and let cur-ungated reach_mauville_b5 yank the
+    agent east (the badge-latch / ball-flicker DMA family). The party can only
+    shrink via a PC box deposit, which this agent never performs, so 'reached 6'
+    is a genuinely-past monotonic event -> disk latch (the _peeko_done pattern).
+    """
+    if WATER_CATCH_DONE_MARKER.exists():
+        return True
+    if getattr(gs, "party_count", 0) >= 6:
+        try:
+            WATER_CATCH_DONE_MARKER.parent.mkdir(parents=True, exist_ok=True)
+            WATER_CATCH_DONE_MARKER.write_text("1", encoding="utf-8")
+        except OSError:
+            pass
+        return True
+    return False
 
 
 def _in_route112_jagged_pocket(gs) -> bool:
@@ -295,6 +345,45 @@ _GOAL_BYPASS_VISITED = {
     # stay re-targetable to restock (a whiteout back to Mauville, or before the
     # Flannery gym). field_heal_potion has target_map=None so it never needs it.
     "buy_potions",
+    # Badge5 leg 1: Mauville (0,2) has been visited since badge 3, so without
+    # the bypass the post-badge4 routing goal would be suppressed instantly
+    # and the loop would go goal-less again (the exact bug this goal fixes).
+    "reach_mauville_b5",
+    # Badge5 leg 2: Route117 (0,32) is ALREADY in visited_maps (early wander),
+    # and Verdanturf joins it the moment the leg lands — without the bypass
+    # the goal dies mid-corridor on the very next Route117 frame.
+    "reach_verdanturf_b5",
+    # Badge5 leg 3: Rustboro (0,3) has been visited since the badge-1 era, so
+    # the umbrella dies instantly without the bypass. smash_rusturf_rock /
+    # exit_rusturf_west are intentionally NOT here: they only fire when cur ==
+    # RusturfTunnel, where visited-suppression (target_map != cur) can't apply
+    # (the exit_fiery_path_* precedent).
+    "reach_rustboro_b5",
+    # Water-catch project: the Mart gets visited on the FIRST buy but the
+    # restock loop must re-target it (the buy_potions precedent), and Route104
+    # has been visited since the badge-1 era.
+    "buy_pokeballs", "catch_water_route104", "catch_woods",
+    # Badge5 Petalburg journey: Woods (24,11) and Petalburg (0,0) have been
+    # visited since the badge-1 era (visited_maps.json measured 07-27), and the
+    # gym (8,1) / PC (8,4) get visited on first entry but must stay
+    # re-targetable through the Norman fight / every heal cycle (the dewford
+    # journey + heal_at_slateport precedents).
+    "petalburg_to_woods", "petalburg_woods_south", "petalburg_to_city",
+    "heal_at_petalburg", "petalburg_enter_gym",
+    # Norman grind arc: every target (Woods, Mauville, FieryPath, Mauville
+    # PC) has been in visited_maps for eras — without the bypass the whole
+    # trek is visited-suppressed on the spot. reach_ngrind_woods_north only
+    # matches with target==cur (suppression can't apply) but is listed for
+    # uniformity with its chain.
+    "reach_ngrind_woods", "reach_ngrind_woods_north", "reach_ngrind_mauville",
+    "grind_fiery_norman", "heal_at_mauville_ngrind",
+    # Party-grind mode: every target (Rusturf, Woods, Rustboro PC) has been
+    # in visited_maps since the badge-1 era, and the grind/heal loop must
+    # re-target them every cycle (the grind_granite_cave precedent). The
+    # target==cur inner legs are listed for uniformity, like the ngrind arc.
+    "grind_party_rusturf", "pgrind_exit_west", "pgrind_heal_rustboro",
+    "pgrind_heal_petalburg", "pgrind_woods_north", "pgrind_to_woods",
+    "pgrind_to_rusturf",
 }
 
 
@@ -345,7 +434,13 @@ class Goal:
     def matches(self, gs) -> bool:
         c = self.condition
         if c == "no_party":
-            return gs.party_count == 0
+            # badge_count == 0 guard: party_count is a single read8 that
+            # returns 0 when it transiently raises inside read_state (the outer
+            # except passes, leaving the default 0 with saveblock1_valid still
+            # True -- state.py). Once ANY badge is earned the player provably has
+            # a party, so a 0 read is a flicker and must NOT yank the agent to
+            # Birch's lab (get_starter_via_lab). Pre-Pokedex start is badge 0.
+            return gs.party_count == 0 and gs.badge_count == 0
         if c == "first_starter":
             # Pre-Pokedex Oldale milestone. After Pokedex received the agent
             # has already cycled through Oldale (heal at PC) and should move on.
@@ -431,8 +526,13 @@ class Goal:
         # has no path — the agent would wander. One goal suffices: the
         # multi-map planner routes the hops to Route104 (0,19).
         if c == "peeko_return":
+            # UPPER CAP < 2 (2026-07-26 audit): peeko_done latches True forever,
+            # so the old `>= 1` gate never re-closed — at badge 4 this re-fired
+            # on the westward corridor's own maps (Rusturf/Route116/Rustboro)
+            # and back-pulled the agent to Route104. The return journey is a
+            # badge-1 era event; cap it there.
             return (
-                gs.badge_count >= 1 and peeko_done
+                1 <= gs.badge_count < 2 and peeko_done
                 and cur in {(24, 4), (0, 31), (0, 3)}
             )
         # Northward crossing (only while Peeko not yet rescued):
@@ -445,21 +545,29 @@ class Goal:
             return (
                 gs.badge_count >= 1 and cur == (24, 11) and not peeko_done
             )
-        # Dewford journey (southward) — only AFTER Peeko rescued:
+        # Dewford journey (southward) — only AFTER Peeko rescued.
+        # UPPER CAP < 2 on all four (2026-07-26 audit): peeko_done latches True
+        # forever, so `>= 1` never re-closed and at badge 4 the quartet formed a
+        # STRAND CHAIN on Route104/Woods/Briney's house ending in dewford_sail
+        # boarding Briney's boat to Dewford — an irreversible sea-strand (every
+        # badge<3 recovery goal is silent at badge 4). Route104 borders the
+        # Badge5 Rustboro parking seam, so a frontier-wander drift there is a
+        # live hazard, not a theoretical one. The journey is the badge-1->2
+        # Brawly approach; cap it there.
         if c == "dewford_route104_north":
             return (
-                gs.badge_count >= 1 and cur == (0, 19)
+                1 <= gs.badge_count < 2 and cur == (0, 19)
                 and gs.y < 34 and peeko_done
             )
         if c == "dewford_in_woods":
-            return gs.badge_count >= 1 and cur == (24, 11) and peeko_done
+            return 1 <= gs.badge_count < 2 and cur == (24, 11) and peeko_done
         if c == "dewford_route104_south":
             return (
-                gs.badge_count >= 1 and cur == (0, 19)
+                1 <= gs.badge_count < 2 and cur == (0, 19)
                 and gs.y >= 34 and peeko_done
             )
         if c == "dewford_in_briney_house":
-            return gs.badge_count >= 1 and cur == (17, 0) and peeko_done
+            return 1 <= gs.badge_count < 2 and cur == (17, 0) and peeko_done
         # Dewford Gym (Brawly / Knuckle Badge). Two position-exclusive legs so
         # ordering can't route the agent back out of the gym:
         #  - approach: Stone Badge earned, Knuckle not yet, and NOT inside the
@@ -705,10 +813,30 @@ class Goal:
             # is FLAG_TEMP so it reappears on map reload -> re-fires + re-smashes
             # (cost 0). (19,100) is the east-lane rock; the tip-guy at (19,101)
             # vanished when HM06 was received (0x34B).
+            #
+            # NO badge04 retire-gate (removed 2026-07-26, live-pinned): the rock
+            # respawns on every map load, and the static cache marks (19,100)
+            # WALKABLE, so BFS plans straight through it — the SOUTHBOUND
+            # Lavaridge->Mauville leg (reach_mauville_b5) wedged at (16-19,
+            # 99-100) for 255 turns because `not flag_badge04_get` silenced
+            # this goal after the badge (the heal_at_lavaridge badge04-gate bug
+            # class). Smashing is direction-agnostic: the interact machinery
+            # routes to the nearest walkable neighbour ((19,99) from the north,
+            # (19,101) from the south) and face+A's. The npcs_on_map presence
+            # check below is the real scope gate — object events only populate
+            # near the rock, and once smashed it leaves the list and the goal
+            # retires for the rest of the map session.
+            # NB: canon has a SECOND rock at (18,101) (FLAG_TEMP_11), staggered
+            # diagonally across the 2-wide choke — that's why the wedge was
+            # total (x=19 lane blocked at y100, x=18 lane at y101). It is NOT
+            # targeted: BFS's shortest lane is x=19 (live: toward_exit Down->
+            # (19,139)), which one smash of (19,100) fully opens in both
+            # directions (northbound live-proven with the same single smash),
+            # and an x=18 bump self-recovers via npc_avoid once (19,100) is
+            # clear.
             if not (
                 gs.knows_rock_smash
                 and gs.badge_count >= 3
-                and not gs.flag_badge04_get
                 and cur == (0, 26)
             ):
                 return False
@@ -800,6 +928,17 @@ class Goal:
             return (
                 gs.badge_count >= 3
                 and not gs.flag_badge04_get
+                # badge_count is the latched monotonic read; the RAW badge04
+                # flag drop-flickers single frames post-badge4, and this goal's
+                # cur-NEGATIVE gate makes it fire almost anywhere (it flickered
+                # alive at the Mauville hub, tugging the westward leg back
+                # toward the cable car — live 07-26). Post-badge4 the arc is
+                # over, so retire on the flicker-proof latched count. Audit
+                # (07-26): of the `not flag_badge04_get` arc goals only this
+                # one and reach_lavaridge can single-flicker-fire outside the
+                # arc zone (the rest are protected by disk-latched markers,
+                # positive cur-sets, or the grind level gate).
+                and gs.badge_count < 4
                 and _theft_done(gs)
                 and cur not in {(24, 12), (24, 13), (19, 1), (0, 12)}
                 and gs.map_group != 4
@@ -881,10 +1020,24 @@ class Goal:
             # descend walks it down) and lands here, and must route on into the
             # PC instead of going goal-less. South-blob (0,27) frames never
             # reach this: ride_cable_car sits above and wins outside the pocket.
-            return (
+            #
+            # NO badge04 retire-gate (removed 2026-07-26): "hurt now" is a raw
+            # current-state signal, not a story milestone — the Flannery fight
+            # ends with most of the party fainted, and the old
+            # `not flag_badge04_get` term silenced this heal the moment the
+            # badge latched, leaving 4/5 fainted mons unhealed forever (the
+            # post-Badge4 aimless-loop bug). Pre-badge4 semantics unchanged.
+            # badge>=4 stands in for the mtchimney latch (vacuously done by
+            # then) so a wiped marker dir + a 0x8B flicker frame can't strand
+            # the heal. Post-badge4 the (0,27) case narrows to the JAGGED
+            # POCKET component: pre-badge4 the south blob was shielded by
+            # ride_cable_car above, but that goal retires with the badge, and
+            # the south blob cannot walk back up (one-way ledges) — routing it
+            # to the Lavaridge PC would strand; it pushes on to Mauville
+            # (reach_mauville_b5) instead.
+            hurt = (
                 gs.badge_count >= 3
-                and not gs.flag_badge04_get
-                and _mtchimney_done(gs)
+                and (_mtchimney_done(gs) or gs.badge_count >= 4)
                 and gs.party0_max_hp > 0
                 # hurt OR out of damaging PP (the Fiery grind heals here via the
                 # cable car — Route112->Route111->Mauville stalls in the boulder
@@ -892,8 +1045,15 @@ class Goal:
                 # walk into Flannery and lose. A PC visit refills HP and PP.
                 and (gs.party0_hp_frac < 0.5 or gs.party0_damaging_pp == 0)
                 and not gs.in_battle
-                and cur in {(0, 12), (0, 27), (4, 1), (4, 2), (4, 5)}
             )
+            if not hurt:
+                return False
+            if cur == (0, 27):
+                return (
+                    not gs.flag_badge04_get
+                    or _in_route112_jagged_pocket(gs)
+                )
+            return cur in {(0, 12), (4, 1), (4, 2), (4, 5)}
         if c == "lavaridge_gym_flannery":
             # Badge4 arc leg 6: beat Flannery (13,9) for FLAG_BADGE04_GET (0x86A).
             # cur-set includes gym B1F (4,2): the hot-spring hole puzzle drops us
@@ -913,6 +1073,10 @@ class Goal:
             return (
                 gs.badge_count >= 3
                 and not gs.flag_badge04_get
+                # Latched-count retire (see ride_cable_car): cur-UNGATED, so a
+                # single RAW badge04 drop-flicker frame re-fired this anywhere
+                # post-badge4 and yanked the agent back toward Lavaridge.
+                and gs.badge_count < 4
                 and _mtchimney_done(gs)
             )
         if c == "buy_potions":
@@ -965,6 +1129,523 @@ class Goal:
                 and gs.bag_heal_qty > 0
                 and not gs.in_battle
                 and cur in {(24, 12), (24, 13), (4, 1), (4, 2)}
+            )
+        if c == "reach_mauville_b5":
+            # Badge5 (Norman / Petalburg) arc leg 1: walk back down to the
+            # Mauville hub. Southbound corridor Lavaridge -> Route112 (pocket ->
+            # one-way ledge descent -> south blob) -> Route111 east lane ->
+            # Mauville measured pathable OFFLINE against the real map cache +
+            # learned sandstorm seals (probe 2026-07-26: map_path = Route112 ->
+            # Route111 -> Mauville; R112 leg len 33 from the Jagged landing
+            # (6,46) to the (39,46..51) exit band; R111 leg len 91-96 from the
+            # (0,66..71) entry band to the y=139 Mauville exits WITH the
+            # respawned FLAG_TEMP rock (19,100) blocked — the ledge lane routes
+            # around it, so no southbound re-smash goal is needed).
+            # badge_count is the latched monotonic read (no flicker-down), so
+            # >=4 can't yank pre-badge4 states here; retires at badge 5.
+            # Cur-ungated: doubles as whiteout recovery anywhere on the
+            # corridor (whiteout re-homes to the Lavaridge PC, party healed,
+            # and this goal re-drives the descent). The westward legs are
+            # owned by reach_verdanturf_b5 (below): this goal is SILENT on the
+            # west corridor (Route117 / Verdanturf town + its indoor group 6) —
+            # at Verdanturf the west goal is a target==cur FALLBACK, and an
+            # unsilenced east goal would win the scan there and oscillate
+            # Verdanturf<->Mauville. East of Mauville (Lavaridge side,
+            # Route111/112, whiteout recovery) this goal still owns routing.
+            return (
+                4 <= gs.badge_count < 5
+                # Westward corridor exclusions (leg 2 + leg 3 + catch): Route117,
+                # Verdanturf (+ indoor group 6), RusturfTunnel, Route116,
+                # Rustboro (+ indoor group 11), Route104. On each of these a
+                # forward goal owns routing, and at the parking destinations
+                # (Verdanturf/Rustboro, target==cur fallback) an unsilenced
+                # east goal would win the scan and oscillate. (0,19) added
+                # 07-27: a bag_pokeball_count flicker-0 frame dropped the
+                # catch goal and THIS goal yanked the agent off Route104 —
+                # the boundary oscillation. The read-root fall-confirm guard
+                # is the root fix; this exclusion is the belt: even a
+                # residual flicker now falls to reach_rustboro_b5 (which
+                # keeps the agent on the corridor), never the east pull.
+                and cur not in {(0, 32), (0, 14), (24, 4), (0, 31), (0, 3),
+                                (0, 19)}
+                # 8 = Petalburg interiors: inside the gym (8,1) the
+                # petalburg_enter_gym target==cur fallback must win, not an east
+                # yank out of the gym (probe 07-27).
+                and gs.map_group not in (6, 8, 11)
+            )
+        if c == "buy_pokeballs":
+            # Water-catch sub-project (user-directed, 2026-07-26): stock Poke
+            # Balls at the Rustboro Mart before/while hunting on Route104.
+            # bag < 5 (not == 0) keeps the RESTOCK loop alive mid-hunt: when
+            # the balls run out on Route104 the containment pull routes back
+            # through Rustboro (map_path R104->Mauville first hop = Rustboro,
+            # probe 07-26) and this re-fires. party_count < 6 retires the
+            # whole project once the catch lands. Money gate mirrors
+            # buy_potions: unreadable (-1) fires; only a confirmed wallet
+            # below one Poke Ball ($200) stays silent.
+            return (
+                4 <= gs.badge_count < 5
+                and gs.party_count < 6
+                and not _water_catch_done(gs)  # latch: raw party_count<6 can
+                # re-fire on a flicker-0 frame after the catch; the latch keeps
+                # this retired so it can't out-scan the Petalburg chain.
+                and gs.bag_pokeball_count < 5
+                and not (0 <= gs.money < 200)
+                and cur in {(0, 3), (11, 7)}
+            )
+        if c == "catch_water_route104":
+            # Water-catch sub-project: hunt MARILL in Route104 NORTH grass.
+            # ROM gWildMonHeaders (parsed 07-26 @0x08552D48): Route104 land =
+            # Marill 20% L4-5 / Wingull 10% L3-5 (also Water — acceptable
+            # backup) / Poochyena 40% / Wurmple 20% / Taillow 10%. Encounter
+            # tables are per-MAP, so the north-half grass (reachable from
+            # Rustboro WITHOUT the Woods) rolls the same table. The 'catch'
+            # name prefix is LOAD-BEARING (catch_intent_active gates every
+            # ball throw on it) and the 'catch_water' prefix additionally
+            # type-gates throws on the live opponent being Water-typed
+            # (gBattleMons[1], fail-closed) — off-type wilds are fled, so the
+            # 40% Poochyena can neither eat balls nor steal the last party
+            # slot. Retires when the party fills (slot 6 = the catch) or the
+            # balls run out (buy_pokeballs above restocks).
+            return (
+                4 <= gs.badge_count < 5
+                and 1 <= gs.party_count < 6
+                and not _water_catch_done(gs)  # latch retire (see buy_pokeballs)
+                and gs.bag_pokeball_count > 0
+                and cur in {(0, 3), (0, 19)}
+            )
+        if c == "catch_woods":
+            # User-directed Woods-catch (2026-07-27): fill the 6th slot with a
+            # USEFUL evolver before Norman. The Marill catch already latched
+            # _water_catch_done, so the petalburg_* chain is ALREADY active at
+            # party 5 and (baseline) walks into the gym -- this goal sits ABOVE
+            # that chain and BELOW catch_water_route104 in GOAL_TABLE, so it wins
+            # the whole Petalburg corridor while a slot is open, then hands back
+            # the instant the party fills. Deliberately does NOT gate on
+            # _water_catch_done (already True -> gating would silence it).
+            # Species-gated to Shroomish(306)/Slakoth(364) by the 'catch_woods'
+            # prefix in claude_heuristic._CATCH_SPECIES_BY_PREFIX (the catch_water
+            # TYPE-gate analog, REQUIRED -- off-species wilds are fled, never
+            # balled). cur-set: Woods + Route104 SOUTH (y>=34, the Petalburg-side
+            # half; north y<34 stays owned by catch_water/petalburg_route104_north)
+            # + Petalburg City (0,0) + Petalburg interiors (group 8, verified
+            # exclusively PetalburgCity_* per heal_at_petalburg) so a party-5
+            # wander into the gym/PC/house is pulled back to the Woods instead of
+            # parking at Norman's door. 1<=party (not raw <6) mirrors catch_water:
+            # a read8 flicker-to-0 can't re-fire at a genuine party 6. No
+            # _woods_catch_done latch -- the wobble is LOCAL and party>=6 hands to
+            # the latch-robust petalburg chain.
+            return (
+                4 <= gs.badge_count < 5
+                and 1 <= gs.party_count < 6
+                and gs.bag_pokeball_count > 0
+                and (
+                    cur == (24, 11)
+                    or (cur == (0, 19) and gs.y >= 34)
+                    or cur == (0, 0)
+                    or gs.map_group == 8
+                )
+            )
+        # --- Party-grind mode (2026-07-28, user-directed, OPT-IN): while the
+        # party_grind.on marker exists, train the L5-17 backups hands-off at
+        # RUSTURF TUNNEL (24,4) — the only cave grind site reachable from
+        # Petalburg WITHOUT transiting Mauville (the 07-25 stale-gym trap),
+        # probed 07-28: 174/177 walkable tiles are MB_CAVE land-encounter,
+        # zero walkable-adjacent ledges (no frontier leak), Whismur-only
+        # L5-8 wilds (the one population an L5 trainee can safely fight).
+        # Corridor = the proven badge5/ngrind legs reversed: Petalburg ->
+        # R104 south -> Woods -> R104 north -> Rustboro -> Route116 ->
+        # Rusturf (rocks permanently smashed 07-26). WHO leads is the loop
+        # hook's job (party_grind.ensure_lead, RAM-verified reorder AT the
+        # grind site); these goals are deliberately LEAD-AGNOSTIC so a
+        # pre-reorder Sceptile lead or a mid-rotation frame never drops the
+        # chain. All gates: marker (disk, flicker-proof) + latched badge era
+        # 4..5 (audited corridor) — no party_count / story-flag / species
+        # terms (nothing here can flicker the chain away). Retire = the
+        # hook deletes the marker; every condition below goes silent on the
+        # same frame and the live-proven b5 chain (exit_rusturf_west ->
+        # reach_rustboro_b5 -> petalburg_*) walks the party home.
+        if c == "pgrind_grind":
+            # The grind itself: healthy complement (hp >= 0.4, pp != 0) of
+            # the exit/heal legs, the grind_fiery_path pairing. Scanned
+            # ABOVE them so the 0.4-0.5 band keeps the tile.
+            return (
+                _party_grind.party_grind_active()
+                and 4 <= gs.badge_count < 5
+                and gs.party0_hp_frac >= 0.4
+                and gs.party0_damaging_pp != 0
+                and cur == (24, 4)
+            )
+        if c == "pgrind_exit_west":
+            # Hurt/PP-dry inside the tunnel: pin the WEST warp (4,10)
+            # explicitly — generic warp routing to the Rustboro-side PC
+            # would pick the NEARER middle door (18,20), which lands in the
+            # Route116 cid2 cul-de-sac (the exit_rusturf_west lesson, same
+            # pin). Order makes this the grind's complement: it only wins
+            # when pgrind_grind is silent.
+            return (
+                _party_grind.party_grind_active()
+                and 4 <= gs.badge_count < 5
+                and cur == (24, 4)
+            )
+        if c == "pgrind_heal":
+            # Grind-loop heal at the Rustboro PC (11,5) — nurse (7,2) /
+            # counter (7,3) / stand (7,4), the exact geometry every other
+            # PC heal goal uses (probed 07-28). Also re-homes a whiteout to
+            # Rustboro, so a trainee wipe is a short walk back. Covers the
+            # east half of the corridor; the west half (Woods/R104-south/
+            # Petalburg) falls through to the petalburg_* homeward legs +
+            # heal_at_petalburg (their hurt behavior is already correct).
+            return (
+                _party_grind.party_grind_active()
+                and 4 <= gs.badge_count < 5
+                and gs.party0_max_hp > 0
+                and (gs.party0_hp_frac < 0.5 or gs.party0_damaging_pp == 0)
+                and not gs.in_battle
+                and (
+                    cur in {(0, 3), (0, 31)}
+                    or gs.map_group == 11
+                    or (cur == (0, 19) and gs.y < 34)
+                )
+            )
+        if c == "pgrind_heal_west":
+            # West-half heal: hurt/PP-dry at Petalburg City / its interiors
+            # (group 8) / R104 south beach -> the Petalburg PC, the exact
+            # heal_at_petalburg geometry and gate (hp<0.5 OR pp==0, the
+            # complement of pgrind_to_woods below). Exists because the
+            # marker short-circuit in current_goal (2026-07-28) excludes
+            # heal_at_petalburg/petalburg_to_city while training — without
+            # this leg a hurt START of the trek would have no matching
+            # pgrind goal and the catch-all would march a hurt lead east
+            # through the Woods instead of healing 20 tiles away.
+            return (
+                _party_grind.party_grind_active()
+                and 4 <= gs.badge_count < 5
+                and gs.party0_max_hp > 0
+                and (gs.party0_hp_frac < 0.5 or gs.party0_damaging_pp == 0)
+                and not gs.in_battle
+                and (
+                    cur == (0, 0)
+                    or gs.map_group == 8
+                    or (cur == (0, 19) and gs.y >= 34)
+                )
+            )
+        if c == "pgrind_woods_north":
+            # Inside the Woods, eastbound: pin the NORTH exit warp (the
+            # ngrind_woods_north / peeko_woods_north pin — nearest-warp
+            # routing would re-pick the south door we entered by).
+            return (
+                _party_grind.party_grind_active()
+                and 4 <= gs.badge_count < 5
+                and cur == (24, 11)
+            )
+        if c == "pgrind_to_woods":
+            # First leg: Petalburg City / its interiors / R104 south beach
+            # -> into the Woods. hp/pp-gated so a hurt start yields to
+            # heal_at_petalburg (exact complement), the ngrind_to_woods
+            # discipline. Mid-corridor legs are NOT hp-gated: the heal is
+            # forward at Rustboro (pgrind_heal above wins when hurt).
+            return (
+                _party_grind.party_grind_active()
+                and 4 <= gs.badge_count < 5
+                and gs.party0_hp_frac >= 0.5
+                and gs.party0_damaging_pp != 0
+                and (
+                    cur == (0, 0)
+                    or gs.map_group == 8
+                    or (cur == (0, 19) and gs.y >= 34)
+                )
+            )
+        if c == "pgrind_to_rusturf":
+            # East legs umbrella: R104 north -> Rustboro -> Route116 ->
+            # Rusturf west door. Per-turn map_path resolves each hop (3
+            # hops max). Group 11 = Rustboro interiors (walks back out of
+            # the PC after a heal).
+            return (
+                _party_grind.party_grind_active()
+                and 4 <= gs.badge_count < 5
+                and (
+                    (cur == (0, 19) and gs.y < 34)
+                    or cur in {(0, 3), (0, 31)}
+                    or gs.map_group == 11
+                )
+            )
+        # --- Norman grind arc (2026-07-28, user decision after Norman loss):
+        # travel the lead EASTBOUND Petalburg -> (Woods position legs) ->
+        # Rustboro -> Rusturf Tunnel -> Verdanturf -> Route117 -> Mauville ->
+        # Route111 -> Route112 -> Fiery Path, grind the cave to
+        # NORMAN_GRIND_TARGET_LEVEL, then retire. The whole WESTBOUND return
+        # is deliberately NOT new code: at target level these four go silent
+        # and the live-proven badge5 chain (reach_mauville_b5 ->
+        # reach_verdanturf_b5 -> reach_rustboro_b5 -> petalburg_* -> gym)
+        # resumes ownership of every corridor map. Gates: badge era (latched
+        # monotonic count, retires on Norman's badge), level (read-root
+        # flicker-guarded, state._flicker_guarded_level), NO party_count /
+        # story-flag terms (nothing here can flicker the chain away). Every
+        # eastbound leg below was offline-probed 2026-07-28 against the real
+        # map cache + learned seals (probe_eastbound*.py):
+        #   Petalburg (0,0)->Woods map_path=[R104, Woods]; R104-south doors
+        #   (10,38)/(11,38) are the only Woods warps reachable from the
+        #   Petalburg strip (cid4, len 52). Woods (16,37)->north warp (14,5)
+        #   len 82. R104 north door (10,30)->Rustboro exit len 41.
+        #   R104->Mauville map_path=[Rustboro, R116, (lie->tunnel), Verd,
+        #   R117, Mauville]; the R116->Verdanturf connection-lie has ZERO
+        #   exit tiles so the runtime hop-ban (case i) re-plans through the
+        #   tunnel warp (47,8) exactly as the westbound leg proved live.
+        #   Tunnel west landing (5,10)->Verdanturf warp (29,16) len 42 (the
+        #   two rocks carry PERMANENT hide flags, smashed 07-26). Verdanturf
+        #   landing (8,2)->R117 exit len 15 (the (19,6) 1-tile-island trap is
+        #   removed at the source by map_data._exit_strip_for's leavable-
+        #   landing rule, same commit); R117 west->east len 59; Mauville west
+        #   entry->R111 exit len 20; R111 northbound needs the respawning
+        #   (19,100) FLAG_TEMP rock smashed (len None blocked / 91 open) —
+        #   smash_route111_rock scans EARLIER in the table and owns that
+        #   moment, the badge4-arc-proven flow; R112 R111-entry band
+        #   (39,46..51) is cid12 with the Fiery warp (11,36), len 38.
+        if c == "ngrind_to_woods":
+            # Petalburg City / its interiors (group 8, incl. the gym — walks
+            # back out) / Route104 SOUTH beach -> into the Woods. hp/pp-gated
+            # so a hurt or PP-dry lead at the start yields to
+            # heal_at_petalburg (hp<0.5 OR pp==0, the exact complement) and
+            # departs topped up. Mid-corridor legs are NOT hp-gated: the only
+            # heal on the corridor is forward at Mauville.
+            # party-grind exclusions (07-28): while the marker is on, the
+            # pgrind chain owns this corridor (a trainee lead has level<52,
+            # so without the gate this arc would drag it east to Fiery's
+            # L14-16 wilds — the Mauville re-trap); the LEAD FLOOR covers
+            # the marker-removed-mid-run state (see NORMAN_GRIND_LEAD_FLOOR).
+            return (
+                4 <= gs.badge_count < 5
+                and not _party_grind.party_grind_active()
+                and NORMAN_GRIND_LEAD_FLOOR <= gs.party0_level
+                and gs.party0_level < NORMAN_GRIND_TARGET_LEVEL
+                and gs.party0_hp_frac >= 0.5
+                and gs.party0_damaging_pp != 0
+                and (
+                    cur == (0, 0)
+                    or gs.map_group == 8
+                    or (cur == (0, 19) and gs.y >= 34)
+                )
+            )
+        if c == "ngrind_woods_north":
+            # Inside the Woods: pin the NORTH exit warp — generic warp routing
+            # would pick the nearest Route104-dest warp, i.e. the south door
+            # we just entered by (the peeko_woods_north lesson, same pin).
+            # During the grind era every Woods crossing is eastbound (a
+            # whiteout re-homes to a PC and re-drives east), so this cannot
+            # fight the westbound petalburg_in_woods leg (level-retired
+            # first).
+            return (
+                4 <= gs.badge_count < 5
+                and not _party_grind.party_grind_active()  # pgrind owns Woods
+                and NORMAN_GRIND_LEAD_FLOOR <= gs.party0_level  # real lead only
+                and gs.party0_level < NORMAN_GRIND_TARGET_LEVEL
+                and cur == (24, 11)
+            )
+        if c == "ngrind_to_mauville":
+            # R104 north -> Rustboro -> R116 -> tunnel -> Verdanturf -> R117
+            # -> Mauville, one umbrella: per-turn map_path from cur resolves
+            # each hop (max 6 hops from R104, under mapbfs' max_hops=8).
+            # Groups 11/6 = Rustboro/Verdanturf interiors (the reach_*_b5
+            # idiom) so a wander into a building walks back out. MUST scan
+            # BEFORE exit_rusturf_west: on (24,4) that goal's target==cur +
+            # pin returns immediately and would walk us back WEST.
+            return (
+                4 <= gs.badge_count < 5
+                and not _party_grind.party_grind_active()  # pgrind owns the
+                # west corridor while active (its Rusturf goals stop at the
+                # tunnel; this leg would march on east)
+                and NORMAN_GRIND_LEAD_FLOOR <= gs.party0_level
+                and gs.party0_level < NORMAN_GRIND_TARGET_LEVEL
+                and (
+                    (cur == (0, 19) and gs.y < 34)
+                    or cur in {(0, 3), (0, 31), (24, 4), (0, 14), (0, 32)}
+                    or gs.map_group in (6, 11)
+                )
+            )
+        if c == "grind_fiery_norman":
+            # The grind itself + its own approach (Mauville -> R111 -> R112
+            # -> Fiery entry via target_map, the grind_fiery_path pattern —
+            # both Route112 Fiery warps are dest-matched, and the south-blob
+            # one is the only reachable one from the R111 entry band).
+            # 'grind' name prefix is LOAD-BEARING (wild battles FIGHT instead
+            # of flee). hp>=0.4 + pp!=0 mirror grind_fiery_path: below either,
+            # this yields and the Mauville heal below fires. On (0,26) with
+            # the rock respawned, smash_route111_rock (earlier scan) wins the
+            # frame — same handoff the badge4 arc ran live.
+            return (
+                4 <= gs.badge_count < 5
+                and not _party_grind.party_grind_active()  # never grind a
+                # party-grind trainee at Fiery (L14-16 wilds vs an L5-18 lead)
+                and NORMAN_GRIND_LEAD_FLOOR <= gs.party0_level
+                and gs.party0_level < NORMAN_GRIND_TARGET_LEVEL
+                and gs.party0_hp_frac >= 0.4
+                and gs.party0_damaging_pp != 0
+                and cur in {(0, 2), (0, 26), _ROUTE112, _FIERY_PATH}
+            )
+        if c == "ngrind_heal_mauville":
+            # Grind-loop heal at the Mauville PC (nurse counter, the
+            # heal_at_mauville geometry). The Lavaridge PC that served the
+            # Flannery grind is unreachable post-badge4 (ride_cable_car
+            # retired; the south blob can't walk up the one-way ledges), and
+            # Mauville is 3 hops down the proven corridor. NOT level-gated:
+            # it also heals a hurt at-target lead on the way home (the
+            # westbound b5 chain has no heal between Lavaridge and
+            # Petalburg). Era-capped like everything else; pp==0 (exact, -1
+            # unreadable keeps grinding) refills the PP the Norman rematch
+            # needs. A mid-grind whiteout re-homes here (last-healed PC), on
+            # corridor, self-recovering.
+            return (
+                4 <= gs.badge_count < 5
+                and gs.party0_max_hp > 0
+                and (gs.party0_hp_frac < 0.5 or gs.party0_damaging_pp == 0)
+                and not gs.in_battle
+                and cur in {(0, 2), (0, 26), _ROUTE112, _FIERY_PATH, (10, 5)}
+            )
+        if c == "smash_rusturf_rock":
+            # Badge5 arc: the Rusturf Tunnel mid-wall. TWO BREAKABLE_ROCK
+            # object_events at tiles (24,4)/(24,5) seal the only corridor rows
+            # (x24 column, y4/y5 — grid-verified; note the map id (24,4) and
+            # the rock tile (24,4) are a numeric coincidence). Probe 07-26:
+            # east (29,16) -> west warp (4,10) is NO PATH with the rocks
+            # standing, len 41 free; the rock-adjacent approach (25,4) is
+            # reachable len 16. Unlike Route111's FLAG_TEMP rock these carry
+            # PERMANENT hide flags (FLAG_HIDE_RUSTURF_TUNNEL_ROCK_1/2), so ONE
+            # smash opens the tunnel forever and this goal never re-fires.
+            # Target (24,4) only: smashing it opens the y4 lane end-to-end
+            # (x20..29 all walkable), and a bump on the remaining (24,5)
+            # self-recovers via npc_avoid (the Route111 two-rock lesson).
+            # Presence-gated on npcs_on_map (smash_route111_rock pattern);
+            # badge>=3 == has HM06; no upper cap (permanent unlock, and the
+            # smash is the right action from either side of the wall).
+            if not (
+                gs.knows_rock_smash
+                and gs.badge_count >= 3
+                and cur == (24, 4)
+            ):
+                return False
+            return any(
+                (nx, ny) == (24, 4)
+                for (nx, ny, _g) in getattr(gs, "npcs_on_map", []) or []
+            )
+        if c == "exit_rusturf_west":
+            # Inside Rusturf Tunnel with the rock down (the smash goal above
+            # wins while it stands): walk to the WEST Route116 warp pad (4,10).
+            # The warp MUST be pinned explicitly: the tunnel's OTHER Route116
+            # warp (18,20, the middle door) is NEARER from the east side
+            # (len 17 vs 41) but lands in Route116 cid2 — a fenced cul-de-sac
+            # that cannot reach the Rustboro exits (cid1, probe 07-26) —
+            # generic nearest-warp routing would pick it and ping-pong through
+            # the dead pocket. Same inner-leg pattern as exit_fiery_path_*.
+            return 4 <= gs.badge_count < 5 and cur == (24, 4)
+        # --- Badge5 Petalburg journey (post water-catch, 2026-07-27):
+        # north Route104 -> Woods -> south Route104 -> Petalburg City -> Gym.
+        # Mirrors the badge-1 dewford_* southward chain (Route104 north/south
+        # are ONE map id, walk-connected only through the Woods; same y<34
+        # discriminator). All legs latch-gated on _water_catch_done -- raw
+        # party_count >= 6 would drop the whole chain on a single failed read8
+        # frame, letting cur-ungated reach_mauville_b5 yank the agent east --
+        # and era-capped < 5. peeko_done/_letter_done are NOT needed: the badge
+        # era gate alone makes this fully exclusive with the badge-1 chain.
+        if c == "petalburg_route104_north":
+            return (
+                4 <= gs.badge_count < 5 and _water_catch_done(gs)
+                and cur == (0, 19) and gs.y < 34
+            )
+        if c == "petalburg_in_woods":
+            return (
+                4 <= gs.badge_count < 5 and _water_catch_done(gs)
+                and cur == (24, 11)
+            )
+        if c == "petalburg_route104_south":
+            return (
+                4 <= gs.badge_count < 5 and _water_catch_done(gs)
+                and cur == (0, 19) and gs.y >= 34
+            )
+        if c == "heal_at_petalburg":
+            # Norman-prep + whiteout re-home (the Flannery lesson): heal at the
+            # Petalburg PC so a Norman loss is a ~20-tile retry, not a re-trek
+            # from the Lavaridge/Rustboro whiteout home. Hurt gate mirrors
+            # heal_at_lavaridge (hp<0.5 OR 0 damaging PP). Group 8 verified
+            # EXCLUSIVELY PetalburgCity_* interiors (probe 07-27), the
+            # group-6/-11 idiom.
+            return (
+                4 <= gs.badge_count < 5 and _water_catch_done(gs)
+                and gs.party0_max_hp > 0
+                and (gs.party0_hp_frac < 0.5 or gs.party0_damaging_pp == 0)
+                and not gs.in_battle
+                and (cur == (0, 0) or gs.map_group == 8)
+            )
+        if c == "petalburg_gym_approach":
+            # City + indoor group 8 so a wander into the PC/Mart/houses keeps
+            # the goal live and region nav walks back out. INCLUDES the gym map
+            # itself: inside (8,1) target==cur parks this as the scan fallback
+            # (Phase B seek_norman is the next increment; when it lands, add
+            # `and cur != (8, 1)` here -- the reach_dewford_gym / seek_brawly
+            # split).
+            return (
+                4 <= gs.badge_count < 5 and _water_catch_done(gs)
+                and (cur == (0, 0) or gs.map_group == 8)
+            )
+        if c == "reach_rustboro_b5":
+            # Badge5 arc leg 3 umbrella: Verdanturf -> [RusturfTunnel] ->
+            # Route116 -> Rustboro. Probe 07-26: naive map_path rides the
+            # Verdanturf 'up' connection-lie (exit_tiles_toward = EMPTY set);
+            # the runtime hop-ban probe bans it (case i) and re-plans
+            # [RusturfTunnel, Route116, Rustboro]; Verdanturf (19,10) ->
+            # tunnel warp (8,1) len 20; Route116 tunnel-landing (47,8) ->
+            # Rustboro exits len 57 (cid1, no seals). cur-set: the corridor +
+            # Rustboro itself (destination parking fallback needs the
+            # condition to MATCH there) + Rustboro's indoor group 11
+            # (verified exclusively Rustboro interiors) so a wander into a
+            # building walks back out. The tunnel map itself is owned by the
+            # smash/exit inner goals above. The Route104/Woods -> Petalburg leg
+            # landed 07-27 (petalburg_* chain ABOVE this goal); (0,19) here is
+            # now only the PRE-latch belt (party < 6, catch still running).
+            # (0,19) added 07-27 with the reach_mauville_b5 Route104 exclusion:
+            # when the catch project is inactive there (balls genuinely 0 ->
+            # walk to Rustboro, where buy_pokeballs restocks; or party full ->
+            # project done), Route104 must still have a forward goal or it
+            # goes goal-less. Catch/buy sit ABOVE, so this only drives when
+            # they are silent.
+            return (
+                4 <= gs.badge_count < 5
+                and (
+                    cur in {(0, 14), (0, 31), (0, 3), (0, 19)}
+                    or gs.map_group == 11
+                )
+            )
+        if c == "reach_verdanturf_b5":
+            # Badge5 arc leg 2 (WESTWARD): Mauville hub -> Route117 ->
+            # Verdanturf. Probe 2026-07-26 (offline, real map cache + learned
+            # seals + ledge-aware BFS): map_path Mauville->Verdanturf =
+            # [Route117, Verdanturf]; Mauville (20,11) -> R117 exit len 21;
+            # R117 east entry -> Verdanturf exit len 60; zero sealed triggers
+            # on either leg. cur-set = the corridor + Verdanturf itself (the
+            # destination fallback only returns a goal whose condition MATCHES
+            # there) + Verdanturf's indoor group 6 (PC/Mart/houses — verified
+            # group 6 is exclusively Verdanturf interiors), so stepping into a
+            # building keeps the goal live and region nav walks back out.
+            # NOT cur-ungated: east of Mauville reach_mauville_b5 owns
+            # recovery; the handoff tile is the Mauville map itself.
+            # Follow-up increments (measured, not yet implemented): Verdanturf
+            # -> RusturfTunnel warp (8,1) len 20; tunnel east (29,16) -> west
+            # warp (4,10) NO PATH with the two BREAKABLE_ROCKs (24,4)/(24,5)
+            # blocked, len 41 free -> needs a smash goal (rocks are PERMANENT
+            # FLAG_HIDE_RUSTURF_TUNNEL_ROCK_1/2, one smash opens it forever);
+            # the middle door (18,20) lands in Route116 cid2, a cul-de-sac
+            # that canNOT reach the Rustboro exits (cid1) — the tunnel exit
+            # goal must pin the WEST warp explicitly. Then Route104/Woods
+            # needs dewford_to_woods-style position legs (map graph can't
+            # visit Route104 twice), and the badge>=1-uncapped dewford_*/
+            # peeko_return goals MUST be badge-capped first or they hijack
+            # Route104-south to Briney's sail.
+            return (
+                4 <= gs.badge_count < 5
+                and (
+                    cur in {(0, 2), (0, 32), (0, 14)}
+                    or gs.map_group == 6
+                )
             )
         return False
 
@@ -1246,9 +1927,12 @@ GOAL_TABLE: list[Goal] = [
     Goal(
         name="smash_route111_rock",
         target_map=(0, 26),       # Route111
-        target_pos=(19, 100),     # east-lane BREAKABLE_ROCK (approach from (19,101))
+        target_pos=(19, 100),     # east-lane BREAKABLE_ROCK — approach tile is the
+        # nearest reachable neighbour ((19,101) northbound, (19,99) southbound);
+        # the interact machinery targets all walkable neighbours, so both
+        # directions work. Fires post-badge4 too (southbound Mauville leg).
         condition="smash_route111_rock",
-        desc="Route111 (19,100) の岩を Rock Smash で砕いて北へ",
+        desc="Route111 (19,100) の岩を Rock Smash で砕く (南北両方向の通行に必要)",
     ),
     Goal(
         # Higher priority than reach_fallarbor: on Route112 south, cross Fiery
@@ -1379,7 +2063,327 @@ GOAL_TABLE: list[Goal] = [
         condition="reach_lavaridge",
         desc="Badge4 arc: SW pocket → LavaridgeTown (gym approach)",
     ),
+    # --- Badge5 (Norman / Petalburg) arc — first increment (2026-07-26) ---
+    # Listed LAST so every "hurt now" goal above (heal_at_lavaridge, un-gated
+    # from badge04 the same day) wins first; once the party is healed this is
+    # the only live badge-4 match and drives the southbound corridor.
+    # --- Water-catch sub-project (user-directed): buy balls, hunt Marill.
+    # buy ABOVE catch (restock priority when both match at Rustboro); both
+    # ABOVE the leg-3 umbrella so they own Rustboro/Route104 while active.
+    Goal(
+        name="buy_pokeballs",
+        target_map=(11, 7),       # RustboroCity_Mart — identical interior to
+        # Mauville's (clerk MART_EMPLOYEE (1,3), counter column x=2, probe
+        # 07-26): stand (3,3), face Left + A over the counter.
+        target_pos=(2, 3),
+        condition="buy_pokeballs",
+        desc="Water捕獲用に Rustboro Mart で Poke Ball 購入 (VLM shop)",
+    ),
+    Goal(
+        name="catch_water_route104",
+        target_map=(0, 19),       # Route104 NORTH half (Rustboro side)
+        target_pos=(3, 11),       # interior grass pin — MB_TALL_GRASS with all
+        # 4 neighbours grass (grind-pin discipline); Rustboro entry (19,0) ->
+        # pin len 51 (probe 07-26). Canon-pinned by test.
+        condition="catch_water_route104",
+        desc="Route104 北草むらで MARILL 捕獲 (20%/L4-5, Water 補強)",
+    ),
+    Goal(
+        name="catch_woods",
+        target_map=(24, 11),      # PetalburgWoods. map_path(0,0->24,11) =
+        # [(0,19),(24,11)] (probe 07-27): a bare target_map resolves the whole
+        # Petalburg->Route104-south->Woods trip via region-nav -- NO position
+        # legs (the reverse of the petalburg_* chain visits Route104 once, in
+        # one component). Land table (ROM gWildMonHeaders) has Shroomish(306)/
+        # Slakoth(364) here but NOT on Route104 grass -> the hunt MUST be in the
+        # Woods, not the route.
+        target_pos=(22, 34),      # interior MB_TALL_GRASS pin, all 4 neighbours
+        # grass (grind-pin discipline; probe 07-27: 0x02 x5). Reachable from the
+        # south-door landing (16,38) len 10 AND the north approach len 85, so nav
+        # is robust to whichever Woods door region-nav picks.
+        condition="catch_woods",
+        desc="Badge5前: Petalburg Woods で Shroomish(306)/Slakoth(364) 捕獲 (party 6埋め)",
+    ),
+    # --- Badge5 leg 3: Verdanturf -> Rusturf Tunnel -> Route116 -> Rustboro.
+    # Inner tunnel goals first (most specific), then the umbrella; all ABOVE
+    # the leg-2/leg-1 goals so the westernmost live leg wins the scan.
+    Goal(
+        name="smash_rusturf_rock",
+        target_map=(24, 4),       # RusturfTunnel
+        target_pos=(24, 4),       # BREAKABLE_ROCK tile (FLAG_HIDE_RUSTURF_
+        # TUNNEL_ROCK_2, permanent). Approach = nearest walkable neighbour
+        # ((25,4) from the east, len 16); face+A smashes; canon-pinned by test.
+        condition="smash_rusturf_rock",
+        desc="Rusturf Tunnel の岩 (24,4) を Rock Smash — 永続 flag なので一度で開通",
+    ),
+    # --- Party-grind mode (2026-07-28, opt-in marker): backup training at
+    # Rusturf Tunnel. Placement is LOAD-BEARING and mirrors the ngrind
+    # block's reasoning: AFTER smash_rusturf_rock (a reported rock must
+    # still win its frame), ABOVE the ngrind block (mutually exclusive via
+    # the marker, kept adjacent for the audit trail), ABOVE
+    # exit_rusturf_west (its target==cur pin would walk the parked grind
+    # straight back west) and ABOVE the petalburg_* legs (which would
+    # otherwise own Route104/Woods southbound). Within the block: grind
+    # before exit/heal (the 0.4-0.5 hp band keeps the tile), exit-west pin
+    # before the heal umbrella (tunnel frames must use the pinned west
+    # door, never generic nearest-warp routing into the cid2 cul-de-sac),
+    # travel legs last (westernmost first, the position-leg idiom).
+    Goal(
+        name="grind_party_rusturf",
+        target_map=(24, 4),       # RusturfTunnel — cave-grind properties
+        # probed 2026-07-28 (see the pgrind_grind condition comment).
+        target_pos=(23, 14),      # interior pin: MB_CAVE with all 4
+        # neighbours MB_CAVE (grind-pin discipline), Manhattan >= 8 from
+        # every warp and >= 9 from every object_event (probe 07-28; the
+        # nearest NPC, Wanda's boyfriend (23,5), is 9 away) — so the
+        # reorder SM's worst-case stray field press hits empty cave floor.
+        # 'grind' name prefix is LOAD-BEARING (wild battles FIGHT).
+        condition="pgrind_grind",
+        desc="Party-grind: Rusturf 洞窟 (23,14) で backup lead を野生 Whismur 相手に育成",
+    ),
+    Goal(
+        name="pgrind_exit_west",
+        target_map=(24, 4),
+        target_pos=(4, 10),       # WEST Route116 warp pad — the
+        # exit_rusturf_west pin, same cul-de-sac rationale (probe 07-26).
+        condition="pgrind_exit_west",
+        desc="Party-grind: 消耗時は西 warp (4,10) から Route116 へ (heal へ向かう)",
+    ),
+    Goal(
+        name="pgrind_heal_rustboro",
+        target_map=(11, 5),       # RustboroCity_PokemonCenter_1F
+        target_pos=(7, 3),        # counter below the nurse (7,2): stand
+        # (7,4), Up+A over the MB_COUNTER (probe 07-28 — the standard PC
+        # geometry every other heal goal uses). Re-homes whiteout here.
+        condition="pgrind_heal",
+        desc="Party-grind: Rustboro PC で全回復 (HP/PP、whiteout 先も Rustboro に)",
+    ),
+    Goal(
+        name="pgrind_heal_petalburg",
+        target_map=(8, 4),        # PetalburgCity_PokemonCenter_1F
+        target_pos=(7, 3),        # counter below the nurse (7,2): stand
+        # (7,4), Up+A — the heal_at_petalburg geometry (probe 07-27).
+        # West-half twin of pgrind_heal_rustboro; see the pgrind_heal_west
+        # condition comment for why it exists (marker short-circuit).
+        condition="pgrind_heal_west",
+        desc="Party-grind: 西半分 (Petalburg/南浜) で消耗したら Petalburg PC で全回復",
+    ),
+    Goal(
+        name="pgrind_woods_north",
+        target_map=(24, 11),
+        target_pos=(14, 5),       # north exit warp (the canon
+        # peeko/ngrind_woods_north pin — nearest-warp routing would re-pick
+        # the south door we entered by).
+        condition="pgrind_woods_north",
+        desc="Party-grind: Woods を北上し北口 (14,5) から Route104 北へ",
+    ),
+    Goal(
+        name="pgrind_to_woods",
+        target_map=(24, 11),      # PetalburgWoods (map_path resolves the
+        # Petalburg -> R104-south -> Woods trip; south doors are the only
+        # Woods warps reachable from the Petalburg strip — probe 07-28).
+        condition="pgrind_to_woods",
+        desc="Party-grind: Petalburg → Route104 南浜 → Woods へ東進開始",
+    ),
+    Goal(
+        name="pgrind_to_rusturf",
+        target_map=(24, 4),       # RusturfTunnel — umbrella for R104N ->
+        # Rustboro -> Route116 -> tunnel west door (3 hops, warp routing
+        # dest-matches the tunnel; rocks carry PERMANENT hide flags,
+        # smashed 07-26, so the west half is open for good).
+        condition="pgrind_to_rusturf",
+        desc="Party-grind: Route104 北 → Rustboro → Route116 → Rusturf Tunnel",
+    ),
+    # --- Norman grind arc (2026-07-28): eastbound trek + Fiery cave grind.
+    # Block placement is LOAD-BEARING: AFTER smash_rusturf_rock (a reported
+    # rock on (24,4) must still win its frame — its target==cur pin returns
+    # on scan) but BEFORE exit_rusturf_west (whose own target==cur pin would
+    # walk the eastbound tunnel crossing back west), and before the
+    # petalburg_* legs (else they own Route104/Woods and drive the agent back
+    # to the gym under-leveled). smash_route111_rock scans far earlier and
+    # keeps winning on Route111. Within the block, grind before heal: in the
+    # hp 0.4-0.5 band the grind keeps the tile (the grind_fiery_path /
+    # heal_at_lavaridge pairing). Retire = level: all five go silent at
+    # NORMAN_GRIND_TARGET_LEVEL and the live-proven b5 chain drives home.
+    Goal(
+        name="reach_ngrind_woods",
+        target_map=(24, 11),      # PetalburgWoods (map_path resolves the
+        # Petalburg -> R104-south -> Woods trip; only the south doors are
+        # reachable from the Petalburg strip — probe 07-28)
+        condition="ngrind_to_woods",
+        desc="Norman grind: Petalburg → Route104 南浜 → Woods へ東進開始",
+    ),
+    Goal(
+        name="reach_ngrind_woods_north",
+        target_map=(24, 11),
+        target_pos=(14, 5),       # north exit warp -> Route104 north (the
+        # canon peeko_woods_north pin; nearest-warp routing would re-pick the
+        # south door)
+        condition="ngrind_woods_north",
+        desc="Norman grind: Woods を北上し北口 (14,5) から Route104 北へ",
+    ),
+    Goal(
+        name="reach_ngrind_mauville",
+        target_map=(0, 2),        # MauvilleCity — umbrella for R104N ->
+        # Rustboro -> R116 -> RusturfTunnel -> Verdanturf -> R117 -> Mauville
+        condition="ngrind_to_mauville",
+        desc="Norman grind: Rustboro/Rusturf/Verdanturf 回廊を東進 → Mauville hub",
+    ),
+    Goal(
+        name="grind_fiery_norman",
+        target_map=(24, 14),      # FieryPath (approach owned too: Mauville ->
+        # R111 -> R112 south blob -> in-blob warp, the grind_fiery_path way)
+        target_pos=(26, 23),      # the proven cave-floor pin (all-0x08
+        # neighbours, 13 steps from the south warp)
+        condition="grind_fiery_norman",
+        desc="Sceptile < L52 → Fiery Path 洞窟 (26,23) で grind → Norman 再戦",
+    ),
+    Goal(
+        name="heal_at_mauville_ngrind",
+        target_map=(10, 5),       # MauvilleCity_PokemonCenter_1F
+        target_pos=(7, 3),        # counter below the nurse (7,2): stand
+        # (7,4), Up+A over the MB_COUNTER (the proven heal_at_mauville
+        # geometry). Also re-homes a mid-grind whiteout to Mauville.
+        condition="ngrind_heal_mauville",
+        desc="Norman grind: 消耗時は Mauville PC で全回復 (HP/PP 補充・whiteout 再ホーム)",
+    ),
+    Goal(
+        name="exit_rusturf_west",
+        target_map=(24, 4),       # RusturfTunnel
+        target_pos=(4, 10),       # WEST Route116 warp pad — NOT the nearer
+        # middle door (18,20), which lands in the Route116 cid2 cul-de-sac
+        # (cannot reach Rustboro; probe 07-26). Canon-pinned by test.
+        condition="exit_rusturf_west",
+        desc="Rusturf Tunnel 内: 西 warp (4,10) から Route116 cid1 へ (中間扉は禁止)",
+    ),
+    # --- Badge5 leg 4 (2026-07-27): Route104 -> Woods -> Petalburg -> Gym.
+    # Supersedes reach_rustboro_b5's (0,19) parking seam once the catch is done
+    # (must sit ABOVE it in this list). Probes 07-27: R104 (2,6)->woods north
+    # door (10,30) len 32 (doors (10,30)/(11,30) are the ONLY Woods warps in
+    # north cid0, so warp routing cannot pick a south door); Woods crossing len
+    # 82; south landing (10,39)->Petalburg exit strip (39,62)/(39,63) len 52
+    # (single cid4); city entry (0,12)->gym approach (15,9) len 18.
+    Goal(
+        name="petalburg_to_woods",
+        target_map=(24, 11),      # PetalburgWoods
+        condition="petalburg_route104_north",
+        desc="Badge5: Route104 北 → Petalburg Woods (24-11) に入る",
+    ),
+    Goal(
+        name="petalburg_woods_south",
+        target_map=(24, 11),
+        target_pos=(16, 38),      # south exit warp -> Route104 south beach.
+        # PIN IS LOAD-BEARING: the woods' OTHER south exit (36,38) lands in
+        # Route104 cid6, a fenced item pocket that canNOT reach the Petalburg
+        # exit (probe 07-27: bfs (32,42)->(39,62) = None). Same canon tile the
+        # badge-1 dewford_woods_south leg pins.
+        condition="petalburg_in_woods",
+        desc="Badge5: Petalburg Woods 南口 (16,38) から Route104 南浜へ",
+    ),
+    Goal(
+        name="petalburg_to_city",
+        target_map=(0, 0),        # PetalburgCity (via exit strip (39,62-63))
+        condition="petalburg_route104_south",
+        desc="Badge5: Route104 南浜 → 東進して Petalburg City (0-0)",
+    ),
+    Goal(
+        name="heal_at_petalburg",
+        target_map=(8, 4),        # PetalburgCity_PokemonCenter_1F
+        target_pos=(7, 3),        # counter below the nurse (7,2): stand (7,4),
+        # Up+A over the MB_COUNTER (the Dewford/Slateport/Lavaridge PC pattern;
+        # probe 07-27 confirms nurse=(7,2), (7,4) walkable, (7,3) counter
+        # non-walkable).
+        condition="heal_at_petalburg",
+        desc="Norman 前後: Petalburg PC で全回復 (whiteout 先を Petalburg に固定)",
+    ),
+    Goal(
+        name="petalburg_enter_gym",
+        target_map=(8, 1),        # PetalburgCity_Gym. Door (15,8) is the city's
+        # single active gym warp -> approach (15,9) + Up, no pin needed. Inside,
+        # parks as the target==cur fallback (Phase B seek_norman is next).
+        condition="petalburg_gym_approach",
+        desc="Badge5: Petalburg Gym (8-1) に入場 (Norman 部屋パズルは次 increment)",
+    ),
+    Goal(
+        name="reach_rustboro_b5",
+        target_map=(0, 3),        # RustboroCity (parking seam of this leg)
+        condition="reach_rustboro_b5",
+        desc="Badge5 arc leg3: Verdanturf→Rusturf Tunnel→Route116→Rustboro",
+    ),
+    # Leg 2 ABOVE leg 1: at the Mauville hub both match (leg 1 only as its
+    # target==cur fallback), and the westward leg must win the scan there.
+    Goal(
+        name="reach_verdanturf_b5",
+        target_map=(0, 14),       # VerdanturfTown (west via Route117)
+        condition="reach_verdanturf_b5",
+        desc="Badge5 arc leg2: Mauville→Route117→Verdanturf (西進、Rusturf 手前)",
+    ),
+    Goal(
+        name="reach_mauville_b5",
+        target_map=(0, 2),        # MauvilleCity — hub the westward legs start from
+        condition="reach_mauville_b5",
+        desc="Badge5 arc leg1: Lavaridge→Route112 ledge降下→Route111→Mauville hub",
+    ),
 ]
+
+
+# --- Party-grind goal short-circuit (2026-07-28, targeted stale-goal fix) ---
+# While the party_grind.on marker exists, current_goal may select ONLY these
+# goals. Root cause this kills (live-measured 07-28): badge_count reads 0 on
+# ~0.7% of frames even with saveblock1_valid=True (a raw DMA flag-read
+# flicker the len(_BADGE_BITS_LATCHED) latch does not fully immunize). On
+# such a frame every era-gated (4 <= badge < 5) pgrind goal goes silent, and
+# a stale earlier-era goal whose other terms are disk latches — live it was
+# reach_mauville (_devon_delivered AND badge<3, cur-UNGATED, visited-
+# bypassed); the same sweep also reproduces enter_rustboro_gym at badge=0
+# and ride_cable_car at badge=3 — matches ANYWHERE, wins the scan, and
+# yanks the trek east for one frame; the next clean frame flips it back
+# (the Woods<->Route104 oscillation that never reached Rusturf). Filtering
+# by NAME immunizes the training mode against the WHOLE stale-goal-flicker
+# family in one place, without touching the fragile badge latch itself.
+# On a flicker frame all pgrind gates are false -> current_goal returns
+# None -> the loop's goal-carry (claude_heuristic) serves the last good —
+# by construction pgrind — goal, so nav never even blips.
+#
+# The two smash_* goals are deliberately ALLOWED: they are facilitators,
+# not directors — target==cur + object-event presence gated, so they can
+# only ever fire while STANDING on their map with the rock actually there,
+# and clearing the rock is the right action for any goal that needs the
+# lane (the pgrind block comment already promises "a reported rock must
+# still win its frame"; excluding smash_route111_rock would re-create the
+# 255-turn Route111 wedge for a marker-on agent parked east of Mauville).
+PGRIND_GOAL_NAMES = frozenset({
+    "grind_party_rusturf", "pgrind_exit_west", "pgrind_heal_rustboro",
+    "pgrind_heal_petalburg", "pgrind_woods_north", "pgrind_to_woods",
+    "pgrind_to_rusturf", "pgrind_fallback",
+    "smash_rusturf_rock", "smash_route111_rock",
+})
+
+# Positional catch-all: on a CLEAN badge-4 frame with no pgrind goal
+# matching (off-corridor drift — e.g. the marker flipped on while the agent
+# was parked east at Mauville/Fiery), head back to the grind pin; every hop
+# of that route is the b5-chain corridor the loop has already driven live.
+# Deliberately era-gated like the rest of the block: on a badge-flicker
+# frame current_goal returns None instead, so the carry keeps the
+# semantically-right goal (including grind_party_rusturf's load-bearing
+# 'grind' name prefix) rather than swapping in this generic one.
+_PGRIND_FALLBACK = Goal(
+    name="pgrind_fallback",
+    target_map=(24, 4),           # RusturfTunnel
+    target_pos=(23, 14),          # the grind/reorder pin
+    condition="pgrind_fallback",  # not in GOAL_TABLE; returned directly
+    desc="Party-grind catch-all: 回廊外から Rusturf grind pin (23,14) へ復帰",
+)
+
+
+def carry_allowed(goal) -> bool:
+    """Goal-carry gate for claude_heuristic: while the party-grind marker is
+    on, only pgrind-subset goals may be served as the carried last-good goal
+    (a stale goal latched BEFORE the marker appeared must not drive the
+    trek). Marker off: always True — carry behavior unchanged."""
+    if not _party_grind.party_grind_active():
+        return True
+    return goal is not None and goal.name in PGRIND_GOAL_NAMES
 
 
 def current_goal(gs) -> Goal | None:
@@ -1398,8 +2402,13 @@ def current_goal(gs) -> Goal | None:
     if cur != (-1, -1) and cur != (0, 0):
         record_map_visit(*cur)
     visited = _load_visited_maps()
+    # Party-grind short-circuit: see the PGRIND_GOAL_NAMES comment. One
+    # disk-stat per call; matches() already stats it several times per scan.
+    pgrind_on = _party_grind.party_grind_active()
     fallback = None
     for g in GOAL_TABLE:
+        if pgrind_on and g.name not in PGRIND_GOAL_NAMES:
+            continue
         if not g.matches(gs):
             continue
         if (
@@ -1419,6 +2428,12 @@ def current_goal(gs) -> Goal | None:
                 fallback = g
             continue
         return g
+    if fallback is None and pgrind_on and 4 <= gs.badge_count < 5:
+        # Marker on, clean badge-4 frame, yet nothing in the pgrind subset
+        # matched: the agent is off-corridor — return the catch-all so the
+        # mode is never goal-less at a real position (flicker frames fail
+        # the era gate above and fall through to None -> goal-carry).
+        return _PGRIND_FALLBACK
     return fallback
 
 

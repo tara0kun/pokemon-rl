@@ -55,6 +55,7 @@ from . import (
     map_data as map_data_mod,
     map_knowledge as mk_mod,
     memory,
+    party_grind as party_grind_mod,
     path_memory as path_memory_mod,
     preprocess,
     reward_state as reward_state_mod,
@@ -100,6 +101,26 @@ DOUBLE_BATTLE_SEQ = ("A", "A", "A", "A", "A", "A", "B")
 # to leave any wild battle we don't want to fight (traversal, or no damaging
 # move left). A wild battle can always be run from.
 FLEE_SEQ = ("B", "B", "Up", "Up", "Left", "Right", "Down", "A")
+# Give fleeing this many battle turns (~3 full FLEE_SEQ cycles) before
+# escalating to a FIGHT. A flee that is going to work lands well inside this
+# window (07-26 Rusturf live: every successful flee completed in <=18 battle
+# turns INCLUDING intro text). Past it, fleeing is failing for a reason a
+# retry cannot fix (emulator-side input delivery corrupted, as in the 07-26
+# Whismur stall, or an encounter that cannot be run from), while a traversal
+# lead typically out-levels tunnel wilds massively - one best_move commit ends
+# the battle in a single clean turn. Without this escalation the Whismur
+# battle retried FLEE_SEQ for 58 straight turns and would have forever.
+FLEE_GIVE_UP_BATTLE_TURNS = 3 * len(FLEE_SEQ)
+# When the active battler out-levels the wild enemy by at least this much,
+# FIGHT from the first refill instead of fleeing at all. Fleeing exists to
+# save PP on long treks, but its RUN navigation needs 4-5 consecutive presses
+# to land correctly, and under the recurring press-drop condition (two
+# Rusturf stalls, 07-26) an over-leveled battle that could end in ONE
+# committed move instead looped flee cycles for 90+ turns. At a 15+ level gap
+# any damaging move OHKOs or near-OHKOs, so the PP cost is one move use per
+# encounter — cheap against an unbounded stall. Levels come from gBattleMons
+# via RAM (battle_moves.active_level/enemy_level), no absolute thresholds.
+OVERLEVEL_FIGHT_MARGIN = 15
 # src prefixes whose button came from GOAL-DIRECTED navigation (a BFS path
 # step, or a scripted interaction). run()'s post-processing EXPLORE overrides
 # (anomaly_escape, forward_force) must never clobber these: the planner is
@@ -108,6 +129,108 @@ FLEE_SEQ = ("B", "B", "Up", "Up", "Left", "Right", "Down", "A")
 GOAL_DIRECTED_SRC_PREFIXES = ("mapbfs", "rival_seek", "rival_talk", "goal_")
 
 _UI_ESCAPE_CYCLE = ("B", "B", "B", "A")
+
+# --- Wild-catch state-machine waypoints (US Emerald) ----------------------
+# gs.game_cb2 carries the RAW gMain.callback2 pointer regardless of the battle
+# whitelist (state.CB2_BATTLE_SET), so the in-battle BAG (0x081AAD5D, which is
+# NOT whitelisted and therefore reads in_battle=False / game_mode="unknown_ui")
+# is still observable. The catch SM keys every transition off these values plus
+# a raw ball-count edge, re-sending each button until the cb2 transition is seen
+# -- the same read-verify-retry contract that makes walking tolerate a dropped
+# press, replacing the old open-loop 7xA button spray.
+CB2_BATTLE_MAIN = 0x08038421   # CB2_BattleMain (command menu / move-select / anim)
+CB2_BATTLE_BAG = 0x081AAD5D    # in-battle BAG screen
+CB2_OVERWORLD = 0x08085E5D     # CB2_Overworld (battle has ended)
+# Self-correcting bag-open cycle, one button per turn. cb2 CANNOT distinguish
+# the command menu from the FIGHT move-select submenu (both are tasks inside
+# CB2_BattleMain), so a leading B backs out of an accidental submenu, Up+Right
+# forces the cursor onto BAG (top-right of the 2x2 grid), and a single trailing
+# A opens it. One A per 4-turn cycle bounds the KO risk if a B/Right press drops.
+CATCH_OPEN_CYCLE = ("B", "Up", "Right", "A")
+CATCH_OPEN_GIVE_UP = 24        # ~4 open cycles without reaching the bag -> disengage
+CATCH_PROBE_MAX_POCKETS = 5    # pocket sweeps with no ball decrement -> disengage
+CATCH_MAX_BALLS = 5            # never spend more than this many balls per battle
+
+
+def catch_intent_active(goal) -> bool:
+    """True only when the CURRENT goal explicitly asks to catch something
+    (goal name prefixed 'catch', mirroring the 'grind' prefix convention).
+
+    Throwing a ball used to be gated on opportunity (balls in bag + party
+    size / HP), not intent, so a wild mon the agent was merely walking past
+    could eat the bag - the 07-26 Rusturf traversal lost its only Great Ball
+    with zero catch value. Catching is an intent, not an opportunity: no
+    catch goal active -> never throw. All three catch sites (the battle-menu
+    pre-empt and both Part-A catch_priority/catch_ready legs) gate on this."""
+    return goal is not None and goal.name.startswith("catch")
+
+
+# Type filter for typed catch goals, keyed by goal-name prefix. Gen3 internal
+# type ids (battle_moves._CHART's axis): 11 = TYPE_WATER. A goal named
+# catch_water_* only throws when the live opponent (gBattleMons[1]) is
+# Water-typed — without this the Route104 Marill hunt would spend balls on the
+# 40% Poochyena share, and a wrong catch permanently fills the LAST party slot
+# (later catches go to the PC box, so the goal's party_count retire would fire
+# with the wrong mon). Other catch* names stay unfiltered.
+_CATCH_TYPE_BY_PREFIX = {"catch_water": 11}
+
+
+def catch_target_type_ok(goal, client) -> bool:
+    """True when the active opponent matches the catch goal's target type.
+
+    client None (offline harness) skips the filter — production always has a
+    client. RAM read failure is FAIL-CLOSED (skip the throw this turn): a
+    garbage read that green-lights a throw can poison the last party slot,
+    while a missed frame merely delays the catch one turn."""
+    want = None
+    if goal is not None:
+        for pfx, t in _CATCH_TYPE_BY_PREFIX.items():
+            if goal.name.startswith(pfx):
+                want = t
+                break
+    if want is None or client is None:
+        return True
+    try:
+        return want in battle_moves_mod.enemy_types(client)
+    except Exception:  # noqa: BLE001 — any read hiccup means "not confirmed"
+        return False
+
+
+# Species filter for species-gated catch goals, keyed by goal-name prefix.
+# Internal Gen3 species ids (ROM gSpeciesNames): 306 = Shroomish (-> Breloom),
+# 364 = Slakoth (-> Slaking). A goal named catch_woods* only throws when the live
+# opponent (gBattleMons[1]) is one of these — without it the Petalburg Woods hunt
+# would spend balls on the Poochyena/Wurmple/Zigzagoon/Taillow/Silcoon share, and
+# a wrong catch permanently fills the LAST party slot (later catches box, so the
+# goal's party_count retire could fire on the wrong mon). Orthogonal to
+# _CATCH_TYPE_BY_PREFIX: the prefixes are disjoint, so a goal matches at most one
+# dimension and the other gate is a no-op for it.
+_CATCH_SPECIES_BY_PREFIX = {"catch_woods": frozenset({306, 364})}
+
+
+def catch_target_species_ok(goal, client) -> bool:
+    """True when the active opponent's species matches the catch goal's target
+    set (catch_woods*), or the goal has no species prefix / there is no client.
+    Composes (AND) with catch_target_type_ok — each catch project filters on
+    exactly one dimension, so the other predicate returns True unread.
+
+    client None (offline harness) skips the filter. RAM read failure is
+    FAIL-CLOSED (skip the throw this turn): a garbage read that green-lights a
+    throw can poison the last party slot, while a missed frame merely delays the
+    catch one turn. (enemy_species itself already returns 0 on EmulatorError, so
+    0 not in the set is a second fail-closed layer.)"""
+    want = None
+    if goal is not None:
+        for pfx, species in _CATCH_SPECIES_BY_PREFIX.items():
+            if goal.name.startswith(pfx):
+                want = species
+                break
+    if want is None or client is None:
+        return True
+    try:
+        return battle_moves_mod.enemy_species(client) in want
+    except Exception:  # noqa: BLE001 — any read hiccup means "not confirmed"
+        return False
 
 
 def ui_escape_button(unknown_ui_streak: int) -> str | None:
@@ -282,9 +405,18 @@ def heuristic_button(
         # detected via vision means we ARE in battle. Trigger catch on
         # first detect — caller manages a state machine to follow through
         # the bag-select sequence even after battle_menu visibility flips.
+        # Intent-gated (07-26): only when a catch goal is active, never as
+        # an opportunistic throw during traversal. party gate < 6 (was <= 2,
+        # a mono-party-era relic): with intent gating the residual question
+        # is only "is there room for the catch". Type-gated for catch_water*
+        # goals (fail-closed) so off-type wilds fall through to the Part-B
+        # flee instead of eating balls.
         if (
-            gs.bag_pokeball_count > 0
-            and gs.party_count <= 2
+            catch_intent_active(current_goal)
+            and catch_target_type_ok(current_goal, client)
+            and catch_target_species_ok(current_goal, client)
+            and gs.bag_pokeball_count > 0
+            and gs.party_count < 6
             and gs.party0_hp_frac >= 0.3
             and not gs.is_trainer_battle
             and not indoor_battle
@@ -434,7 +566,15 @@ def heuristic_button(
              # goal protects them. "fiery_path"/"exit_fiery" retrofit the same
              # guard for the southbound Fiery re-cross to the cable car.
              "meteor_falls", "fiery_path", "exit_fiery",
-             "ride_", "mtchimney", "descend_", "lavaridge_")
+             "ride_", "mtchimney", "descend_", "lavaridge_",
+             # Badge5 Petalburg journey: without this the Route104 huge
+             # same_map_streak explore-hijack overrides the Woods-crossing
+             # goals (this comment's own Route104 example). heal_at_petalburg
+             # is covered by the "heal" prefix above.
+             "petalburg_",
+             # Party-grind mode: same Route104/Woods crossing legs, same
+             # hijack exposure. grind_party_rusturf is covered by "grind".
+             "pgrind_")
         )
     )
     # H4b: Mr.Briney's Dewford->Slateport sail multichoice (Petalburg=case 0 /
@@ -1207,10 +1347,19 @@ def heuristic_button(
             # solo in the party. Treecko at Lv10+ one-shots most wild
             # Pokemon on turn 1 if we just press A → we'd never get to
             # capture anything, so when party is mono and we have balls,
-            # throw IMMEDIATELY.
+            # throw IMMEDIATELY. Intent-gated (07-26): a catch goal must be
+            # active — traversal battles must not spend balls.
             catch_priority = (
-                gs.bag_pokeball_count > 0
-                and gs.party_count <= 2
+                catch_intent_active(current_goal)
+                # party < 6 (was <= 2, mono-party era): throw from turn 1
+                # whenever there's room — an over-leveled lead (Sceptile L47
+                # vs the L4-5 Route104 targets) KOs on the first FIGHT, so
+                # waiting for catch_ready's turn>=4 window would kill most
+                # targets before the first ball. Type gate: see pre-empt.
+                and catch_target_type_ok(current_goal, client)
+                and catch_target_species_ok(current_goal, client)
+                and gs.bag_pokeball_count > 0
+                and gs.party_count < 6
                 and gs.party0_hp_frac >= 0.3
             )
             if catch_priority and battle_turn >= 1:
@@ -1222,8 +1371,14 @@ def heuristic_button(
                     catch_seq[battle_turn % len(catch_seq)],
                     "wild_catch_try",
                 )
+            # NOTE: this leg had NO party-size gate at all — with a full
+            # party and balls in the bag it fired on any wild battle every
+            # 8th turn. The intent gate is what stops traversal throws.
             catch_ready = (
-                gs.bag_pokeball_count > 0
+                catch_intent_active(current_goal)
+                and catch_target_type_ok(current_goal, client)
+                and catch_target_species_ok(current_goal, client)
+                and gs.bag_pokeball_count > 0
                 and gs.party0_hp_frac >= 0.5
                 and battle_turn >= 4
             )
@@ -1497,6 +1652,40 @@ def heuristic_button(
     return rng.choice(DIRECTIONS), "random"
 
 
+def pgrind_reorder_should_fire(
+    gs,
+    in_battle_seen: bool,
+    screen_signals: dict,
+    turn: int,
+    cooldown_until: int,
+) -> bool:
+    """Gate for the party-grind reorder hook. Extracted + decoupled from the
+    goal NAME (2026-07-28 live fix): the old gate required cur_goal.name ==
+    "grind_party_rusturf", but under socket load the per-frame goal does not
+    settle -- invalid frames (map read flickers to (0,0) / badge dips) fail
+    that goal's cur==(24,4)/era gates, current_goal returns None, and the
+    loop's goal-carry serves the stale-but-valid pgrind_to_rusturf instead.
+    Result: ~400 tunnel turns with ZERO reorder fires while the agent stood
+    on the grind site the whole time. The site itself IS stable: key on
+    marker + saveblock1_valid + map == GRIND_SITE_MAP (flicker frames read
+    saveblock1_valid=False / map (0,0), so a bad read can never fire this)
+    + the same quiet-frame terms as before. Marker off: the first term is
+    False and the hook is a structural no-op -- no reads, no presses, no
+    cooldown writes (the old name-keyed gate was equally silent on normal
+    runs because pgrind goals only match while the marker exists)."""
+    return (
+        party_grind_mod.party_grind_active()
+        and gs.saveblock1_valid
+        and (gs.map_group, gs.map_num) == party_grind_mod.GRIND_SITE_MAP
+        and not gs.in_battle
+        and not in_battle_seen
+        and not screen_signals.get("dialog")
+        and not screen_signals.get("battle_menu")
+        and gs.game_cb2 == CB2_OVERWORLD
+        and turn >= cooldown_until
+    )
+
+
 def run(
     max_turns: int,
     record_dataset: bool,
@@ -1554,17 +1743,31 @@ def run(
     history_buttons: list[str] = []
     entry_dir: str | None = None
     force_explore_until_turn = 0
-    catch_phase_remaining = 0
-    catch_seq_queue: list[str] = []
+    # Wild-catch state machine (replaces the old blind catch_seq_queue / 7xA
+    # spray). Driven per-turn from gs.game_cb2 + a raw ball-count edge; see the
+    # `elif catch_active:` dispatch branch below.
+    catch_active = False
+    catch_state = ""            # "OPEN_BAG" / "THROW_PROBE" / "AWAIT_RESULT"
+    catch_balls_ref = 0         # GUARDED ball count at throw baseline (stable)
+    catch_balls_at_start = 0    # guarded count at engage (bounds total throws)
+    catch_party_ref = 0         # party_count at engage (catch = party rise)
+    catch_attempts = 0          # confirmed throws this battle
+    catch_probe_step = 0        # cycle index within the current state
+    catch_pockets_tried = 0     # bag pocket sweeps (THROW_PROBE bound)
+    catch_state_age = 0         # turns in the current state (give-up bounds)
+    catch_ball_edge = 0         # consecutive raw == ref-1 reads (throw confirm)
+    catch_party_edge = 0        # consecutive party > ref reads (catch confirm)
     battle_move_queue: list[str] = []
     battle_trainer_latch = False
     battle_double_latch = False
     last_ram_battle_turn = -999
+    last_good_goal = None       # carries the goal through saveblock1_valid flicker
     unknown_ui_streak = 0
     teach_cooldown_until = 0
     shop_cooldown_until = 0
     heal_cooldown_until = 0
     battle_heal_cooldown_until = 0
+    pgrind_cooldown_until = 0
     rs = reward_state_mod.RewardState()
     rs.load()
     checkpoint_target: tuple[int, int, int, int] | None = None
@@ -1685,6 +1888,12 @@ def run(
             unknown_ui_streak = 0
         if gs.in_battle:
             last_ram_battle_turn = turn
+        # Keep a multi-turn catch inside the battle-recency window: the in-battle
+        # BAG (cb2 0x081AAD5D) is NOT whitelisted, so gs.in_battle reads False
+        # there and a >12-turn capture would otherwise lapse ram_battle_recent,
+        # tripping the ui_escape / battle-over reset paths mid-catch.
+        if catch_active:
+            last_ram_battle_turn = turn
         ram_battle_recent = (turn - last_ram_battle_turn) <= 12
         in_battle_seen = gs.in_battle or (
             bool(ss_for_battle.get("battle_menu")) and ram_battle_recent
@@ -1747,7 +1956,30 @@ def run(
                     gs, "battle_flags", gs.battle_flags | 0x1,
                 )
         else:
-            battle_turn = 0
+            # Zero the escalation counter only after the battle is CONFIRMED
+            # over (the 12-turn RAM recency latch lapsed), not on an
+            # instantaneous in_battle_seen dropout: a frame where the battle
+            # flags DMA-read 0 AND vision misses the menu (animation /
+            # transition — observed twice on 07-26) would otherwise reset
+            # battle_turn mid-battle, so the FLEE_GIVE_UP escalation could
+            # never trigger in a battle whose signal isn't perfectly stable.
+            # A follow-up battle inside the 12-turn window inherits the stale
+            # count and merely escalates to FIGHT sooner — fine for traversal.
+            # The trainer/double latches keep their instantaneous reset: they
+            # must NOT leak into a different battle (a wild battle started
+            # right after a trainer fight would be misdriven as a trainer).
+            if not ram_battle_recent:
+                battle_turn = 0
+                # Battle is confirmed over -> drop any leftover catch SM state so
+                # it can never leak a stray press into the overworld.
+                catch_active = False
+                catch_state = ""
+                catch_attempts = 0
+                catch_probe_step = 0
+                catch_pockets_tried = 0
+                catch_state_age = 0
+                catch_ball_edge = 0
+                catch_party_edge = 0
             battle_trainer_latch = False
             battle_double_latch = False
 
@@ -1879,7 +2111,32 @@ def run(
             except (OSError, RuntimeError):
                 pass
 
-        cur_goal = goals_mod.current_goal(gs) if gs.saveblock1_valid else None
+        # Goal-carry through DMA flicker. current_goal returns None from TWO
+        # flicker sources under the battle-dense Woods/Route104 load (07-27:
+        # ~98% of overworld frames went goal=None and the loop drifted out of
+        # the Woods and thrashed a whole run): (a) saveblock1_valid flickers
+        # False; (b) on a single-goal tile like the Woods (24,11) where only
+        # catch_woods matches, party_count flickering to 0 fails its
+        # `1<=party<6` gate. Carry the last-good goal through ANY None frame
+        # (same discipline as the badge/party latches) so nav stays purposeful.
+        # A genuinely-changed goal re-latches on the next clean frame; goals are
+        # map-keyed and change slowly, so a few carried frames never mis-drive.
+        _computed_goal = (
+            goals_mod.current_goal(gs) if gs.saveblock1_valid else None
+        )
+        if _computed_goal is not None:
+            cur_goal = _computed_goal
+            last_good_goal = _computed_goal
+        else:
+            # Party-grind marker on: never carry a goal latched BEFORE the
+            # marker appeared (current_goal's pgrind short-circuit keeps
+            # every NEW latch inside the pgrind subset; this closes the one
+            # remaining path — a stale pre-marker last_good_goal — so a
+            # non-pgrind goal can never drive while training). Marker off:
+            # carry_allowed is always True, behavior byte-identical.
+            if not goals_mod.carry_allowed(last_good_goal):
+                last_good_goal = None
+            cur_goal = last_good_goal
 
         # HM-teach sub-task hook (Rock Smash chain): teach_rock_smash is a bag/
         # party MENU operation (target_map=None), not a nav goal. When active and
@@ -1929,6 +2186,29 @@ def run(
             last_action = "buy_potions"
             continue
 
+        # Shop sub-task hook (Water-catch project): buy_pokeballs fires inside
+        # the Rustboro Mart (11,7) — same interior geometry as Mauville's
+        # (clerk (1,3), counter stand (3,3)), so the same walk-in machinery
+        # drives; only the item/prompt differ (run_pokeball_subtask).
+        if (
+            cur_goal is not None
+            and cur_goal.name == "buy_pokeballs"
+            and (gs.map_group, gs.map_num) == (11, 7)
+            and gs.saveblock1_valid
+            and not gs.in_battle
+            and turn >= shop_cooldown_until
+        ):
+            print(f"  [shop] turn {turn}: buying Poke Balls via VLM…")
+            try:
+                ok = shop_mod.run_pokeball_subtask(client, log=print)
+            except Exception as _exc:  # noqa: BLE001 — never crash the loop
+                print(f"  [shop] error: {_exc}")
+                ok = False
+            if not ok:
+                shop_cooldown_until = turn + 15
+            last_action = "buy_pokeballs"
+            continue
+
         # Field-heal sub-task hook (H14): field_heal_potion (target_map=None) uses
         # a Super Potion on the lead between gauntlet trainers / in the gym. Out of
         # battle only, so the battle_move machinery is untouched.
@@ -1950,6 +2230,37 @@ def run(
             last_action = "field_heal_potion"
             continue
 
+        # Party-grind reorder hook (opt-in marker mode, 2026-07-28). Keyed on
+        # marker + GRIND_SITE_MAP + a quiet overworld frame — NOT on the goal
+        # name: pgrind_reorder_should_fire's docstring records the live 07-28
+        # failure (goal-carry kept the name on pgrind_to_rusturf under flicker
+        # and the name-keyed gate never fired). The RAM-verified reorder
+        # (party_grind.ensure_lead) swaps the lowest under-target backup into
+        # slot 0, rotates on level-up, restores the strongest mon and deletes
+        # the marker when all are done. Any battle / dialog / non-overworld
+        # cb2 defers to the normal dispatch (the SM also aborts itself if a
+        # wild steals a frame mid-menu). "noop" (the common case) costs ~13
+        # fixed-address reads and falls through to normal grind nav.
+        if pgrind_reorder_should_fire(
+            gs, in_battle_seen, screen_signals, turn, pgrind_cooldown_until,
+        ):
+            try:
+                acted, why = party_grind_mod.ensure_lead(client, log=print)
+            except Exception as _exc:  # noqa: BLE001 — never crash the loop
+                print(f"  [party_grind] error: {_exc}")
+                acted, why = False, "error"
+            if acted:
+                print(f"  [party_grind] turn {turn}: {why}")
+                pgrind_cooldown_until = turn + 3
+                last_action = "party_grind_reorder"
+                continue
+            if why != "noop":
+                # unreadable frame or a failed reorder attempt — cool down so
+                # a persistent press-drop degrades to plain grinding with the
+                # current lead instead of hammering the menu.
+                print(f"  [party_grind] turn {turn}: not acted ({why})")
+                pgrind_cooldown_until = turn + 25
+
         # Part B — trainer-battle decision, driven by RAM not vision.
         # H6a root cause: the refill used to be gated on the flaky
         # screen_signals["battle_menu"] vision flag. When it missed the FIGHT
@@ -1964,7 +2275,14 @@ def run(
         # move_select_sequence queued during the win/faint dialogue (in_battle
         # still True) would otherwise leak its remaining direction+A presses
         # into the overworld (Fable review F2/F5).
-        if not gs.in_battle and (battle_move_queue or llm_buttons_queue):
+        # Keyed on in_battle_seen, NOT raw gs.in_battle: the battle-flags word
+        # DMA-flickers to 0 for a single turn mid-battle, and flushing on that
+        # flicker threw away a mid-drain FLEE_SEQ (07-26 Rusturf turns 258/265:
+        # the queue died at rem1/rem2, the final A on RUN was never sent, and
+        # heuristic_button's fight_cursor_reset pressed a stray A instead —
+        # opening BAG/FIGHT mid-flee). in_battle_seen already carries the
+        # vision latch + VLM correction, so a real battle end still flushes.
+        if not in_battle_seen and (battle_move_queue or llm_buttons_queue):
             battle_move_queue = []
             llm_buttons_queue = []
         # Double battle (BATTLE_TYPE_DOUBLE = battle_flags & 0x1; e.g. the Route
@@ -2092,8 +2410,17 @@ def run(
             # active_hp == -1 (unreadable): leave queue empty -> heuristic
             # SEND_OUT_SEQ fallback, harmless and self-corrects next turn.
         elif (
-            not battle_move_queue and gs.in_battle
+            # in_battle_seen, not raw gs.in_battle: the raw flag DMA-flickers
+            # to 0 for a turn mid-battle, and on a refill turn that handed
+            # control to heuristic_button's fight_cursor_reset, whose stray A
+            # fought FLEE_SEQ for the cursor (07-26 Rusturf). battle_trainer_
+            # latch must ALSO be excluded explicitly: is_trainer_battle is a
+            # property requiring raw in_battle, so on the same flicker turn a
+            # TRAINER battle reads is_trainer_battle=False and would otherwise
+            # queue FLEE_SEQ here (the Route110 "No running!" soft-lock family).
+            not battle_move_queue and in_battle_seen
             and not gs.is_trainer_battle
+            and not battle_trainer_latch
             # gs.in_battle (0x02022FEC) STAYS True in the overworld after a
             # battle; without a live battle-UI vision signal this branch fired
             # move_select in the dark Granite Cave overworld and froze there.
@@ -2136,7 +2463,21 @@ def run(
                 # (a low-HP KO hits the same learn prompt, and decide()'s run
                 # sequence would navigate the YES/NO cursor the wrong way).
                 battle_move_queue = ["A"]
-            elif gs.party0_hp_frac >= 0.4 and gs.bag_pokeball_count == 0:
+            elif gs.party0_hp_frac >= 0.4 and (
+                # Balls in the bag used to disable this branch entirely so the
+                # heuristic's catch machinery could throw. Catching is now
+                # intent-gated (catch_intent_active), so holding balls must
+                # not stop traversal fleeing — defer to the catch machinery
+                # ONLY when a catch goal is actually active AND the opponent
+                # matches the goal's target type (catch_water_*): an off-type
+                # wild (the 40% Poochyena share on Route104) takes this flee
+                # branch so the encounter cycles fast instead of stalling in
+                # a battle the catch legs refuse to throw at.
+                gs.bag_pokeball_count == 0
+                or not catch_intent_active(cur_goal)
+                or not catch_target_type_ok(cur_goal, client)
+                or not catch_target_species_ok(cur_goal, client)
+            ):
                 # Only the grind goal wants wild XP. For every other goal we are
                 # just crossing an encounter zone (the Granite Cave letter/sail
                 # trek, later routes), where fighting each wild mon is slow and
@@ -2167,10 +2508,46 @@ def run(
                 # FLEE_SEQ's Up presses walked the agent onto stairs, bouncing
                 # it across the Shipyard 1F<->2F during a vision-battle_menu
                 # false positive (the phantom-battle trap north of the museum).
-                if not is_grind and not indoor and gs.saveblock1_valid:
+                # ESCALATION (07-26): if fleeing hasn't worked after ~3 full
+                # cycles (FLEE_GIVE_UP_BATTLE_TURNS), stop retrying it and
+                # fall through to the FIGHT leg below — best_move ends the
+                # battle in one commit for a traversal-grade level gap,
+                # whatever made the flee fail (corrupted input delivery, an
+                # unrunnable encounter). PP cost: one move use per escalated
+                # battle, vs. an unbounded stall.
+                # Over-level check (OVERLEVEL_FIGHT_MARGIN): at a traversal-
+                # grade level gap, skip flee entirely and take the FIGHT leg
+                # below — one committed move ends the battle, no RUN-cursor
+                # navigation to de-sync. Read failures default the gap to 0
+                # (= keep fleeing, the status-quo behavior).
+                try:
+                    lvl_gap = (
+                        battle_moves_mod.active_level(client)
+                        - battle_moves_mod.enemy_level(client)
+                    )
+                except (OSError, RuntimeError, EmulatorError):
+                    lvl_gap = 0
+                # Operator visibility: a wild battle still unresolved at 2x
+                # the give-up threshold means even the FIGHT escalation is
+                # not landing — the recurring emulator-side press-drop
+                # condition. Nothing more the loop can safely do (no
+                # saveStateLoad), so say it loudly instead of stalling mute.
+                if battle_turn > 2 * FLEE_GIVE_UP_BATTLE_TURNS:
+                    print(
+                        f"  [battle_watchdog] turn {turn}: wild battle not"
+                        f" resolving (battle_turn={battle_turn},"
+                        f" lvl_gap={lvl_gap}) — battle presses may not be"
+                        f" registering emulator-side; holds lengthened"
+                    )
+                if (
+                    not is_grind and not indoor and gs.saveblock1_valid
+                    and battle_turn <= FLEE_GIVE_UP_BATTLE_TURNS
+                    and lvl_gap < OVERLEVEL_FIGHT_MARGIN
+                ):
                     battle_move_queue = list(FLEE_SEQ)
                 else:
-                    # Grind or indoor trainer battle: pick a move with PP from
+                    # Grind, indoor trainer battle, or flee escalation: pick
+                    # a move with PP from
                     # RAM instead of decide()'s blind "A" on the highlighted
                     # (often depleted) first move — a depleted "A" only pops
                     # "There's no PP left!" and the turn never resolves (the old
@@ -2198,14 +2575,132 @@ def run(
             button = battle_move_queue.pop(0)
             src = f"battle_move:{button}@rem{len(battle_move_queue)}"
             decisions["battle_move"] = decisions.get("battle_move", 0) + 1
-        elif catch_seq_queue:
-            button = catch_seq_queue.pop(0)
-            src = f"catch_seq_followup:{button}@rem{len(catch_seq_queue)}"
-            decisions["catch_seq_followup"] = (
-                decisions.get("catch_seq_followup", 0) + 1
+        elif catch_active:
+            # Drop-robust wild-catch state machine. Every transition is keyed off
+            # the RAW callback pointer (gs.game_cb2, stored regardless of the
+            # battle whitelist) plus a raw ball-count edge, re-sending the needed
+            # button until the cb2 transition is observed -- the same read-verify-
+            # retry contract that makes walking drop-tolerant. Bounded so a
+            # persistent emulator press-drop degrades to flee/fight instead of
+            # emptying the bag or softlocking.
+            cb2 = getattr(gs, "game_cb2", 0)
+            raw_balls = getattr(gs, "bag_pokeball_count_raw", 0)
+            party_now = gs.party_count
+            menu_now = bool(screen_signals.get("battle_menu"))
+            catch_state_age += 1
+            # Rise-confirmed catch (party_count is a live, unguarded read that
+            # can flicker, so require 2 consecutive rises).
+            catch_party_edge = (
+                catch_party_edge + 1 if party_now > catch_party_ref else 0
             )
-            if not catch_seq_queue:
-                catch_phase_remaining = 0
+            # Throw-landed edge: the raw scan flickers to 0 in battle (never to
+            # ref-1), so an exact -1, nonzero, 2-consecutive read cleanly
+            # separates a real throw from the DMA flicker.
+            catch_ball_edge = (
+                catch_ball_edge + 1
+                if raw_balls == catch_balls_ref - 1 and raw_balls > 0
+                else 0
+            )
+            if catch_party_edge >= 2:
+                # Caught: party grew. A advances the "Gotcha!" text; disengage
+                # and let normal dispatch (ui_escape) handle any nickname prompt.
+                catch_active = False
+                button, src = "A", "catch_sm:caught"
+            elif cb2 == CB2_OVERWORLD:
+                catch_active = False
+                button, src = "B", "catch_sm:battle_over"
+            elif catch_balls_at_start - gs.bag_pokeball_count >= CATCH_MAX_BALLS:
+                # Edge-INDEPENDENT global spend cap (verifier belt-and-suspenders
+                # 2026-07-27): the throw-count bounds below all depend on the
+                # raw==ref-1 edge firing; a MISSED edge freezes catch_balls_ref so
+                # no later throw matches, attempts stick at 0, and the SM would
+                # re-open+throw until the bag empties. This caps total spend on the
+                # GUARDED count (only falls, never spuriously rises; fall-confirm
+                # means it lags but always eventually reflects real throws), so we
+                # can never drain past CATCH_MAX_BALLS regardless of edge health.
+                # Sits AFTER caught/battle_over so a successful final-ball catch
+                # still registers as caught.
+                catch_active = False
+                button, src = "B", "catch_sm:ball_cap"
+            elif catch_ball_edge >= 2 and catch_state != "AWAIT_RESULT":
+                # A ball just left the bag -> ride the shake/result animation.
+                catch_balls_ref = raw_balls
+                catch_attempts += 1
+                catch_state = "AWAIT_RESULT"
+                catch_state_age = 0
+                catch_ball_edge = 0
+                button, src = "A", f"catch_sm:thrown@{catch_attempts}"
+            elif cb2 == CB2_BATTLE_BAG:
+                # THROW_PROBE: pocket-agnostic sweep. Only a Poke Ball consumes
+                # on a lone A (throw); any other item opens a CANCELLABLE use/
+                # target prompt, so A -> (B cancel) -> Right (next pocket) is safe
+                # whichever pocket the bag opens on. Ball-count edge (above) is
+                # what confirms a real throw.
+                if catch_state != "THROW_PROBE":
+                    catch_state = "THROW_PROBE"
+                    catch_probe_step = 0
+                    catch_pockets_tried = 0
+                    catch_state_age = 0
+                if catch_pockets_tried >= CATCH_PROBE_MAX_POCKETS:
+                    catch_active = False
+                    button, src = "B", "catch_sm:probe_giveup"
+                else:
+                    step = catch_probe_step % 3
+                    if step == 0:
+                        button, src = "A", "catch_sm:probe_throw"
+                    elif step == 1:
+                        button, src = "B", "catch_sm:probe_cancel"
+                    else:
+                        button, src = "Right", "catch_sm:probe_pocket"
+                        catch_pockets_tried += 1
+                    catch_probe_step += 1
+            elif cb2 == CB2_BATTLE_MAIN:
+                if catch_state == "AWAIT_RESULT":
+                    if menu_now:
+                        # Command menu is back with the ball spent and no party
+                        # rise -> the mon broke free.
+                        if catch_attempts >= min(
+                            catch_balls_at_start, CATCH_MAX_BALLS,
+                        ):
+                            catch_active = False
+                            button, src = "B", "catch_sm:out_of_tries"
+                        else:
+                            catch_state = "OPEN_BAG"
+                            catch_state_age = 0
+                            catch_probe_step = 1
+                            button = CATCH_OPEN_CYCLE[0]
+                            src = "catch_sm:broke_free"
+                    else:
+                        button, src = "A", "catch_sm:await"
+                else:
+                    # OPEN_BAG (also the landing spot when a THROW_PROBE press
+                    # backed us out to the command menu). cb2 cannot tell the
+                    # command menu from FIGHT move-select, so emit the self-
+                    # correcting (B, Up, Right, A) cycle until cb2 -> the bag.
+                    if catch_state != "OPEN_BAG":
+                        catch_state = "OPEN_BAG"
+                        catch_probe_step = 0
+                        catch_state_age = 0
+                    if catch_state_age > CATCH_OPEN_GIVE_UP:
+                        catch_active = False
+                        button, src = "B", "catch_sm:open_giveup"
+                    else:
+                        button = CATCH_OPEN_CYCLE[
+                            catch_probe_step % len(CATCH_OPEN_CYCLE)
+                        ]
+                        catch_probe_step += 1
+                        src = f"catch_sm:open_{button}"
+            elif catch_state_age > CATCH_OPEN_GIVE_UP:
+                # Unexpected callback parked too long (the ram_battle_recent
+                # refresh disables the L1930 self-heal while active, so bound it
+                # here) -> give up, back out with B, let flee/fight resume.
+                catch_active = False
+                button, src = "B", "catch_sm:unexpected_giveup"
+            else:
+                # Unexpected callback (a use/target sub-screen, or an unmapped
+                # ball-type prompt) -> back toward a known state with B.
+                button, src = "B", "catch_sm:unexpected_cb2"
+            decisions["catch_sm"] = decisions.get("catch_sm", 0) + 1
         elif llm_buttons_queue:
             valid = {"A","B","Up","Down","Left","Right","Start","Select"}
             llm_btn = llm_buttons_queue.pop(0)
@@ -2260,15 +2755,35 @@ def run(
         # "forget move?" prompt (cb2 0x081BFAB5): A-mash there can overwrite Rock
         # Tomb, so we deterministically decline it.
         forced_ui = None
-        if not ram_battle_recent or gs.game_cb2 == 0x081BFAB5:
+        # NOT while a catch is active: the in-battle bag reads unknown_ui, so its
+        # streak would otherwise clobber the SM's button with B,B,B,A.
+        if (
+            (not ram_battle_recent or gs.game_cb2 == 0x081BFAB5)
+            and not catch_active
+        ):
             forced_ui = ui_escape_button(unknown_ui_streak)
         if forced_ui is not None:
             button, src = forced_ui, f"ui_escape:{forced_ui}@{unknown_ui_streak}"
         if "escape" in src:
             escape_dir_index = (escape_dir_index + 1) % 4
-        if src.startswith("wild_catch_try_screen:init") and not catch_seq_queue:
-            catch_seq_queue = ["A", "A", "A", "A", "A", "A", "A"]
-            catch_phase_remaining = len(catch_seq_queue)
+        # Engage the catch state machine the first time the intent/type/species-
+        # gated heuristic asks to throw (pre-empt "wild_catch_try_screen:init" or
+        # the Part-A "wild_catch_try" legs). From here the per-turn cb2-driven SM
+        # (elif catch_active) drives bag-open / throw-probe / await-result with
+        # read-verify-retry. balls_ref is the GUARDED count (stable pre-throw
+        # value; the raw scan flickers to 0 in battle) -- raw is only the EDGE.
+        if src.startswith("wild_catch_try") and not catch_active:
+            catch_active = True
+            catch_state = "OPEN_BAG"
+            catch_balls_ref = gs.bag_pokeball_count
+            catch_balls_at_start = gs.bag_pokeball_count
+            catch_party_ref = gs.party_count
+            catch_attempts = 0
+            catch_probe_step = 0
+            catch_pockets_tried = 0
+            catch_state_age = 0
+            catch_ball_edge = 0
+            catch_party_edge = 0
         key = src.split(":")[0]
         decisions[key] = decisions.get(key, 0) + 1
         # Per-turn decision trace. The 100-turn stdout summary hides WHY the
@@ -2465,7 +2980,32 @@ def run(
                 )
 
         try:
-            client.tap(button, frames=15)
+            # Dragged battles get a longer hold: two 07-26 Rusturf stalls
+            # showed correctly-sequenced battle presses having NO effect while
+            # the loop ran (identical manual taps committed/fled first try),
+            # and the one lever the loop has on emulator-side registration is
+            # press duration (menu-automation lesson: slow single presses;
+            # frames=25 has precedent for reliable movement). Applied only to
+            # queue-drained battle presses past the flee-give-up threshold so
+            # every healthy battle keeps the proven 15-frame timing. 25
+            # frames stays well under the 59-frame dpad-hold-acts-as-B
+            # battle-menu threshold.
+            # Wild battles only (battle_trainer_latch is the stable in-battle
+            # signal): trainer fights routinely run past the threshold and
+            # their SEND_OUT party-list navigation has years of live turns at
+            # 15 frames — no reason to disturb it (list menus may key-repeat
+            # on long holds, unverified).
+            hold = (
+                25
+                if src.startswith("catch_sm")
+                or (
+                    src.startswith("battle_move")
+                    and battle_turn > FLEE_GIVE_UP_BATTLE_TURNS
+                    and not battle_trainer_latch
+                )
+                else 15
+            )
+            client.tap(button, frames=hold)
         except (EmulatorError, ValueError) as exc:
             print(f"  [warn] button {button} failed: {exc}")
         time.sleep(poll_period_sec)
@@ -2556,6 +3096,15 @@ def run(
 
 
 def main() -> int:
+    # Windows consoles default to cp932/mbcs, which can't encode the em-dashes /
+    # arrows / Japanese in our diagnostic prints (a battle_watchdog print with a
+    # U+2014 crashed the whole loop mid-catch, 07-27). Make stdout/stderr lossy
+    # instead of fatal so a log line can never kill the run.
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError):
+            pass
     parser = argparse.ArgumentParser()
     parser.add_argument("--turns", type=int, default=500)
     parser.add_argument("--dataset", action="store_true")

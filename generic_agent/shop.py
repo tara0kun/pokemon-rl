@@ -20,8 +20,13 @@ from . import config, rescue_brain, state as state_mod
 from .io import EmulatorError, MGBAClient
 
 _MART_MAP = (10, 7)          # MauvilleCity_Mart
-_COUNTER_STAND = (3, 3)      # walkable tile the player buys from (clerk at (1,3))
+_COUNTER_STAND = (3, 3)      # walkable tile the player buys from (clerk at (1,3)).
+# Gen3 marts share the interior: RustboroCity_Mart (11,7) has the same clerk
+# (1,3) / counter column x=2 geometry (map.json-verified 07-26), so the same
+# walk-in works for the Poke Ball purchase.
 _TARGET_HEAL = 10            # buy up to this many restores (money-permitting)
+_TARGET_BALLS = 10           # Water-catch project: ~4 balls/catch expected
+                             # (Marill base rate 190, full HP, plain Poke Ball)
 _MAX_STEPS = 45
 _STEP_SLEEP = 0.7
 _SCREEN = config.MEMORY_DIR / "shop_screen.png"
@@ -58,6 +63,35 @@ SYSTEM_PROMPT_SHOP = (
     "is the plain overworld with no menu, press A (you face the clerk)."
 )
 
+SYSTEM_PROMPT_BALLS = (
+    "You are operating a Pokemon Emerald POKE MART to BUY POKE BALLs. Reply "
+    'with ONLY a JSON object: {"button": "<A|B|Up|Down|Left|Right>", '
+    '"reason": "<short>"}. '
+    "You are already standing at the shop counter facing the clerk. Flow: press "
+    "A to talk -> a BUY / SELL / SEE YA menu appears (cursor on BUY) -> A -> the "
+    "item list opens on the RIGHT. The little TRIANGLE ARROW on the left of a "
+    "row is the cursor = the SELECTED row. It STARTS on the TOP row, and POKE "
+    "BALL ($200) is the TOP row in this shop — so from a fresh list, A "
+    "immediately selects POKE BALL. A quantity screen (x01 and a price) opens "
+    "-> press RIGHT once to raise the count by 10 (auto-capped at what you can "
+    "afford) -> A -> on 'That'll be $... OK?' press A (YES) -> on 'Here you "
+    "are!'/'Thank you' press A -> back on the list, press B twice to leave. "
+    "CRITICAL ITEM-SELECTION RULES: "
+    "- Buy ONLY plain POKE BALL. NEVER press A while the arrow is on TIMER "
+    "BALL, REPEAT BALL, GREAT BALL, or any other row. "
+    "- If the arrow is NOT on POKE BALL, press Up (POKE BALL is the top row; "
+    "Up moves toward it and is always safe). Do NOT gamble an A. "
+    "- If a 'How many would you like?' dialog names anything except POKE BALL, "
+    "you picked the WRONG item: press B to cancel, then Up until the arrow is "
+    "on POKE BALL, then A. "
+    "OTHER HARD RULES: NEVER output 'Start' or 'Select'. NEVER choose SELL. On "
+    "any YES/NO, A is YES. If 'not enough money' shows, press A then Left to "
+    "lower the count and confirm what you can afford. If RIGHT does not change "
+    "the quantity, press Up instead. ALWAYS describe the CURRENT screen AND "
+    "which row the arrow is on in your reason. If the screen is the plain "
+    "overworld with no menu, press A (you face the clerk)."
+)
+
 
 def _read(client: MGBAClient):
     try:
@@ -90,6 +124,51 @@ def run_shop_subtask(
     bag holds >= _TARGET_HEAL restores, or once money is too low to buy more
     (bought at least one). Blocks (~<120s); call as a one-shot sub-task, not per
     turn. Safe to re-enter (no-op if already stocked)."""
+    return _run_mart_subtask(
+        client,
+        qty_of=lambda gs: gs.bag_heal_qty,
+        target_qty=_TARGET_HEAL,
+        unit_price=700,
+        system_prompt=SYSTEM_PROMPT_SHOP,
+        label="heal",
+        item_label="SUPER POTIONs",
+        log=log,
+    )
+
+
+def run_pokeball_subtask(
+    client: MGBAClient, log: Callable[[str], None] | None = None,
+) -> bool:
+    """Buy Poke Balls at the Rustboro Mart (Water-catch project). Same contract
+    as run_shop_subtask: True once >= _TARGET_BALLS in the bag, or bought some
+    and the wallet dropped below one ball ($200)."""
+    return _run_mart_subtask(
+        client,
+        qty_of=lambda gs: gs.bag_pokeball_count,
+        target_qty=_TARGET_BALLS,
+        unit_price=200,
+        system_prompt=SYSTEM_PROMPT_BALLS,
+        label="balls",
+        item_label="POKE BALLs",
+        log=log,
+    )
+
+
+def _run_mart_subtask(
+    client: MGBAClient,
+    *,
+    qty_of,
+    target_qty: int,
+    unit_price: int,
+    system_prompt: str,
+    label: str,
+    item_label: str,
+    log: Callable[[str], None] | None = None,
+) -> bool:
+    """Shared mart-purchase loop (walk-in -> clerk -> VLM-driven menus), gated
+    on a hard RAM quantity check (qty_of). Parametrized 07-26 from the proven
+    Super-Potion flow so the Poke Ball purchase reuses the identical machinery;
+    behavior for run_shop_subtask is unchanged."""
     def _log(m: str) -> None:
         if not log:
             return
@@ -104,17 +183,17 @@ def run_shop_subtask(
     gs0 = _read(client)
     if gs0 is None:
         return False
-    start_heal = gs0.bag_heal_qty
-    if start_heal >= _TARGET_HEAL:
+    start_qty = qty_of(gs0)
+    if start_qty >= target_qty:
         return True
 
     def _done(gs) -> bool:
         if gs is None:
             return False
-        if gs.bag_heal_qty >= _TARGET_HEAL:
+        if qty_of(gs) >= target_qty:
             return True
-        # bought something and can no longer afford a Super Potion -> stop.
-        return gs.bag_heal_qty > start_heal and 0 <= gs.money < 700
+        # bought something and can no longer afford another unit -> stop.
+        return qty_of(gs) > start_qty and 0 <= gs.money < unit_price
 
     last_btns: list[str] = []
     for step in range(_MAX_STEPS):
@@ -126,7 +205,7 @@ def run_shop_subtask(
                 except EmulatorError:
                     break
                 time.sleep(0.3)
-            _log(f"shop: SUCCESS heal {start_heal}->{gs.bag_heal_qty} (step {step})")
+            _log(f"shop: SUCCESS {label} {start_qty}->{qty_of(gs)} (step {step})")
             return True
 
         # Walk-in phase: only while on the overworld AND not yet at the counter.
@@ -166,9 +245,9 @@ def run_shop_subtask(
             continue
         user_text = (
             f"Step {step}/{_MAX_STEPS}. Recent buttons: {last_btns[-6:]}. "
-            f"You have {gs.bag_heal_qty if gs else '?'} restores and about "
-            f"${gs.money if gs else '?'}. Buy SUPER POTIONs (target "
-            f"{_TARGET_HEAL}). What is the next single button?"
+            f"You have {qty_of(gs) if gs else '?'} already and about "
+            f"${gs.money if gs else '?'}. Buy {item_label} (target "
+            f"{target_qty}). What is the next single button?"
         )
         try:
             resp, _, _ = rescue_brain._call_haiku(
@@ -191,7 +270,7 @@ def run_shop_subtask(
                     for i in range(3))
         )
         if oscillating and btn in ("A", "B") and gs and \
-                gs.bag_heal_qty == start_heal:
+                qty_of(gs) == start_qty:
             btn, reason = "Down", f"osc-break(was:{reason[:24]})"
         _log(f"shop[{step}]: {btn} ({reason})")
         try:
@@ -208,7 +287,7 @@ def run_shop_subtask(
             break
         time.sleep(0.3)
     gs = _read(client)
-    ok = bool(gs and gs.bag_heal_qty > start_heal)
+    ok = bool(gs and qty_of(gs) > start_qty)
     _log(f"shop: {'bought some' if ok else 'gave up'} "
-         f"(heal {start_heal}->{gs.bag_heal_qty if gs else '?'})")
+         f"({label} {start_qty}->{qty_of(gs) if gs else '?'})")
     return _done(gs)

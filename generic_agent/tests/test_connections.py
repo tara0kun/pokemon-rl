@@ -100,6 +100,68 @@ class ExitStripTest(unittest.TestCase):
         self.assertEqual(mc.neighbor_maps(0, 0), {"DestA", "DestB"})
 
 
+class UnleavableLandingTest(unittest.TestCase):
+    """_exit_strip_for drops exit tiles whose dest-side landing has ZERO
+    walkable neighbours inside the dest map (a 1-tile island: the crossing
+    succeeds but the only move left is re-crossing, and nearest-exit-tile BFS
+    re-picks it forever). Live case pinned below via the real cache:
+    Verdanturf (19,6) -> Route117 (0,6), a size-1 component that is the
+    NEAREST band tile from the Rusturf-tunnel landing — the eastbound
+    Norman-grind trek funnelled straight into it. Audit 2026-07-28: 13/1770
+    cached exit tiles dropped, all degenerate islands, every affected
+    connection keeps >=2 real crossing tiles."""
+
+    def _cache(self):
+        # src right edge x=5 walkable at y 5..8. Dest left edge x=0:
+        #   y=5: walkable landing whose ONLY dest neighbour (1,5) is wall and
+        #        (0,4)/(0,6) are wall -> 1-tile island -> must be dropped.
+        #   y=6: wall (already dropped by the walkable check).
+        #   y=7,8: walkable with a walkable dest-interior neighbour -> kept.
+        src = MapInfo(
+            map_g=0, map_n=0, name="Src", layout_id="L",
+            width=6, height=12,
+            collision=_grid(6, 12, {(5, y) for y in range(12)}
+                            - {(5, y) for y in {5, 6, 7, 8}}),
+            connections={"right": [{"map_name": "Dest", "offset": 0}]},
+        )
+        dest_open = {(0, 5), (0, 7), (0, 8), (1, 7), (1, 8)}
+        dest = MapInfo(
+            map_g=0, map_n=1, name="Dest", layout_id="L",
+            width=6, height=12,
+            collision=_grid(6, 12,
+                            {(x, y) for x in range(6) for y in range(12)}
+                            - dest_open),
+        )
+        mc = MapCache.__new__(MapCache)
+        mc._maps = {(0, 0): src, (0, 1): dest}
+        mc._layouts = {}
+        mc._map_groups = [["Src", "Dest"]]
+        mc._loaded_index = True
+        mc._EMPIRICAL_EXIT_TILES = {}
+        return mc
+
+    def test_island_landing_dropped_leavable_kept(self):
+        mc = self._cache()
+        band = mc.exit_tiles_toward(0, 0, "right", dest_name="Dest")
+        self.assertEqual(band, {(5, 7), (5, 8)})   # y5 island + y6 wall out
+
+    def test_verdanturf_route117_island_dropped_real_cache(self):
+        # Canon pin against the committed map cache: the (19,6) trap tile is
+        # gone, the real crossing band (y 8..12) survives.
+        mc = md.get_cache()
+        band = mc.exit_tiles_toward(0, 14, "right", dest_name="Route117")
+        self.assertNotIn((19, 6), band)
+        self.assertEqual(band, {(19, y) for y in (8, 9, 10, 11, 12)})
+
+    def test_mauville_route110_band_survives_real_cache(self):
+        # The rule's other live-corridor hit: Mauville down->Route110 loses
+        # only the (28,19) island; the badge-3-proven crossing keeps 11 tiles.
+        mc = md.get_cache()
+        band = mc.exit_tiles_toward(0, 2, "down", dest_name="Route110")
+        self.assertNotIn((28, 19), band)
+        self.assertGreaterEqual(len(band), 10)
+
+
 class MapPathBanTest(unittest.TestCase):
     """banned_first_hops must skip a neighbour only at the start node, so a
     connection-lie / unreachable first hop can be replanned around."""

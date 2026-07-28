@@ -631,7 +631,22 @@ class MapCache:
         """Walkable edge tiles for ONE connection. A tile only warps if both
         sides are walkable and it lies in the offset-overlap of the dest map
         (Route106 down->Dewford offset 60: only x60-79 overlap). Dest
-        unresolvable offline -> whole walkable edge (old behaviour)."""
+        unresolvable offline -> whole walkable edge (old behaviour).
+
+        The landing must also be LEAVABLE (>=1 walkable neighbour inside the
+        dest map). A canon-walkable landing with zero dest-side neighbours is a
+        1-tile island: the crossing succeeds but the only move left is
+        re-crossing back, and because nav can't stand on the far side to learn
+        a blocked edge, the nearest-exit-tile BFS re-picks the same tile
+        forever (boundary oscillation). Live case: Verdanturf (19,6) ->
+        Route117 (0,6), a size-1 component, is the NEAREST band tile from the
+        Rusturf-tunnel landing, so every eastbound Verdanturf->Mauville route
+        funnels into it. Audit 2026-07-28 (full cache, 518 maps / 2004 exit
+        tiles, independently re-counted by the verifier): 15 tiles dropped,
+        every one a degenerate island (Verdanturf (19,6), Mauville
+        (28,19)->Route110 (28,0), sea-corner tiles on Dewford/Route107/120/
+        127/130/131/Mossdeep/SafariZone), and every affected connection keeps
+        >=2 real crossing tiles (no connection's band collapses to 0 or 1)."""
         offset = int(conn.get("offset", 0))
         dest = self._info_of(conn.get("map_name", ""))
 
@@ -641,9 +656,16 @@ class MapCache:
             d = src_along - offset  # position along the shared axis on dest
             if horizontal:  # up/down: shared axis = x, dest edge row = 0 or H-1
                 dy = (dest.height - 1) if dest_edge_is_far else 0
-                return dest.walkable(d, dy)
-            dx = (dest.width - 1) if dest_edge_is_far else 0
-            return dest.walkable(dx, d)
+                land = (d, dy)
+            else:
+                dx = (dest.width - 1) if dest_edge_is_far else 0
+                land = (dx, d)
+            if not dest.walkable(*land):
+                return False
+            return any(
+                dest.walkable(land[0] + ddx, land[1] + ddy)
+                for ddx, ddy in ((0, 1), (0, -1), (1, 0), (-1, 0))
+            )
 
         if direction in ("up", "down"):
             y = 0 if direction == "up" else info.height - 1

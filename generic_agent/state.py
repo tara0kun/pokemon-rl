@@ -23,6 +23,12 @@ from .io import EmulatorError, MGBAClient
 
 SAVEBLOCK1_PTR_ADDR = 0x03005D8C
 PLAYER_PARTY_ADDR = 0x020244EC  # gPlayerParty[0] in Emerald (USA)
+# gPlayerPartyCount (0x020244E9) sits 3 bytes before gPlayerParty (the decomp
+# u8 + 3 padding). This is the LIVE working count the game uses everywhere and
+# is a fixed BSS global (no DMA relocation). Read party count from here, NOT
+# from SaveBlock1.playerPartyCount (see SB1_PLAYER_PARTY_COUNT below), which is
+# only synced on save and reads stale between a catch/deposit and the next save.
+PLAYER_PARTY_COUNT_ADDR = PLAYER_PARTY_ADDR - 3  # 0x020244E9
 POKEMON_STRUCT_SIZE = 100
 POKEMON_LEVEL_OFFSET = 0x54
 POKEMON_HP_OFFSET = 0x56
@@ -113,7 +119,9 @@ def read_live_walkable_overrides(
 
 # SaveBlock1 inner offsets (pokeemerald struct SaveBlock1)
 # These are referenced relative to *gSaveBlock1Ptr.
-SB1_PLAYER_PARTY_COUNT = 0x0234  # u32 at SaveBlock1.playerPartyCount
+SB1_PLAYER_PARTY_COUNT = 0x0234  # SaveBlock1 mirror; SAVE-only sync (stale
+                                 # between catch/deposit and next save). Do NOT
+                                 # use for live count -- read PLAYER_PARTY_COUNT_ADDR.
 SB1_FLAGS_OFFSET = 0x1270        # u8 flags[NUM_FLAG_BYTES]
 SB1_VARS_OFFSET = 0x1408         # u16 vars[NUM_VARS]
 SB1_BAG_ITEMS = 0x0560           # struct ItemSlot bagPocket_Items[30]
@@ -238,9 +246,15 @@ def _rise_confirmed(key: str, raw: bool, stable: bool) -> bool:
 
 def reset_flag_latches() -> None:
     global _PARTY0_LEVEL_LAST_GOOD
+    global _BALLS_LAST_GOOD, _BALLS_FALL_PENDING, _BALLS_FALL_STREAK
+    global _BALLS_FALL_GRADUAL
     _BADGE_BITS_LATCHED.clear()
     _RISE_CONFIRM.clear()
     _PARTY0_LEVEL_LAST_GOOD = 0
+    _BALLS_LAST_GOOD = -1
+    _BALLS_FALL_PENDING = -1
+    _BALLS_FALL_STREAK = 0
+    _BALLS_FALL_GRADUAL = True
 
 
 # Drop-flicker guard for party0_level (same DMA-corruption family as the badge
@@ -263,6 +277,90 @@ def _flicker_guarded_level(lv: int) -> int:
     if lv > 0:
         _PARTY0_LEVEL_LAST_GOOD = lv
     return lv
+
+
+# Fall-confirm guard for bag_pokeball_count — the third member of the DMA-
+# flicker family (badge max-latch, level last-good carry). The balls-pocket
+# scan walks slots via the DMA-relocating SaveBlock1 pointer; a mid-relocation
+# frame reads slot ids as 0 and reports 0 balls. Measured live 07-26 at a
+# settled Rustboro state: [15, 15, 0, 0, 15, 15, 15, 0, 15, 15] (~30% of
+# frames). Each flicker-0 dropped catch_water_route104's `balls > 0` gate for
+# one frame and a lower goal yanked nav — the Rustboro<->Route104 boundary
+# oscillation (40 turns, zero grass encounters).
+#
+# Unlike level, 0 IS a legitimate ball count (before buying / after the last
+# throw), so a plain last-good carry would mask a genuine drain forever.
+# Asymmetric contract instead:
+#   RISE (or first read): trusted immediately — buying must register at once.
+#   FALL: believed only when BOTH hold:
+#     (a) _BALLS_FALL_CONFIRM_N CONSECUTIVE reads at or below the pending
+#         lower value — a lone 0 amid 15s never confirms (any >= last_good
+#         read resets the streak); AND
+#     (b) the fall path is GRADUAL: every fall-frame step (from last_good on
+#         entry, then from the pending value) is <= _BALLS_FALL_MAX_STEP.
+#         Physical invariant: a real drain loses at most ONE ball per throw
+#         turn and read_state runs every turn, so consecutive reads can
+#         genuinely differ by at most 1 (2 allows one dropped frame). The
+#         in-battle flicker (07-27) produces RUNS of >=5 consecutive raw-0
+#         reads — measured [15,...,15,0,0,0,0,0] mid-catch — which defeats
+#         the streak alone, but its 15->0 entry step is physically
+#         impossible, so the step gate marks the run poisoned and it can
+#         never confirm; the next >= last_good read resets. A poisoned run
+#         can also REBOUND to an intermediate value (a genuine 14 after a
+#         garbage 0-run): n > pending restarts the run with a fresh entry
+#         check against last_good, so the genuine drain still registers.
+# A genuine drain (3,2,1,0,0,0) passes both gates and confirms after N
+# frames — the goals gate on coarse thresholds (>0, <5), so the lag is
+# invisible to them.
+_BALLS_LAST_GOOD: int = -1        # -1 = nothing confirmed yet (trust first read)
+_BALLS_FALL_PENDING: int = -1
+_BALLS_FALL_STREAK: int = 0
+_BALLS_FALL_GRADUAL: bool = True
+_BALLS_FALL_CONFIRM_N = 5
+_BALLS_FALL_MAX_STEP = 2
+
+
+def _flicker_guarded_pokeballs(n: int) -> int:
+    global _BALLS_LAST_GOOD, _BALLS_FALL_PENDING, _BALLS_FALL_STREAK
+    global _BALLS_FALL_GRADUAL
+    if _BALLS_LAST_GOOD < 0 or n >= _BALLS_LAST_GOOD:
+        _BALLS_LAST_GOOD = n
+        _BALLS_FALL_PENDING = -1
+        _BALLS_FALL_STREAK = 0
+        _BALLS_FALL_GRADUAL = True
+        return n
+    # n < last-good: a fall frame.
+    if _BALLS_FALL_PENDING >= 0 and n <= _BALLS_FALL_PENDING:
+        # continuing the run downward: step from the pending value
+        step = _BALLS_FALL_PENDING - n
+        _BALLS_FALL_STREAK += 1
+    else:
+        # entering a fall run (or rebounding above the poisoned pending):
+        # step from the last believed value, fresh streak + gradual state
+        step = _BALLS_LAST_GOOD - n
+        _BALLS_FALL_STREAK = 1
+        _BALLS_FALL_GRADUAL = True
+    if step > _BALLS_FALL_MAX_STEP:
+        _BALLS_FALL_GRADUAL = False
+    _BALLS_FALL_PENDING = n
+    if _BALLS_FALL_GRADUAL and _BALLS_FALL_STREAK >= _BALLS_FALL_CONFIRM_N:
+        _BALLS_LAST_GOOD = n
+        _BALLS_FALL_PENDING = -1
+        _BALLS_FALL_STREAK = 0
+        return n
+    return _BALLS_LAST_GOOD
+
+
+def _balls_carry() -> int:
+    """Last believed ball count for frames with NO bag observation at all
+    (invalid SaveBlock1 pointer / failed coordinate read — the read_state
+    early returns). NOT a guard update: an unreadable frame is the ABSENCE of
+    an observation, not a 0-read, so it must neither feed the fall streak nor
+    expose the GameState field default of 0. Live 07-27: the in-battle stall's
+    guard-bypassing 0s came from exactly these partial frames (the guarded
+    main path held 15) — the badge_count=len(_BADGE_BITS_LATCHED) wiring in
+    the same early returns is the precedent."""
+    return _BALLS_LAST_GOOD if _BALLS_LAST_GOOD >= 0 else 0
 
 # Pokemon substruct order by personality % 24 (Gen 3 box-mon encryption).
 _SUBSTRUCT_PERMS = [
@@ -400,6 +498,14 @@ class GameState:
     # gate) and to confirm the HM-teach sub-task succeeded. Empty on read failure.
     party_moves: list[list[int]] = field(default_factory=list)
     bag_pokeball_count: int = 0
+    # UNGUARDED live Poke Ball count for the catch state machine's per-turn
+    # "a ball just left the bag" edge signal. The guarded bag_pokeball_count
+    # above lags a real throw by up to _BALLS_FALL_CONFIRM_N frames (by design,
+    # to resist the in-battle DMA flicker) so it CANNOT detect a single-ball
+    # throw promptly. The raw value flickers to 0 (not to count-1) during DMA,
+    # so the SM filters with "exactly ref-1 and >0, 2 consecutive". See the
+    # drop-robust catch flow (2026-07-27, Codex+Claude cross-vendor design).
+    bag_pokeball_count_raw: int = 0
     bag_first_item_id: int = 0
     bag_first_item_qty: int = 0
     bag_heal_qty: int = 0          # HP restores in the Items pocket (H14)
@@ -549,6 +655,8 @@ def read_state(client: MGBAClient) -> GameState:
             in_battle=in_battle,
             battle_flags=flags,
             badge_count=len(_BADGE_BITS_LATCHED),
+            bag_pokeball_count=_balls_carry(),
+            bag_pokeball_count_raw=_balls_carry(),
         )
 
     try:
@@ -563,6 +671,8 @@ def read_state(client: MGBAClient) -> GameState:
             in_battle=in_battle,
             battle_flags=flags,
             badge_count=len(_BADGE_BITS_LATCHED),
+            bag_pokeball_count=_balls_carry(),
+            bag_pokeball_count_raw=_balls_carry(),
         )
 
     try:
@@ -625,7 +735,10 @@ def read_state(client: MGBAClient) -> GameState:
     total_flags = 0
     flag_hex = ""
     try:
-        party_count = client.read8(ptr + SB1_PLAYER_PARTY_COUNT)
+        # Live count from the fixed gPlayerParty* globals, NOT the SaveBlock1
+        # mirror (which is stale between a catch and the next save -- Marill
+        # caught 07-27 read live=6 but SB1 mirror still 5 until save).
+        party_count = client.read8(PLAYER_PARTY_COUNT_ADDR)
         if party_count > 6:
             party_count = 0
         # Badges = event flags FLAG_BADGE01_GET (0x867) .. BADGE08 (0x86E).
@@ -792,7 +905,10 @@ def read_state(client: MGBAClient) -> GameState:
         flag_badge04_get=flag_badge4,
         flag_rock_smash_hm=flag_rock_smash,
         party_moves=party_moves,
-        bag_pokeball_count=pokeballs,
+        # Read-root fall-confirm guard (see _flicker_guarded_pokeballs): every
+        # balls-gated goal (catch >0, buy_pokeballs <5) sees the guarded value.
+        bag_pokeball_count=_flicker_guarded_pokeballs(pokeballs),
+        bag_pokeball_count_raw=pokeballs,  # unguarded; catch SM throw-edge signal
         bag_first_item_id=first_item_id,
         bag_first_item_qty=first_item_qty,
         bag_heal_qty=bag_heal_qty,

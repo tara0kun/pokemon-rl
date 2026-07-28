@@ -296,3 +296,25 @@ class DoubleBattleSendOutTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LevelReadersTest(unittest.TestCase):
+    """active_level/enemy_level feed the over-level fight gate (07-26): the
+    Rusturf stalls showed FLEE/FIGHT cursor sequences failing under press
+    drops, so a big level gap now fights immediately. Offsets live-verified
+    (L47 vs L6 read 47/6)."""
+
+    def test_levels_read_both_battler_slots(self):
+        c = FakeBattleClient(mem8={
+            bm.GBATTLEMONS + bm.BATTLEMON_LEVEL: 47,
+            bm.GBATTLEMONS + bm.BATTLEMON_SIZE + bm.BATTLEMON_LEVEL: 6,
+        })
+        self.assertEqual(bm.active_level(c), 47)
+        self.assertEqual(bm.enemy_level(c), 6)
+
+    def test_level_offset_sits_between_hp_and_maxhp(self):
+        # struct sanity: hp u16@0x28, level u8@0x2A, friendship@0x2B,
+        # maxHP u16@0x2C — a wrong BATTLEMON_LEVEL would silently read
+        # HP/friendship bytes instead.
+        self.assertEqual(bm.BATTLEMON_LEVEL, bm.BATTLEMON_HP + 2)
+        self.assertEqual(bm.BATTLEMON_MAXHP, bm.BATTLEMON_LEVEL + 2)

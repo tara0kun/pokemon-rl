@@ -26,12 +26,16 @@ PARTY_SIZE = 6
 PARTY_HP_OFFSET = 0x56         # u16 current HP (outside the encrypted substructs)
 GBATTLEMONS = 0x02024084       # BattleMon[], 0x58 bytes each; [1] = opponent
 BATTLEMON_SIZE = 0x58
+BATTLEMON_SPECIES = 0x00       # u16 internal species id (decrypted in-battle;
+                               # gBattleMons is NOT the encrypted party struct)
 BATTLEMON_MOVES = 0x0C         # 4 x u16 (active battler's current moves)
 BATTLEMON_TYPE1 = 0x21         # u8
 BATTLEMON_TYPE2 = 0x22         # u8
 BATTLEMON_HP = 0x28            # u16 current HP
 BATTLEMON_MAXHP = 0x2C         # u16 max HP
 BATTLEMON_PP = 0x24            # 4 x u8 current PP of the active battler's moves
+BATTLEMON_LEVEL = 0x2A         # u8 level (between hp u16@0x28 and maxHP u16@0x2C;
+                               # live-verified 07-26: read 47/6 for L47 vs L6)
 GBATTLEMOVES = 0x0831C898      # BattleMove[], 12 bytes each: power@+1, type@+2
 
 # Substruct permutation order (personality % 24); moves live in the 'A'
@@ -94,6 +98,22 @@ def enemy_types(client: MGBAClient) -> tuple[int, int]:
     return client.read8(a + BATTLEMON_TYPE1), client.read8(a + BATTLEMON_TYPE2)
 
 
+def enemy_species(client: MGBAClient) -> int:
+    """Internal species id of the opponent's active battler (gBattleMons[1]).
+
+    Reads the u16 at offset +0x00 of the in-battle mon struct. Unlike
+    gPlayerParty (encrypted, personality-keyed substructs), gBattleMons is the
+    game's already-decrypted working copy, so the species is a plain u16 with no
+    XOR/permutation decode — the same slot-1 offset enemy_types() uses. Feeds the
+    catch_woods species gate (Shroomish 306 / Slakoth 364 = keep, else flee).
+    Returns 0 on a read error so callers treat "unknown" as "not a target".
+    """
+    try:
+        return client.read16(GBATTLEMONS + BATTLEMON_SIZE + BATTLEMON_SPECIES)
+    except EmulatorError:
+        return 0
+
+
 def enemy_hp(client: MGBAClient) -> tuple[int, int]:
     """(current_hp, max_hp) of the opponent's active battler, read as u16s.
 
@@ -111,6 +131,22 @@ def active_hp(client: MGBAClient) -> int:
     battle sub-states apart from reliable RAM instead of the flaky
     battle_menu vision signal (the H6a opening-thrash root cause)."""
     return client.read16(GBATTLEMONS + BATTLEMON_HP)
+
+
+def active_level(client: MGBAClient) -> int:
+    """Level of the player's ACTIVE battler (gBattleMons[0]).
+
+    Feeds the over-level fight gate: with a traversal-grade level gap the
+    loop fights (one best_move commit ends the battle) instead of running
+    FLEE_SEQ's RUN navigation, whose per-press fragility stalled two Rusturf
+    Tunnel battles (07-26)."""
+    return client.read8(GBATTLEMONS + BATTLEMON_LEVEL)
+
+
+def enemy_level(client: MGBAClient) -> int:
+    """Level of the opponent's active battler (gBattleMons[1] — same slot-1
+    offset as enemy_types/enemy_hp)."""
+    return client.read8(GBATTLEMONS + BATTLEMON_SIZE + BATTLEMON_LEVEL)
 
 
 def player_battler_hps(client: MGBAClient, double: bool = False) -> list[int]:
