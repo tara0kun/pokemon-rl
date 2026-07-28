@@ -382,7 +382,8 @@ _GOAL_BYPASS_VISITED = {
     # re-target them every cycle (the grind_granite_cave precedent). The
     # target==cur inner legs are listed for uniformity, like the ngrind arc.
     "grind_party_rusturf", "pgrind_exit_west", "pgrind_heal_rustboro",
-    "pgrind_woods_north", "pgrind_to_woods", "pgrind_to_rusturf",
+    "pgrind_heal_petalburg", "pgrind_woods_north", "pgrind_to_woods",
+    "pgrind_to_rusturf",
 }
 
 
@@ -1307,6 +1308,28 @@ class Goal:
                     or (cur == (0, 19) and gs.y < 34)
                 )
             )
+        if c == "pgrind_heal_west":
+            # West-half heal: hurt/PP-dry at Petalburg City / its interiors
+            # (group 8) / R104 south beach -> the Petalburg PC, the exact
+            # heal_at_petalburg geometry and gate (hp<0.5 OR pp==0, the
+            # complement of pgrind_to_woods below). Exists because the
+            # marker short-circuit in current_goal (2026-07-28) excludes
+            # heal_at_petalburg/petalburg_to_city while training — without
+            # this leg a hurt START of the trek would have no matching
+            # pgrind goal and the catch-all would march a hurt lead east
+            # through the Woods instead of healing 20 tiles away.
+            return (
+                _party_grind.party_grind_active()
+                and 4 <= gs.badge_count < 5
+                and gs.party0_max_hp > 0
+                and (gs.party0_hp_frac < 0.5 or gs.party0_damaging_pp == 0)
+                and not gs.in_battle
+                and (
+                    cur == (0, 0)
+                    or gs.map_group == 8
+                    or (cur == (0, 19) and gs.y >= 34)
+                )
+            )
         if c == "pgrind_woods_north":
             # Inside the Woods, eastbound: pin the NORTH exit warp (the
             # ngrind_woods_north / peeko_woods_north pin — nearest-warp
@@ -2136,6 +2159,16 @@ GOAL_TABLE: list[Goal] = [
         desc="Party-grind: Rustboro PC で全回復 (HP/PP、whiteout 先も Rustboro に)",
     ),
     Goal(
+        name="pgrind_heal_petalburg",
+        target_map=(8, 4),        # PetalburgCity_PokemonCenter_1F
+        target_pos=(7, 3),        # counter below the nurse (7,2): stand
+        # (7,4), Up+A — the heal_at_petalburg geometry (probe 07-27).
+        # West-half twin of pgrind_heal_rustboro; see the pgrind_heal_west
+        # condition comment for why it exists (marker short-circuit).
+        condition="pgrind_heal_west",
+        desc="Party-grind: 西半分 (Petalburg/南浜) で消耗したら Petalburg PC で全回復",
+    ),
+    Goal(
         name="pgrind_woods_north",
         target_map=(24, 11),
         target_pos=(14, 5),       # north exit warp (the canon
@@ -2294,6 +2327,65 @@ GOAL_TABLE: list[Goal] = [
 ]
 
 
+# --- Party-grind goal short-circuit (2026-07-28, targeted stale-goal fix) ---
+# While the party_grind.on marker exists, current_goal may select ONLY these
+# goals. Root cause this kills (live-measured 07-28): badge_count reads 0 on
+# ~0.7% of frames even with saveblock1_valid=True (a raw DMA flag-read
+# flicker the len(_BADGE_BITS_LATCHED) latch does not fully immunize). On
+# such a frame every era-gated (4 <= badge < 5) pgrind goal goes silent, and
+# a stale earlier-era goal whose other terms are disk latches — live it was
+# reach_mauville (_devon_delivered AND badge<3, cur-UNGATED, visited-
+# bypassed); the same sweep also reproduces enter_rustboro_gym at badge=0
+# and ride_cable_car at badge=3 — matches ANYWHERE, wins the scan, and
+# yanks the trek east for one frame; the next clean frame flips it back
+# (the Woods<->Route104 oscillation that never reached Rusturf). Filtering
+# by NAME immunizes the training mode against the WHOLE stale-goal-flicker
+# family in one place, without touching the fragile badge latch itself.
+# On a flicker frame all pgrind gates are false -> current_goal returns
+# None -> the loop's goal-carry (claude_heuristic) serves the last good —
+# by construction pgrind — goal, so nav never even blips.
+#
+# The two smash_* goals are deliberately ALLOWED: they are facilitators,
+# not directors — target==cur + object-event presence gated, so they can
+# only ever fire while STANDING on their map with the rock actually there,
+# and clearing the rock is the right action for any goal that needs the
+# lane (the pgrind block comment already promises "a reported rock must
+# still win its frame"; excluding smash_route111_rock would re-create the
+# 255-turn Route111 wedge for a marker-on agent parked east of Mauville).
+PGRIND_GOAL_NAMES = frozenset({
+    "grind_party_rusturf", "pgrind_exit_west", "pgrind_heal_rustboro",
+    "pgrind_heal_petalburg", "pgrind_woods_north", "pgrind_to_woods",
+    "pgrind_to_rusturf", "pgrind_fallback",
+    "smash_rusturf_rock", "smash_route111_rock",
+})
+
+# Positional catch-all: on a CLEAN badge-4 frame with no pgrind goal
+# matching (off-corridor drift — e.g. the marker flipped on while the agent
+# was parked east at Mauville/Fiery), head back to the grind pin; every hop
+# of that route is the b5-chain corridor the loop has already driven live.
+# Deliberately era-gated like the rest of the block: on a badge-flicker
+# frame current_goal returns None instead, so the carry keeps the
+# semantically-right goal (including grind_party_rusturf's load-bearing
+# 'grind' name prefix) rather than swapping in this generic one.
+_PGRIND_FALLBACK = Goal(
+    name="pgrind_fallback",
+    target_map=(24, 4),           # RusturfTunnel
+    target_pos=(23, 14),          # the grind/reorder pin
+    condition="pgrind_fallback",  # not in GOAL_TABLE; returned directly
+    desc="Party-grind catch-all: 回廊外から Rusturf grind pin (23,14) へ復帰",
+)
+
+
+def carry_allowed(goal) -> bool:
+    """Goal-carry gate for claude_heuristic: while the party-grind marker is
+    on, only pgrind-subset goals may be served as the carried last-good goal
+    (a stale goal latched BEFORE the marker appeared must not drive the
+    trek). Marker off: always True — carry behavior unchanged."""
+    if not _party_grind.party_grind_active():
+        return True
+    return goal is not None and goal.name in PGRIND_GOAL_NAMES
+
+
 def current_goal(gs) -> Goal | None:
     """First matching goal whose target_map differs from agent's current
     map. Skipping already-reached goals lets the goal chain advance: if
@@ -2310,8 +2402,13 @@ def current_goal(gs) -> Goal | None:
     if cur != (-1, -1) and cur != (0, 0):
         record_map_visit(*cur)
     visited = _load_visited_maps()
+    # Party-grind short-circuit: see the PGRIND_GOAL_NAMES comment. One
+    # disk-stat per call; matches() already stats it several times per scan.
+    pgrind_on = _party_grind.party_grind_active()
     fallback = None
     for g in GOAL_TABLE:
+        if pgrind_on and g.name not in PGRIND_GOAL_NAMES:
+            continue
         if not g.matches(gs):
             continue
         if (
@@ -2331,6 +2428,12 @@ def current_goal(gs) -> Goal | None:
                 fallback = g
             continue
         return g
+    if fallback is None and pgrind_on and 4 <= gs.badge_count < 5:
+        # Marker on, clean badge-4 frame, yet nothing in the pgrind subset
+        # matched: the agent is off-corridor — return the catch-all so the
+        # mode is never goal-less at a real position (flicker frames fail
+        # the era gate above and fall through to None -> goal-carry).
+        return _PGRIND_FALLBACK
     return fallback
 
 

@@ -2094,6 +2094,14 @@ def run(
             cur_goal = _computed_goal
             last_good_goal = _computed_goal
         else:
+            # Party-grind marker on: never carry a goal latched BEFORE the
+            # marker appeared (current_goal's pgrind short-circuit keeps
+            # every NEW latch inside the pgrind subset; this closes the one
+            # remaining path — a stale pre-marker last_good_goal — so a
+            # non-pgrind goal can never drive while training). Marker off:
+            # carry_allowed is always True, behavior byte-identical.
+            if not goals_mod.carry_allowed(last_good_goal):
+                last_good_goal = None
             cur_goal = last_good_goal
 
         # HM-teach sub-task hook (Rock Smash chain): teach_rock_smash is a bag/

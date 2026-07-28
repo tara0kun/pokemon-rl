@@ -500,9 +500,28 @@ class TestPgrindCorridor(PgrindGoalsBase):
         self.assertEqual(g.name, "pgrind_to_woods")
 
     def test_hurt_at_petalburg_heals_first(self) -> None:
+        # Was heal_at_petalburg pre-short-circuit (2026-07-28): the marker
+        # filter now excludes non-pgrind goals, so the west-half heal is the
+        # dedicated pgrind twin (same PC, same counter geometry).
         g = self.goal(map_group=0, map_num=0, party0_level=48,
                       party0_hp=20, party0_max_hp=100)
-        self.assertEqual(g.name, "heal_at_petalburg")
+        self.assertEqual(g.name, "pgrind_heal_petalburg")
+        self.assertEqual(g.target_map, (8, 4))
+        self.assertEqual(g.target_pos, (7, 3))
+
+    def test_hurt_on_south_beach_heals_at_petalburg(self) -> None:
+        # Pre-short-circuit this fell to petalburg_to_city (then the city
+        # heal); the pgrind west heal now covers the beach directly.
+        g = self.goal(map_group=0, map_num=19, y=40, party0_level=12,
+                      party0_hp=20, party0_max_hp=100)
+        self.assertEqual(g.name, "pgrind_heal_petalburg")
+
+    def test_pp_dry_at_petalburg_heals_first(self) -> None:
+        # Full HP but 0 damaging PP (the readability term party0_max_hp>0
+        # needs real HP fields — the heal_at_petalburg gate, mirrored).
+        g = self.goal(map_group=0, map_num=0, party0_level=48,
+                      party0_hp=100, party0_max_hp=100, party0_damaging_pp=0)
+        self.assertEqual(g.name, "pgrind_heal_petalburg")
 
     def test_route104_south_crosses_into_woods(self) -> None:
         g = self.goal(map_group=0, map_num=19, y=40, party0_level=48)
@@ -558,9 +577,13 @@ class TestPgrindCorridor(PgrindGoalsBase):
 
     def test_mauville_drift_comes_home_west(self) -> None:
         # Marker on but agent somehow east at Mauville with a trainee lead:
-        # the ngrind arc must NOT fire; the b5 westward leg drives home.
+        # the ngrind arc must NOT fire. Pre-short-circuit the b5 westward leg
+        # (reach_verdanturf_b5) drove home; the catch-all now targets the
+        # grind pin directly — same westward corridor, one goal.
         g = self.goal(map_group=0, map_num=2, party0_level=12)
-        self.assertEqual(g.name, "reach_verdanturf_b5")
+        self.assertEqual(g.name, "pgrind_fallback")
+        self.assertEqual(g.target_map, (24, 4))
+        self.assertEqual(g.target_pos, (23, 14))
 
 
 class TestNgrindConflictResolved(PgrindGoalsBase):
@@ -603,6 +626,14 @@ class TestNgrindConflictResolved(PgrindGoalsBase):
         g = self.goal(map_group=0, map_num=0, party0_level=48)
         self.assertEqual(g.name, "reach_ngrind_woods")
 
+    def test_short_circuit_names_exist_in_table(self) -> None:
+        # A typo in PGRIND_GOAL_NAMES would silently filter a REAL goal out
+        # while the marker is on (the filter compares by name). Every member
+        # except the synthetic catch-all must be a real GOAL_TABLE entry.
+        table = {g.name for g in goals_mod.GOAL_TABLE}
+        missing = (goals_mod.PGRIND_GOAL_NAMES - {"pgrind_fallback"}) - table
+        self.assertEqual(missing, set())
+
     def test_retire_hands_back_to_norman_grind_from_tunnel(self) -> None:
         # Marker deleted while parked in the tunnel with the restored L48
         # lead: the COMMITTED Norman-grind arc resumes on the spot ((24,4)
@@ -615,6 +646,107 @@ class TestNgrindConflictResolved(PgrindGoalsBase):
         g = self.goal(map_group=24, map_num=4,
                       party0_level=goals_mod.NORMAN_GRIND_TARGET_LEVEL)
         self.assertEqual(g.name, "exit_rusturf_west")
+
+
+class TestPgrindFlickerImmunity(PgrindGoalsBase):
+    """The 07-28 live bug: badge_count DMA-flickers to 0 (saveblock still
+    valid) and a stale cur-ungated goal (live: reach_mauville; harness also
+    reproduces enter_rustboro_gym / ride_cable_car depending on the dip
+    value) wins the scan and yanks the trek east for a frame. With the
+    marker on, current_goal must return None on such frames (the loop's
+    goal-carry then serves the last pgrind goal) — never a stale goal."""
+
+    CORRIDOR = (
+        dict(map_group=0, map_num=0),                 # Petalburg City
+        dict(map_group=8, map_num=1, x=3, y=106),     # Petalburg Gym
+        dict(map_group=8, map_num=4, x=7, y=4),       # Petalburg PC
+        dict(map_group=0, map_num=19, y=40),          # R104 south beach
+        dict(map_group=24, map_num=11),               # Petalburg Woods
+        dict(map_group=0, map_num=19, y=10),          # R104 north
+        dict(map_group=0, map_num=3),                 # Rustboro City
+        dict(map_group=11, map_num=5, x=7, y=4),      # Rustboro PC
+        dict(map_group=0, map_num=31),                # Route116
+        dict(map_group=24, map_num=4, x=23, y=14),    # Rusturf Tunnel
+    )
+
+    def test_badge_flicker_returns_none_never_stale(self) -> None:
+        for pos in self.CORRIDOR:
+            for flicker_badges in (0, 1, 2, 3):
+                for b4flag in (True, False):  # raw flag may or may not dip too
+                    for lv in (5, 48):
+                        g = self.goal(party0_level=lv,
+                                      badge_count=flicker_badges,
+                                      flag_badge04_get=b4flag, **pos)
+                        self.assertIsNone(
+                            g, (pos, flicker_badges, b4flag, lv,
+                                g.name if g else None))
+
+    def test_clean_frames_select_only_pgrind_goals(self) -> None:
+        # Requirement: marker ON => the selected goal is ALWAYS in the
+        # pgrind subset, across position x hp x pp x level.
+        hp_states = (
+            dict(party0_hp=100, party0_max_hp=100),
+            dict(party0_hp=20, party0_max_hp=100),                  # hurt
+            dict(party0_hp=100, party0_max_hp=100,
+                 party0_damaging_pp=0),                             # PP dry
+        )
+        off_corridor = (
+            dict(map_group=0, map_num=14),   # Verdanturf
+            dict(map_group=0, map_num=32),   # Route117
+            dict(map_group=0, map_num=2),    # Mauville
+            dict(map_group=24, map_num=14),  # Fiery Path
+        )
+        for pos in self.CORRIDOR + off_corridor:
+            for hp in hp_states:
+                for lv in (5, 17, 48):
+                    g = self.goal(party0_level=lv, **pos, **hp)
+                    self.assertIsNotNone(g, (pos, hp, lv))
+                    self.assertIn(
+                        g.name, goals_mod.PGRIND_GOAL_NAMES, (pos, hp, lv))
+
+    def test_off_corridor_gets_fallback_to_grind_pin(self) -> None:
+        g = self.goal(map_group=24, map_num=14, party0_level=48)  # Fiery
+        self.assertEqual(g.name, "pgrind_fallback")
+        self.assertEqual((g.target_map, g.target_pos), ((24, 4), (23, 14)))
+
+    def test_route111_rock_still_wins_its_frame(self) -> None:
+        # The smash facilitators stay allowed: marker on, agent on Route111
+        # with the respawning FLAG_TEMP rock present -> the smash goal must
+        # win (excluding it would re-create the 255-turn wedge for an
+        # off-corridor drive-home crossing Route111).
+        g = self.goal(map_group=0, map_num=26, x=19, y=99, party0_level=48,
+                      party_moves=[[249, 0, 0, 0]],
+                      npcs_on_map=[(19, 100, 0)])
+        self.assertEqual(g.name, "smash_route111_rock")
+
+
+class TestPgrindCarryGate(PgrindGoalsBase):
+    """claude_heuristic's goal-carry may only serve pgrind goals while the
+    marker is on (a stale pre-marker last_good_goal must be dropped)."""
+
+    def _goal_named(self, name: str):
+        if name == "pgrind_fallback":
+            return goals_mod._PGRIND_FALLBACK
+        return next(g for g in goals_mod.GOAL_TABLE if g.name == name)
+
+    def test_marker_on_allows_only_pgrind(self) -> None:
+        self.assertTrue(
+            goals_mod.carry_allowed(self._goal_named("grind_party_rusturf")))
+        self.assertTrue(
+            goals_mod.carry_allowed(self._goal_named("pgrind_fallback")))
+        self.assertFalse(
+            goals_mod.carry_allowed(self._goal_named("reach_mauville")))
+        self.assertFalse(
+            goals_mod.carry_allowed(self._goal_named("reach_ngrind_woods")))
+        self.assertFalse(goals_mod.carry_allowed(None))
+
+    def test_marker_off_never_interferes(self) -> None:
+        pg.retire_party_grind()
+        self.assertTrue(
+            goals_mod.carry_allowed(self._goal_named("reach_mauville")))
+        self.assertTrue(
+            goals_mod.carry_allowed(self._goal_named("reach_ngrind_woods")))
+        self.assertTrue(goals_mod.carry_allowed(None))
 
 
 if __name__ == "__main__":
