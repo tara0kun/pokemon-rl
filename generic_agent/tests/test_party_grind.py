@@ -349,9 +349,40 @@ class TestReorderSM(ReorderSMTestBase):
                          [p for p, _ in self.PARTY])
 
     def test_start_cursor_desync_recovers(self) -> None:
-        # Session left the START cursor on SAVE: fast path opens the save
-        # dialog; the probe walk must still find POKEMON.
+        # Session left the START cursor on SAVE (the loop's periodic in-game
+        # save parks it there): the select-and-test sweep must still find
+        # POKEMON. This was the live 07-28 open_party ~50% flake.
         game = FakeGame(self.PARTY)
+        game.start_cursor = _ITEM_SAVE
+        ok = pg.run_reorder(game, 0x104)
+        self.assertTrue(ok)
+        self.assertEqual(game.party[0][0], 0x104)
+
+    def test_any_remembered_cursor_position_converges(self) -> None:
+        # The remembered START cursor can sit on ANY of the 8 entries
+        # (Pokedex/POKEMON/Bag/PokeNav/card/SAVE/OPTION/EXIT). The sweep
+        # must open the party menu and complete the swap from every one.
+        for cursor in range(8):
+            game = FakeGame(self.PARTY)
+            game.start_cursor = cursor
+            ok = pg.run_reorder(game, 0x104)
+            self.assertTrue(ok, f"cursor={cursor}")
+            self.assertEqual(game.party[0][0], 0x104, f"cursor={cursor}")
+            self.assertEqual(game.field_steps, 0, f"cursor={cursor}")
+
+    def test_open_party_fast_when_cursor_remembered_on_pokemon(self) -> None:
+        # The common repeat case: the previous successful open left the
+        # cursor ON POKEMON. First round tests the remembered entry with NO
+        # advance -> 3 presses (B no-op, Start, A), never an overshoot wrap.
+        game = FakeGame(self.PARTY)
+        game.start_cursor = _ITEM_PARTY
+        self.assertEqual(pg._open_party_menu(game), "ok")
+        self.assertEqual(game.presses, 3)
+        self.assertEqual(game.mode, "party")
+
+    def test_open_party_cursor_on_save_with_drops(self) -> None:
+        # Worst live combo: SAVE-parked cursor AND every 5th press dropped.
+        game = FakeGame(self.PARTY, drop_every=5)
         game.start_cursor = _ITEM_SAVE
         ok = pg.run_reorder(game, 0x104)
         self.assertTrue(ok)
@@ -430,6 +461,87 @@ def make_gs(**kw) -> GameState:
     )
     base.update(kw)
     return GameState(**base)
+
+
+class TestReorderHookGate(unittest.TestCase):
+    """claude_heuristic.pgrind_reorder_should_fire (2026-07-28 live fix):
+    keyed on marker + grind-site map + quiet frame, NOT the goal name. Live,
+    map/badge flicker made current_goal return None and goal-carry served
+    pgrind_to_rusturf, so the old name-keyed gate never fired across ~400
+    tunnel turns. The gate must also be a structural no-op with the marker
+    off (the hook's byte-identical-off contract)."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self._orig = pg.PARTY_GRIND_MARKER
+        pg.PARTY_GRIND_MARKER = Path(self._tmp.name) / "party_grind.on"
+        pg.PARTY_GRIND_MARKER.write_text("", encoding="utf-8")
+
+    def tearDown(self) -> None:
+        pg.PARTY_GRIND_MARKER = self._orig
+        self._tmp.cleanup()
+
+    @staticmethod
+    def _fire(gs, in_battle_seen=False, signals=None, turn=100, cooldown=0):
+        from generic_agent import claude_heuristic as ch
+        return ch.pgrind_reorder_should_fire(
+            gs, in_battle_seen, signals or {}, turn, cooldown)
+
+    def _site_gs(self, **kw):
+        base = dict(map_group=24, map_num=4, x=23, y=14,
+                    game_cb2=pg.CB2_OVERWORLD)
+        base.update(kw)
+        return make_gs(**base)
+
+    def test_fires_on_quiet_frame_at_site(self) -> None:
+        self.assertTrue(self._fire(self._site_gs()))
+
+    def test_fires_regardless_of_badge_flicker(self) -> None:
+        # The decoupling itself: a badge_count dip (the flicker that blanked
+        # the goal name) must NOT block the reorder on a good map frame.
+        for badges in (0, 1, 2, 3):
+            self.assertTrue(
+                self._fire(self._site_gs(badge_count=badges)), badges)
+
+    def test_marker_off_is_structural_noop(self) -> None:
+        # Byte-identical-off proof at the gate level: the perfect at-site
+        # frame must not fire without the marker.
+        pg.retire_party_grind()
+        self.assertFalse(self._fire(self._site_gs()))
+
+    def test_invalid_or_offsite_frames_never_fire(self) -> None:
+        # The (0,0) socket-load flicker frame reads saveblock1_valid=False
+        # AND map (0,0) — either term alone must exclude it.
+        flicker = self._site_gs(map_group=0, map_num=0,
+                                saveblock1_valid=False)
+        self.assertFalse(self._fire(flicker))
+        self.assertFalse(
+            self._fire(self._site_gs(saveblock1_valid=False)))
+        for offsite in ((0, 0), (0, 3), (0, 31), (24, 11)):
+            gs = self._site_gs(map_group=offsite[0], map_num=offsite[1])
+            self.assertFalse(self._fire(gs), offsite)
+
+    def test_quiet_frame_terms_each_block(self) -> None:
+        self.assertFalse(self._fire(self._site_gs(in_battle=True)))
+        self.assertFalse(self._fire(self._site_gs(), in_battle_seen=True))
+        self.assertFalse(
+            self._fire(self._site_gs(), signals={"dialog": True}))
+        self.assertFalse(
+            self._fire(self._site_gs(), signals={"battle_menu": True}))
+        self.assertFalse(self._fire(self._site_gs(game_cb2=0)))
+        self.assertFalse(
+            self._fire(self._site_gs(), turn=10, cooldown=11))
+
+    def test_site_constant_matches_goal_table(self) -> None:
+        # GRIND_SITE_MAP is the hook's single source; it must never drift
+        # from the goal table's grind target (and the two modules' overworld
+        # cb2 constants must be the same value).
+        from generic_agent import claude_heuristic as ch
+        grind = next(
+            g for g in goals_mod.GOAL_TABLE
+            if g.name == "grind_party_rusturf")
+        self.assertEqual(pg.GRIND_SITE_MAP, grind.target_map)
+        self.assertEqual(ch.CB2_OVERWORLD, pg.CB2_OVERWORLD)
 
 
 class PgrindGoalsBase(unittest.TestCase):

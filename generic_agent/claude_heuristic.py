@@ -1652,6 +1652,40 @@ def heuristic_button(
     return rng.choice(DIRECTIONS), "random"
 
 
+def pgrind_reorder_should_fire(
+    gs,
+    in_battle_seen: bool,
+    screen_signals: dict,
+    turn: int,
+    cooldown_until: int,
+) -> bool:
+    """Gate for the party-grind reorder hook. Extracted + decoupled from the
+    goal NAME (2026-07-28 live fix): the old gate required cur_goal.name ==
+    "grind_party_rusturf", but under socket load the per-frame goal does not
+    settle -- invalid frames (map read flickers to (0,0) / badge dips) fail
+    that goal's cur==(24,4)/era gates, current_goal returns None, and the
+    loop's goal-carry serves the stale-but-valid pgrind_to_rusturf instead.
+    Result: ~400 tunnel turns with ZERO reorder fires while the agent stood
+    on the grind site the whole time. The site itself IS stable: key on
+    marker + saveblock1_valid + map == GRIND_SITE_MAP (flicker frames read
+    saveblock1_valid=False / map (0,0), so a bad read can never fire this)
+    + the same quiet-frame terms as before. Marker off: the first term is
+    False and the hook is a structural no-op -- no reads, no presses, no
+    cooldown writes (the old name-keyed gate was equally silent on normal
+    runs because pgrind goals only match while the marker exists)."""
+    return (
+        party_grind_mod.party_grind_active()
+        and gs.saveblock1_valid
+        and (gs.map_group, gs.map_num) == party_grind_mod.GRIND_SITE_MAP
+        and not gs.in_battle
+        and not in_battle_seen
+        and not screen_signals.get("dialog")
+        and not screen_signals.get("battle_menu")
+        and gs.game_cb2 == CB2_OVERWORLD
+        and turn >= cooldown_until
+    )
+
+
 def run(
     max_turns: int,
     record_dataset: bool,
@@ -2197,27 +2231,18 @@ def run(
             continue
 
         # Party-grind reorder hook (opt-in marker mode, 2026-07-28). Keyed on
-        # the GOAL name, not a map id: grind_party_rusturf only matches at the
-        # Rusturf grind site with the marker on, so the RAM-verified reorder
-        # (party_grind.ensure_lead) runs exactly there — between encounters,
-        # far from NPCs/signs (the pin guarantees a stray field press is a
-        # no-op). It swaps the lowest under-target backup into slot 0, rotates
-        # on level-up, restores the strongest mon and deletes the marker when
-        # all are done. Gated hard on a quiet overworld frame: any battle /
-        # dialog / non-overworld cb2 defers to the normal dispatch (the SM
-        # also aborts itself if a wild steals a frame mid-menu). "noop" (the
-        # common case) costs ~13 fixed-address reads and falls through to
-        # normal grind nav.
-        if (
-            cur_goal is not None
-            and cur_goal.name == "grind_party_rusturf"
-            and gs.saveblock1_valid
-            and not gs.in_battle
-            and not in_battle_seen
-            and not screen_signals.get("dialog")
-            and not screen_signals.get("battle_menu")
-            and gs.game_cb2 == CB2_OVERWORLD
-            and turn >= pgrind_cooldown_until
+        # marker + GRIND_SITE_MAP + a quiet overworld frame — NOT on the goal
+        # name: pgrind_reorder_should_fire's docstring records the live 07-28
+        # failure (goal-carry kept the name on pgrind_to_rusturf under flicker
+        # and the name-keyed gate never fired). The RAM-verified reorder
+        # (party_grind.ensure_lead) swaps the lowest under-target backup into
+        # slot 0, rotates on level-up, restores the strongest mon and deletes
+        # the marker when all are done. Any battle / dialog / non-overworld
+        # cb2 defers to the normal dispatch (the SM also aborts itself if a
+        # wild steals a frame mid-menu). "noop" (the common case) costs ~13
+        # fixed-address reads and falls through to normal grind nav.
+        if pgrind_reorder_should_fire(
+            gs, in_battle_seen, screen_signals, turn, pgrind_cooldown_until,
         ):
             try:
                 acted, why = party_grind_mod.ensure_lead(client, log=print)

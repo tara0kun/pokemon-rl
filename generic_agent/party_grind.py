@@ -9,7 +9,11 @@ levels them hands-off. It is OFF unless the marker file exists:
 (optionally containing a target level as text, default 18 -- the natural
 target: Marill/Poochyena/Slakoth all evolve at 18). Delete the marker (or let
 the mode finish) and every normal-run behavior is byte-identical: all pgrind_*
-goals gate on the marker, and the loop hook gates on the pgrind goal name.
+goals gate on the marker, and the loop hook gates on the marker + the grind
+site map (claude_heuristic.pgrind_reorder_should_fire -- NOT on the exact goal
+name: live 07-28 the per-frame goal flickered between grind_party_rusturf and
+the carried pgrind_to_rusturf under socket load, so a name-keyed hook never
+fired across ~400 tunnel turns).
 
 Design (architect/Fable, 2026-07-28):
   * WHO fights is solved by a RAM-verified PARTY REORDER, not by trusting
@@ -68,6 +72,13 @@ PARTY_GRIND_MARKER = config.MEMORY_DIR / "party_grind.on"
 # number into the marker file.
 PARTY_GRIND_DEFAULT_TARGET = 18
 
+# Where the mode grinds: Rusturf Tunnel (see module docstring for why). The
+# loop's reorder hook fires on THIS map (marker + quiet frame), decoupled from
+# the per-frame goal name (which does not settle under socket-load flicker --
+# live 07-28). Single source: the hook must never drift from the goal table's
+# grind_party_rusturf / pgrind_* target (24, 4).
+GRIND_SITE_MAP = (24, 4)
+
 # gPartyMenu (see module docstring for provenance / trust model).
 GPARTY_MENU_SLOT_ADDR = 0x0203CED1   # s8 slotId (measured live)
 GPARTY_MENU_SLOT2_ADDR = 0x0203CED2  # s8 slotId2 (derived; runtime-verified)
@@ -89,7 +100,10 @@ CB2_PARTY_MENU = 0x081B01B1
 _TAP_FRAMES = 12
 _PRESS_SLEEP = 0.8
 _SWAP_ANIM_SLEEP = 2.0   # party slide animation after confirming the swap
-_OPEN_ROUNDS = 12        # START-menu walk: 8 items + drop slack
+_OPEN_ROUNDS = 18        # select-and-test sweep: worst remembered-cursor
+# start needs 14 rounds against the menu model (8 entries; each fullscreen
+# entry costs a select round + a B-backout round) + drop slack. Bounded:
+# worst case ~58s, common cases 3-8 presses (see _open_party_menu).
 _NAV_MAX = 20            # cursor-navigation presses per phase
 _TRIPLE_TRIES = 3        # (A, Down, A) switch-select attempts
 _ATTEMPTS = 2            # full-SM retries (state re-derived from RAM each time)
@@ -219,32 +233,79 @@ def _open_party_menu(client: MGBAClient) -> str:
     """Overworld -> field party menu. Returns "ok" / "battle" / "fail".
 
     The START menu is an overworld OVERLAY (cb2 does not change -- hm_teach
-    lesson 07-19), so open-state is not directly readable. Instead: a fast
-    path assumes the cursor is at the top (the loop's periodic save sequence
-    relies on the same reset), then a bounded probe walk (B, Start, Down, A)
-    advances one menu item per round whatever the real overlay state is,
-    identifying each landing by cb2. A wild encounter (cave floor step from a
-    dropped-press desync) aborts instantly -- the loop's battle machinery
-    owns that; the hook retries after its cooldown."""
-    for btn in ("Start", "Down", "A"):
-        _press(client, btn)
+    lesson 07-19) whose cursor is REMEMBERED across opens (live 07-28: the
+    loop's periodic in-game save parks it on SAVE; a prior successful open
+    parks it on POKEMON). The old fast path (Start, Down, A) gambled on
+    cursor==top and lost whenever the session had touched the menu before
+    (~50% of live attempts), overshooting onto BAG/OPTION and burning the
+    old probe walk's rounds on a full wrap. Replaced (07-28) with a
+    select-and-TEST sweep that never advances past an untested entry:
+
+      round: cb2 says party menu  -> done
+             cb2 says battle      -> abort (a wild stole a frame; the
+                                    loop's battle machinery owns it)
+             cb2 says fullscreen  -> single B (Emerald returns toward the
+                                    START overlay one level per round;
+                                    never paired with Down/A, so a dropped
+                                    B cannot wander deeper into Pokedex/
+                                    PokeNav nesting)
+             cb2 says overworld, just backed out of a fullscreen
+                                  -> the overlay is KNOWN open with the
+                                    cursor on the tested (wrong) entry:
+                                    Down advances one, A selects. This
+                                    3-press fullscreen cycle (B / Down, A)
+                                    is deliberately co-prime with small
+                                    periodic press-drop patterns -- a
+                                    4-press normalize here made the cycle
+                                    5 presses and a period-5 dropper ate
+                                    the SAME Down every cycle, re-selecting
+                                    one entry forever (caught by the
+                                    drop-tolerance tests).
+             cb2 says overworld otherwise
+                                  -> [B, Start] force the overlay open
+                                    from ANY overlay state (B closes a
+                                    save prompt / dialog / the overlay
+                                    itself; Start opens it), Down advances
+                                    one entry (SKIPPED on the first round:
+                                    test the remembered entry as-is), A
+                                    selects; next round classifies.
+
+    The first-round no-Down makes the common repeat case (cursor still on
+    POKEMON from the previous reorder) 3 presses. The sweep tests every
+    entry within one wrap, and because the cursor position persists, a
+    rounds-exhausted attempt resumes where it left off on the next attempt
+    instead of restarting the gamble."""
+    first = True
+    menu_open = False   # belief bit: True only right after a B-backout
     for _ in range(_OPEN_ROUNDS):
         cb2 = _read_cb2(client)
         if cb2 == CB2_PARTY_MENU:
             return "ok"
         if cb2 == CB2_BATTLE_MAIN:
             return "battle"
-        if cb2 == CB2_OVERWORLD:
-            # Field, START overlay open or closed, or a SAVE/dialog overlay:
-            # B closes a dialog (or the overlay), Start re-toggles, Down
-            # advances, A selects. Net effect: one item per round, from any
-            # desync, converging on POKEMON within a menu cycle.
-            for btn in ("B", "Start", "Down", "A"):
-                _press(client, btn)
-        else:
+        if cb2 != CB2_OVERWORLD:
             # Some other full screen (Pokedex/Bag/PokeNav/summary/options):
-            # B backs out to the overlay; next round advances.
+            # B backs out toward the overlay; next round advances. If this B
+            # drops, the next cb2 read still shows the fullscreen and the
+            # belief bit is never consumed.
             _press(client, "B")
+            menu_open = True
+            continue
+        if menu_open:
+            # Backed out of a fullscreen WE selected from the overlay, so
+            # the overlay is open: advance-and-test without the close/reopen
+            # churn (fewer unverified presses, no Start toggle to drop).
+            menu_open = False
+            _press(client, "Down")
+            _press(client, "A")
+            first = False
+            continue
+        _press(client, "B")
+        _press(client, "Start")
+        if not first:
+            _press(client, "Down")
+        first = False
+        _press(client, "A")
     return "fail"
 
 
@@ -460,9 +521,9 @@ def run_reorder(
 def ensure_lead(
     client: MGBAClient, log: Callable[[str], None] | None = None,
 ) -> tuple[bool, str]:
-    """Per-turn entry point for the loop hook (only while the pgrind goal is
-    active at the grind site). Cheap when nothing to do (13 fixed-address
-    reads). Returns (acted, reason):
+    """Per-turn entry point for the loop hook (fired on marker + GRIND_SITE_MAP
+    + a quiet overworld frame -- claude_heuristic.pgrind_reorder_should_fire).
+    Cheap when nothing to do (13 fixed-address reads). Returns (acted, reason):
       (False, "noop")     slot0 is the right trainee -- fall through to grind
       (True, "swapped")   a reorder ran (loop should `continue` this turn)
       (True, "restored")  strongest mon put back in front (retire next call)
