@@ -24,6 +24,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import config
+# Opt-in party-training marker (party_grind.on). Imported as a module so the
+# tests' path monkey-patching works; party_grind imports only config/io/state
+# (no cycle back into goals).
+from . import party_grind as _party_grind
 
 GOALS_FILE = config.MEMORY_DIR / "goal_notes.jsonl"
 VISITED_MAPS_FILE = config.MEMORY_DIR / "visited_maps.json"
@@ -120,6 +124,17 @@ FLANNERY_GRIND_TARGET_LEVEL = 46
 # session at the measured 07-22 rate), while every heal cycle also refills the
 # PP that actually lost fight #1. Raise if the L52 rematch still loses.
 NORMAN_GRIND_TARGET_LEVEL = 52
+
+# Lead floor for the Norman grind arc (2026-07-28, party-grind conflict fix):
+# the arc's premise is "grind the ~L48 REAL lead to 52", but its gates only
+# said `level < 52` — with a party-grind BACKUP (L5-18) in slot 0 the whole
+# eastbound trek would fire and drag the weak lead across the map to Fiery
+# Path's L14-16 wilds (and the party-grind marker can be removed mid-run, so
+# the marker gate alone does not cover that state). A floor of 40 keeps the
+# arc exclusive to the real lead: level is the read-root flicker-guarded
+# carry (state._flicker_guarded_level, never reads 0), levels never decrease,
+# and no trainee approaches 40 (targets are ~18).
+NORMAN_GRIND_LEAD_FLOOR = 40
 
 LETTER_DONE_MARKER = config.MEMORY_DIR / "steven_letter_done.marker"
 DEVON_DELIVERED_MARKER = config.MEMORY_DIR / "devon_delivered.marker"
@@ -362,6 +377,12 @@ _GOAL_BYPASS_VISITED = {
     # uniformity with its chain.
     "reach_ngrind_woods", "reach_ngrind_woods_north", "reach_ngrind_mauville",
     "grind_fiery_norman", "heal_at_mauville_ngrind",
+    # Party-grind mode: every target (Rusturf, Woods, Rustboro PC) has been
+    # in visited_maps since the badge-1 era, and the grind/heal loop must
+    # re-target them every cycle (the grind_granite_cave precedent). The
+    # target==cur inner legs are listed for uniformity, like the ngrind arc.
+    "grind_party_rusturf", "pgrind_exit_west", "pgrind_heal_rustboro",
+    "pgrind_woods_north", "pgrind_to_woods", "pgrind_to_rusturf",
 }
 
 
@@ -1224,6 +1245,108 @@ class Goal:
                     or gs.map_group == 8
                 )
             )
+        # --- Party-grind mode (2026-07-28, user-directed, OPT-IN): while the
+        # party_grind.on marker exists, train the L5-17 backups hands-off at
+        # RUSTURF TUNNEL (24,4) — the only cave grind site reachable from
+        # Petalburg WITHOUT transiting Mauville (the 07-25 stale-gym trap),
+        # probed 07-28: 174/177 walkable tiles are MB_CAVE land-encounter,
+        # zero walkable-adjacent ledges (no frontier leak), Whismur-only
+        # L5-8 wilds (the one population an L5 trainee can safely fight).
+        # Corridor = the proven badge5/ngrind legs reversed: Petalburg ->
+        # R104 south -> Woods -> R104 north -> Rustboro -> Route116 ->
+        # Rusturf (rocks permanently smashed 07-26). WHO leads is the loop
+        # hook's job (party_grind.ensure_lead, RAM-verified reorder AT the
+        # grind site); these goals are deliberately LEAD-AGNOSTIC so a
+        # pre-reorder Sceptile lead or a mid-rotation frame never drops the
+        # chain. All gates: marker (disk, flicker-proof) + latched badge era
+        # 4..5 (audited corridor) — no party_count / story-flag / species
+        # terms (nothing here can flicker the chain away). Retire = the
+        # hook deletes the marker; every condition below goes silent on the
+        # same frame and the live-proven b5 chain (exit_rusturf_west ->
+        # reach_rustboro_b5 -> petalburg_*) walks the party home.
+        if c == "pgrind_grind":
+            # The grind itself: healthy complement (hp >= 0.4, pp != 0) of
+            # the exit/heal legs, the grind_fiery_path pairing. Scanned
+            # ABOVE them so the 0.4-0.5 band keeps the tile.
+            return (
+                _party_grind.party_grind_active()
+                and 4 <= gs.badge_count < 5
+                and gs.party0_hp_frac >= 0.4
+                and gs.party0_damaging_pp != 0
+                and cur == (24, 4)
+            )
+        if c == "pgrind_exit_west":
+            # Hurt/PP-dry inside the tunnel: pin the WEST warp (4,10)
+            # explicitly — generic warp routing to the Rustboro-side PC
+            # would pick the NEARER middle door (18,20), which lands in the
+            # Route116 cid2 cul-de-sac (the exit_rusturf_west lesson, same
+            # pin). Order makes this the grind's complement: it only wins
+            # when pgrind_grind is silent.
+            return (
+                _party_grind.party_grind_active()
+                and 4 <= gs.badge_count < 5
+                and cur == (24, 4)
+            )
+        if c == "pgrind_heal":
+            # Grind-loop heal at the Rustboro PC (11,5) — nurse (7,2) /
+            # counter (7,3) / stand (7,4), the exact geometry every other
+            # PC heal goal uses (probed 07-28). Also re-homes a whiteout to
+            # Rustboro, so a trainee wipe is a short walk back. Covers the
+            # east half of the corridor; the west half (Woods/R104-south/
+            # Petalburg) falls through to the petalburg_* homeward legs +
+            # heal_at_petalburg (their hurt behavior is already correct).
+            return (
+                _party_grind.party_grind_active()
+                and 4 <= gs.badge_count < 5
+                and gs.party0_max_hp > 0
+                and (gs.party0_hp_frac < 0.5 or gs.party0_damaging_pp == 0)
+                and not gs.in_battle
+                and (
+                    cur in {(0, 3), (0, 31)}
+                    or gs.map_group == 11
+                    or (cur == (0, 19) and gs.y < 34)
+                )
+            )
+        if c == "pgrind_woods_north":
+            # Inside the Woods, eastbound: pin the NORTH exit warp (the
+            # ngrind_woods_north / peeko_woods_north pin — nearest-warp
+            # routing would re-pick the south door we entered by).
+            return (
+                _party_grind.party_grind_active()
+                and 4 <= gs.badge_count < 5
+                and cur == (24, 11)
+            )
+        if c == "pgrind_to_woods":
+            # First leg: Petalburg City / its interiors / R104 south beach
+            # -> into the Woods. hp/pp-gated so a hurt start yields to
+            # heal_at_petalburg (exact complement), the ngrind_to_woods
+            # discipline. Mid-corridor legs are NOT hp-gated: the heal is
+            # forward at Rustboro (pgrind_heal above wins when hurt).
+            return (
+                _party_grind.party_grind_active()
+                and 4 <= gs.badge_count < 5
+                and gs.party0_hp_frac >= 0.5
+                and gs.party0_damaging_pp != 0
+                and (
+                    cur == (0, 0)
+                    or gs.map_group == 8
+                    or (cur == (0, 19) and gs.y >= 34)
+                )
+            )
+        if c == "pgrind_to_rusturf":
+            # East legs umbrella: R104 north -> Rustboro -> Route116 ->
+            # Rusturf west door. Per-turn map_path resolves each hop (3
+            # hops max). Group 11 = Rustboro interiors (walks back out of
+            # the PC after a heal).
+            return (
+                _party_grind.party_grind_active()
+                and 4 <= gs.badge_count < 5
+                and (
+                    (cur == (0, 19) and gs.y < 34)
+                    or cur in {(0, 3), (0, 31)}
+                    or gs.map_group == 11
+                )
+            )
         # --- Norman grind arc (2026-07-28, user decision after Norman loss):
         # travel the lead EASTBOUND Petalburg -> (Woods position legs) ->
         # Rustboro -> Rusturf Tunnel -> Verdanturf -> Route117 -> Mauville ->
@@ -1263,8 +1386,15 @@ class Goal:
             # heal_at_petalburg (hp<0.5 OR pp==0, the exact complement) and
             # departs topped up. Mid-corridor legs are NOT hp-gated: the only
             # heal on the corridor is forward at Mauville.
+            # party-grind exclusions (07-28): while the marker is on, the
+            # pgrind chain owns this corridor (a trainee lead has level<52,
+            # so without the gate this arc would drag it east to Fiery's
+            # L14-16 wilds — the Mauville re-trap); the LEAD FLOOR covers
+            # the marker-removed-mid-run state (see NORMAN_GRIND_LEAD_FLOOR).
             return (
                 4 <= gs.badge_count < 5
+                and not _party_grind.party_grind_active()
+                and NORMAN_GRIND_LEAD_FLOOR <= gs.party0_level
                 and gs.party0_level < NORMAN_GRIND_TARGET_LEVEL
                 and gs.party0_hp_frac >= 0.5
                 and gs.party0_damaging_pp != 0
@@ -1284,6 +1414,8 @@ class Goal:
             # first).
             return (
                 4 <= gs.badge_count < 5
+                and not _party_grind.party_grind_active()  # pgrind owns Woods
+                and NORMAN_GRIND_LEAD_FLOOR <= gs.party0_level  # real lead only
                 and gs.party0_level < NORMAN_GRIND_TARGET_LEVEL
                 and cur == (24, 11)
             )
@@ -1297,6 +1429,10 @@ class Goal:
             # pin returns immediately and would walk us back WEST.
             return (
                 4 <= gs.badge_count < 5
+                and not _party_grind.party_grind_active()  # pgrind owns the
+                # west corridor while active (its Rusturf goals stop at the
+                # tunnel; this leg would march on east)
+                and NORMAN_GRIND_LEAD_FLOOR <= gs.party0_level
                 and gs.party0_level < NORMAN_GRIND_TARGET_LEVEL
                 and (
                     (cur == (0, 19) and gs.y < 34)
@@ -1316,6 +1452,9 @@ class Goal:
             # frame — same handoff the badge4 arc ran live.
             return (
                 4 <= gs.badge_count < 5
+                and not _party_grind.party_grind_active()  # never grind a
+                # party-grind trainee at Fiery (L14-16 wilds vs an L5-18 lead)
+                and NORMAN_GRIND_LEAD_FLOOR <= gs.party0_level
                 and gs.party0_level < NORMAN_GRIND_TARGET_LEVEL
                 and gs.party0_hp_frac >= 0.4
                 and gs.party0_damaging_pp != 0
@@ -1953,6 +2092,74 @@ GOAL_TABLE: list[Goal] = [
         # ((25,4) from the east, len 16); face+A smashes; canon-pinned by test.
         condition="smash_rusturf_rock",
         desc="Rusturf Tunnel の岩 (24,4) を Rock Smash — 永続 flag なので一度で開通",
+    ),
+    # --- Party-grind mode (2026-07-28, opt-in marker): backup training at
+    # Rusturf Tunnel. Placement is LOAD-BEARING and mirrors the ngrind
+    # block's reasoning: AFTER smash_rusturf_rock (a reported rock must
+    # still win its frame), ABOVE the ngrind block (mutually exclusive via
+    # the marker, kept adjacent for the audit trail), ABOVE
+    # exit_rusturf_west (its target==cur pin would walk the parked grind
+    # straight back west) and ABOVE the petalburg_* legs (which would
+    # otherwise own Route104/Woods southbound). Within the block: grind
+    # before exit/heal (the 0.4-0.5 hp band keeps the tile), exit-west pin
+    # before the heal umbrella (tunnel frames must use the pinned west
+    # door, never generic nearest-warp routing into the cid2 cul-de-sac),
+    # travel legs last (westernmost first, the position-leg idiom).
+    Goal(
+        name="grind_party_rusturf",
+        target_map=(24, 4),       # RusturfTunnel — cave-grind properties
+        # probed 2026-07-28 (see the pgrind_grind condition comment).
+        target_pos=(23, 14),      # interior pin: MB_CAVE with all 4
+        # neighbours MB_CAVE (grind-pin discipline), Manhattan >= 8 from
+        # every warp and >= 9 from every object_event (probe 07-28; the
+        # nearest NPC, Wanda's boyfriend (23,5), is 9 away) — so the
+        # reorder SM's worst-case stray field press hits empty cave floor.
+        # 'grind' name prefix is LOAD-BEARING (wild battles FIGHT).
+        condition="pgrind_grind",
+        desc="Party-grind: Rusturf 洞窟 (23,14) で backup lead を野生 Whismur 相手に育成",
+    ),
+    Goal(
+        name="pgrind_exit_west",
+        target_map=(24, 4),
+        target_pos=(4, 10),       # WEST Route116 warp pad — the
+        # exit_rusturf_west pin, same cul-de-sac rationale (probe 07-26).
+        condition="pgrind_exit_west",
+        desc="Party-grind: 消耗時は西 warp (4,10) から Route116 へ (heal へ向かう)",
+    ),
+    Goal(
+        name="pgrind_heal_rustboro",
+        target_map=(11, 5),       # RustboroCity_PokemonCenter_1F
+        target_pos=(7, 3),        # counter below the nurse (7,2): stand
+        # (7,4), Up+A over the MB_COUNTER (probe 07-28 — the standard PC
+        # geometry every other heal goal uses). Re-homes whiteout here.
+        condition="pgrind_heal",
+        desc="Party-grind: Rustboro PC で全回復 (HP/PP、whiteout 先も Rustboro に)",
+    ),
+    Goal(
+        name="pgrind_woods_north",
+        target_map=(24, 11),
+        target_pos=(14, 5),       # north exit warp (the canon
+        # peeko/ngrind_woods_north pin — nearest-warp routing would re-pick
+        # the south door we entered by).
+        condition="pgrind_woods_north",
+        desc="Party-grind: Woods を北上し北口 (14,5) から Route104 北へ",
+    ),
+    Goal(
+        name="pgrind_to_woods",
+        target_map=(24, 11),      # PetalburgWoods (map_path resolves the
+        # Petalburg -> R104-south -> Woods trip; south doors are the only
+        # Woods warps reachable from the Petalburg strip — probe 07-28).
+        condition="pgrind_to_woods",
+        desc="Party-grind: Petalburg → Route104 南浜 → Woods へ東進開始",
+    ),
+    Goal(
+        name="pgrind_to_rusturf",
+        target_map=(24, 4),       # RusturfTunnel — umbrella for R104N ->
+        # Rustboro -> Route116 -> tunnel west door (3 hops, warp routing
+        # dest-matches the tunnel; rocks carry PERMANENT hide flags,
+        # smashed 07-26, so the west half is open for good).
+        condition="pgrind_to_rusturf",
+        desc="Party-grind: Route104 北 → Rustboro → Route116 → Rusturf Tunnel",
     ),
     # --- Norman grind arc (2026-07-28): eastbound trek + Fiery cave grind.
     # Block placement is LOAD-BEARING: AFTER smash_rusturf_rock (a reported

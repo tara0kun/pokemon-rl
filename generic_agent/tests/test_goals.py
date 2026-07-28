@@ -11,6 +11,7 @@ import unittest
 from pathlib import Path
 
 from generic_agent import goals as goals_mod
+from generic_agent import party_grind as party_grind_mod
 from generic_agent.state import GameState
 
 
@@ -48,8 +49,14 @@ class GoalsTestBase(unittest.TestCase):
         goals_mod.THEFT_DONE_MARKER = tmp / "meteor_theft_done.marker"
         goals_mod.MTCHIMNEY_DONE_MARKER = tmp / "mtchimney_done.marker"
         goals_mod.WATER_CATCH_DONE_MARKER = tmp / "water_catch_done.marker"
+        # Party-grind marker: goals gate on party_grind.party_grind_active(),
+        # so a REAL memory/party_grind.on left on the machine would flip
+        # every corridor expectation in this suite -- always run hermetic.
+        self._orig_pgrind_marker = party_grind_mod.PARTY_GRIND_MARKER
+        party_grind_mod.PARTY_GRIND_MARKER = tmp / "party_grind.on"
 
     def tearDown(self) -> None:
+        party_grind_mod.PARTY_GRIND_MARKER = self._orig_pgrind_marker
         (
             goals_mod.GOALS_FILE,
             goals_mod.VISITED_MAPS_FILE,

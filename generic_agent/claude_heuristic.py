@@ -55,6 +55,7 @@ from . import (
     map_data as map_data_mod,
     map_knowledge as mk_mod,
     memory,
+    party_grind as party_grind_mod,
     path_memory as path_memory_mod,
     preprocess,
     reward_state as reward_state_mod,
@@ -570,7 +571,10 @@ def heuristic_button(
              # same_map_streak explore-hijack overrides the Woods-crossing
              # goals (this comment's own Route104 example). heal_at_petalburg
              # is covered by the "heal" prefix above.
-             "petalburg_")
+             "petalburg_",
+             # Party-grind mode: same Route104/Woods crossing legs, same
+             # hijack exposure. grind_party_rusturf is covered by "grind".
+             "pgrind_")
         )
     )
     # H4b: Mr.Briney's Dewford->Slateport sail multichoice (Petalburg=case 0 /
@@ -1729,6 +1733,7 @@ def run(
     shop_cooldown_until = 0
     heal_cooldown_until = 0
     battle_heal_cooldown_until = 0
+    pgrind_cooldown_until = 0
     rs = reward_state_mod.RewardState()
     rs.load()
     checkpoint_target: tuple[int, int, int, int] | None = None
@@ -2182,6 +2187,46 @@ def run(
                 heal_cooldown_until = turn + 25
             last_action = "field_heal_potion"
             continue
+
+        # Party-grind reorder hook (opt-in marker mode, 2026-07-28). Keyed on
+        # the GOAL name, not a map id: grind_party_rusturf only matches at the
+        # Rusturf grind site with the marker on, so the RAM-verified reorder
+        # (party_grind.ensure_lead) runs exactly there — between encounters,
+        # far from NPCs/signs (the pin guarantees a stray field press is a
+        # no-op). It swaps the lowest under-target backup into slot 0, rotates
+        # on level-up, restores the strongest mon and deletes the marker when
+        # all are done. Gated hard on a quiet overworld frame: any battle /
+        # dialog / non-overworld cb2 defers to the normal dispatch (the SM
+        # also aborts itself if a wild steals a frame mid-menu). "noop" (the
+        # common case) costs ~13 fixed-address reads and falls through to
+        # normal grind nav.
+        if (
+            cur_goal is not None
+            and cur_goal.name == "grind_party_rusturf"
+            and gs.saveblock1_valid
+            and not gs.in_battle
+            and not in_battle_seen
+            and not screen_signals.get("dialog")
+            and not screen_signals.get("battle_menu")
+            and gs.game_cb2 == CB2_OVERWORLD
+            and turn >= pgrind_cooldown_until
+        ):
+            try:
+                acted, why = party_grind_mod.ensure_lead(client, log=print)
+            except Exception as _exc:  # noqa: BLE001 — never crash the loop
+                print(f"  [party_grind] error: {_exc}")
+                acted, why = False, "error"
+            if acted:
+                print(f"  [party_grind] turn {turn}: {why}")
+                pgrind_cooldown_until = turn + 3
+                last_action = "party_grind_reorder"
+                continue
+            if why != "noop":
+                # unreadable frame or a failed reorder attempt — cool down so
+                # a persistent press-drop degrades to plain grinding with the
+                # current lead instead of hammering the menu.
+                print(f"  [party_grind] turn {turn}: not acted ({why})")
+                pgrind_cooldown_until = turn + 25
 
         # Part B — trainer-battle decision, driven by RAM not vision.
         # H6a root cause: the refill used to be gated on the flaky
