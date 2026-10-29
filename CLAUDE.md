@@ -5,6 +5,17 @@
 
 詳細は [generic_agent/daily_progress/2026-06-08.md](generic_agent/daily_progress/2026-06-08.md) 参照。
 
+
+## 最初に読む (2026-10-29 追加)
+
+- **`~/claude-context/reviews/pokemon-rl_review_2026-10-29.md`**: Phase 2 のコードレビューと再開可否
+  - まず §0「再開可否の結論」と「再開前に直す」表を読む
+  - 一覧は `~/claude-context/reviews/README.md`。claude-context は private リポジトリにある
+  - レビューは作成時点 (`1f6d38c`) の写真なので、今の HEAD と比べ、直っている指摘・古くなった指摘を確かめてから前提にする
+  - 指摘を直したら、`reviews/README.md` の「状態」と「最終確認日」を更新する
+- **共有事項**: `python ~/claude-context/scripts/shared.py digest --cwd "$PWD"` の出力 (ローカルでは起動時に自動表示される)
+  - 他のリポジトリにも効く事項が出たら、`shared.py add` で足す
+  - 運用は `~/claude-context/shared/README.md`
 ---
 
 ## ディレクトリ構成 (top level)
