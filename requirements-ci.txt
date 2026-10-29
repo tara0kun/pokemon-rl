@@ -1,0 +1,7 @@
+# CI (.github/workflows/tests.yml) 用の最小依存。
+# generic_agent/tests が import 時に読む外部パッケージだけを、手元の poke-rl venv と同じ版で固定する。
+# anthropic は rescue_brain などが import するだけで、テストは API を呼ばない (API キー無しで通る)。
+# opencv は headless 版: GUI を使わず、libGL などのシステムライブラリを要らないため。
+numpy==2.4.2
+opencv-python-headless==4.13.0.92
+anthropic==0.84.0

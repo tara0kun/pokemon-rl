@@ -12,8 +12,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-      # 依存ゼロ: テスト対象は stdlib のみのモジュールに限定してある
-      # (state/io/goals/tile_map/path_memory/reward_state/dual_dev.gates)
+          # 手元の poke-rl venv と同じ版。テストを回しているのはその環境なので CI も揃える
+          python-version: "3.14"
+      # テストが import 時に読む外部パッケージ (numpy / cv2 / anthropic) だけを入れる。
+      # 依存ゼロのままだと battle_heal・party_grind などのテストが import で落ちて走らない。
+      # mGBA・API キー・map_cache (gitignore) は不要。cache が要るテストは skip する
+      - name: Install test dependencies
+        run: pip install -r requirements-ci.txt
       - name: Run unit tests
         run: python -m unittest discover -s generic_agent/tests -t . -v
