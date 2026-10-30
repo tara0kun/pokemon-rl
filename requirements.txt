@@ -1,19 +1,24 @@
-# Pokemon Emerald RL Agent - Python dependencies
-# Tested on Python 3.10+ (Windows 11)
+# generic_agent の実行に要る依存。版は手元の poke-rl venv（Python 3.14.3 / Windows 11）で動いているものに固定する。
+#   poke-rl/Scripts/python.exe -m pip install -r requirements.txt
+# CI 用の最小セット（テストが import 時に読むものだけ）は requirements-ci.txt。
+# 旧 rule-based（old branch）の依存は old branch の requirements.txt を見ること。
 
-# Core RL
-stable-baselines3>=2.0.0
-gymnasium>=0.29.0
-torch>=2.0.0
-numpy>=1.24.0
+# 本番ループ（claude_heuristic）と画面処理
+numpy==2.4.2
+opencv-python==4.13.0.92
+# rescue_brain / brain / llm_advisor（llm_advisor は既定 OFF。POKE_RL_USE_LLM=1 で使う）
+anthropic==0.84.0
 
-# HTTP / emulator bridge
-requests>=2.31.0
+# 学習・実験の道具（tools/train_*.py、brain_cnn.py、env_ppo.py、knn_explorer.py）。本番ループには要らない
+# 手元の torch / torchvision は CUDA 12.8 版（+cu128）。GPU で使うなら PyTorch 公式の手順で入れる
+torch==2.11.0
+torchvision==0.26.0
+stable-baselines3==2.7.1
+gymnasium==1.2.3
+# train_ppo.py の tensorboard_log
+tensorboard==2.20.0
+scikit-learn==1.9.0
+pillow==12.1.1
 
-# Logging / monitoring
-tensorboard>=2.15.0
-
-# Image / tile processing (CNN classifier)
-Pillow>=10.0.0
-
-# Development utilities
+# Windows 専用（tools/mgba_autolaunch.py で mGBA の画面を操作する）
+uiautomation==2.0.29; sys_platform == "win32"

@@ -32,6 +32,7 @@
 
 ## 必読 docs (2026-07-06 整備)
 
+- `STATUS.md` — **現在地（50 行以内）。最初に読む。区切りごとに更新する**
 - `docs/ARCHITECTURE.md` — 全体構成 (decision cascade / 知識ストア / dual_dev)
 - `docs/INVARIANTS.md` — **training/env/nav コードを変更する前に必読**。不変条件を無効化する変更は同じコミットでこのファイルも更新する
 - `docs/GOTCHAS.md` — 罠 / `docs/HYPOTHESES.md` — 未解決問題(次にやること) / `docs/DECISIONS.md` — 設計判断録
@@ -127,6 +128,7 @@ poke-rl/Scripts/python.exe -m generic_agent.auto_loop --turns 500 --budget 0.5
 - **`feat/<name>` (任意)**
   - 大規模 feature を独立に進める時のみ、 dev から分岐
   - 完成したら dev に merge
+- **文書・レビューだけを足すセッション**（この cycle の作業をしていないセッション。クラウドを含む）は `dev` にも `main` にも直接 commit しない。`docs/<内容>-<YYYYMMDD>` ブランチを切って `dev` への PR にする。2026-10-29 にレビューを `main` へ直接 commit し、`dev` と食い違った
 
 ### 各 cycle のワークフロー
 ```
