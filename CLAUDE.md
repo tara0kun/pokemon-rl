@@ -116,6 +116,7 @@ poke-rl/Scripts/python.exe -m generic_agent.auto_loop --turns 500 --budget 0.5
 - **`feat/<name>` (任意)**
   - 大規模 feature を独立に進める時のみ、 dev から分岐
   - 完成したら dev に merge
+- **文書・レビューだけを足すセッション**（この cycle の作業をしていないセッション。クラウドを含む）は `dev` にも `main` にも直接 commit しない。`docs/<内容>-<YYYYMMDD>` ブランチを切って `dev` への PR にする。2026-10-29 にレビューを `main` へ直接 commit し、`dev` と食い違った
 
 ### 各 cycle のワークフロー
 ```
