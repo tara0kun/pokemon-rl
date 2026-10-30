@@ -1,7 +1,8 @@
 # Pokemon VLM Agent
 
 > **Cost-optimized Vision Language Model agent that plays Pokemon Emerald.**
-> It reads the game state from RAM and the screen and plays Pokemon Emerald on its own — through Badge 5 as of 2026-07.
+> It reads the game state from RAM and the screen and plays Pokemon Emerald — it has reached Badge 5 (2026-07).
+> Some steps, such as the Badge 5 gym battle, were driven by scripts rather than the autonomous loop.
 > Rules and canonical map data do most of the work today; Claude (VLM) is an optional advisor, off by default.
 > (The June VLM-first loop measured roughly $0.0004 per turn with a frame cache + local rule engine.)
 >
