@@ -1,9 +1,24 @@
 # Pokemon VLM Agent
 
 > **Cost-optimized Vision Language Model agent that plays Pokemon Emerald.**
-> Claude reads the screen, calls a tool, presses one button — and a frame cache + local rule engine keeps the cost down to roughly $0.0004 per turn.
+> It reads the game state from RAM and the screen and plays Pokemon Emerald on its own — through Badge 5 as of 2026-07.
+> Rules and canonical map data do most of the work today; Claude (VLM) is an optional advisor, off by default.
+> (The June VLM-first loop measured roughly $0.0004 per turn with a frame cache + local rule engine.)
 >
 > *Portfolio project by [tara0kun](https://github.com/tara0kun) — IPUT Tokyo, IoT Systems Course, 2028 graduate (28卒).*
+
+## 現在地（自動生成）
+
+<!-- readme-stats:begin（generic_agent/tools/readme_stats.py が生成。手で直さない） -->
+| 項目 | 値 |
+|---|---|
+| 現在地 | Badge 5（Balance Badge）＋ HM03 なみのり |
+| 最新のマイルストーン | Badge 5（`v0.8-balance-badge5`、07-29） |
+| コード量 | `generic_agent/` 21,230 行（tests を除く .py、空行・コメント込み） |
+| テスト | 399 件（`unittest discover`、CI で毎回実行） |
+
+現在地の正本と次の一手は [STATUS.md](STATUS.md)（Last verified: 2026-10-30）。
+<!-- readme-stats:end -->
 
 ---
 
@@ -85,7 +100,7 @@ git checkout old
 | patch-tower 連鎖崩壊 | ハードコード一切なし。 prompt + cache + RAM bridge で完結 |
 | Emerald 専用 | ROM 切替で他作品も動作 (将来 FireRed / Crystal で検証予定) |
 | AI と呼べない | Claude Opus 4.8 が screenshot を見て decide = 本物の VLM agent |
-| コスト不明 | 1 turn $0.0004 平均、 cache hit 89% でほぼ無料、 budget cap で hard limit |
+| コスト不明 | 1 turn $0.0004 平均、 cache hit 89% でほぼ無料、 budget cap で hard limit（06 月の VLM 版 `auto_loop` での実測） |
 
 **Anthropic 公式の Claude Plays Pokemon (Red を 2025 年にクリア) と同等 architecture を、 cost-optimized で再現** という portfolio narrative が成立。
 
@@ -95,11 +110,11 @@ git checkout old
 
 ## ゴール (3 段階)
 
-| 段階 | 達成基準 | 状態 (2026-06-26) |
+| 段階 | 達成基準 | 状態 (2026-10-30) |
 |------|---------|----------------------|
 | **Goal 1: 序盤完了** | starter 受領 + Route 102 到達 | ✅ **達成**: starter 取得 + 30+ unique map 訪問 |
-| **Goal 2: Gym 1 (ツツジ)** | Rustboro City で Roxanne 撃破 + バッジ 1 | ⏳ **autonomous で Gym 内部到達**: 19 fix + 真の root cause 11 段解明、 Roxanne 戦自体は LOTAD Lv 不足で whiteout 繰り返し、 grass area grinding strategy 試行中 |
-| **Goal 3: ポケモンリーグ殿堂入り** | 8 バッジ + チャンピオン撃破 | 🎯 最終目標 |
+| **Goal 2: Gym 1 (ツツジ)** | Rustboro City で Roxanne 撃破 + バッジ 1 | ✅ **達成**（2026-07-01、`v0.4-stone-badge`） |
+| **Goal 3: ポケモンリーグ殿堂入り** | 8 バッジ + チャンピオン撃破 | ⏳ **5 / 8**: Badge 5（Norman）まで（2026-07-29、`v0.8-balance-badge5`）。Badge 6 の目標は未実装（[STATUS.md](STATUS.md)） |
 | **Stretch: 汎用化** | FireRed / Crystal で同じ codebase 動作確認 | 🎯 portfolio 主軸 |
 
 ### 2026-06-22 → 06-26 milestone (5 day autonomous run)
@@ -109,7 +124,7 @@ git checkout old
 - **mGBA crash auto-recovery tool** (uiautomation 経由) で 24/7 robust 化
 - **tile_map empirical accumulation**: canon-game walkable mismatch を自動学習する仕組み実証 (Route 104 10 4-way blocked、 Rustboro 5 蓄積)
 
-### Goal 2 残課題
+### Goal 2 残課題（06-26 時点。2026-07-01 に達成）
 - LOTAD Lv 10+ grinding (BUBBLE 2x rock で Geodude 一撃可能)
 - (10,30) Petalburg Woods warp 経由で Route 104 south grass area 到達
 - Roxanne 再戦 + Stone Badge 取得
@@ -216,6 +231,9 @@ git checkout old
 ---
 
 ## 実測パフォーマンス (2026-06-08〜09 セッション)
+
+> 06 月の VLM 版（`auto_loop` + 3 層 Brain）での実測。07 月以降の本番ループ `generic_agent/claude_heuristic.py` は
+> ルール＋canon データ主体で LLM は既定 OFF（`POKE_RL_USE_LLM=1` で ON）なので、下の cost の数値はそのループには当てはまらない。
 
 ### 累積 cost と進捗
 
@@ -416,13 +434,13 @@ git checkout old
 ## ロードマップ
 
 ### 短期 (1-2 week)
-- [ ] Goal 2: Gym 1 (Rustboro Gym、 ツツジ、 岩 type) 撃破
+- [x] Goal 2: Gym 1 (Rustboro Gym、 ツツジ、 岩 type) 撃破（2026-07-01）
 - [ ] 戦闘専用 RAM bridge (相手 Lv / 技 / type)
 - [ ] menu 自動化 (バッグ、 パーティ、 ポケモン交代)
 - [ ] cost monitoring dashboard
 
 ### 中期 (1-2 month)
-- [ ] Goal 3: 全 8 バッジ + ポケモンリーグ
+- [ ] Goal 3: 全 8 バッジ + ポケモンリーグ（2026-10 時点で 5 / 8）
 - [ ] 戦闘特化 prompt (type 相性、 効果抜群)
 - [ ] cache の自動 prune (古い entry の削除)
 - [ ] FireRed / Crystal で同じ codebase テスト
