@@ -62,6 +62,16 @@ def status_facts() -> dict[str, str]:
             "verified": verified.group(1)}
 
 
+def _about(n: int, step: int) -> int:
+    """step 単位に四捨五入する。
+
+    正確な値を README に書くと、コードを 1 行変えるたびにテストが落ちて CI が赤になり、
+    赤のまま放置されやすくなる。丸めておけば普段の commit では変わらず、
+    「9,900 行」のような大きなずれだけを落とせる。
+    """
+    return int(n / step + 0.5) * step
+
+
 def render() -> str:
     s = status_facts()
     lines = [
@@ -70,8 +80,8 @@ def render() -> str:
         "|---|---|",
         f"| 現在地 | {s['now']} |",
         f"| 最新のマイルストーン | {s['what']}（`{s['tag']}`、{s['date']}） |",
-        f"| コード量 | `generic_agent/` {code_lines():,} 行（tests を除く .py、空行・コメント込み） |",
-        f"| テスト | {test_count()} 件（`unittest discover`、CI で毎回実行） |",
+        f"| コード量 | `generic_agent/` 約 {_about(code_lines(), 1000):,} 行（tests を除く .py、空行・コメント込み） |",
+        f"| テスト | 約 {_about(test_count(), 50)} 件（`unittest discover`、CI で毎回実行） |",
         "",
         f"現在地の正本と次の一手は [STATUS.md](STATUS.md)（Last verified: {s['verified']}）。",
         END,

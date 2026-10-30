@@ -14,8 +14,8 @@
 |---|---|
 | 現在地 | Badge 5（Balance Badge）＋ HM03 なみのり |
 | 最新のマイルストーン | Badge 5（`v0.8-balance-badge5`、07-29） |
-| コード量 | `generic_agent/` 21,230 行（tests を除く .py、空行・コメント込み） |
-| テスト | 399 件（`unittest discover`、CI で毎回実行） |
+| コード量 | `generic_agent/` 約 21,000 行（tests を除く .py、空行・コメント込み） |
+| テスト | 約 400 件（`unittest discover`、CI で毎回実行） |
 
 現在地の正本と次の一手は [STATUS.md](STATUS.md)（Last verified: 2026-10-30）。
 <!-- readme-stats:end -->
