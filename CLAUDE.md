@@ -21,6 +21,7 @@
 
 ## 必読 docs (2026-07-06 整備)
 
+- `STATUS.md` — **現在地（50 行以内）。最初に読む。区切りごとに更新する**
 - `docs/ARCHITECTURE.md` — 全体構成 (decision cascade / 知識ストア / dual_dev)
 - `docs/INVARIANTS.md` — **training/env/nav コードを変更する前に必読**。不変条件を無効化する変更は同じコミットでこのファイルも更新する
 - `docs/GOTCHAS.md` — 罠 / `docs/HYPOTHESES.md` — 未解決問題(次にやること) / `docs/DECISIONS.md` — 設計判断録
