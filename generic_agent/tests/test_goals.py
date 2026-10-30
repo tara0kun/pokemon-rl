@@ -485,6 +485,8 @@ class TestDewfordChain(GoalsTestBase):
         import json
         from generic_agent import config
         p = config.MEMORY_DIR / "map_cache" / "MeteorFalls_1F_1R.map.json"
+        if not p.exists():
+            self.skipTest("MeteorFalls canon cache not present")
         ce = [e for e in json.loads(p.read_text(encoding="utf-8")).get(
             "coord_events", []) if "MagmaSteals" in str(e.get("script", ""))]
         self.assertEqual(len(ce), 1)
